@@ -51,10 +51,10 @@ function interpreterCandidates({ packaged, resources, repoRoot, env, platform })
   const isWin = platform === 'win32';
 
   if (packaged) {
-    list.push(path.join(resources, 'sidecar', '.venv', isWin ? 'Scripts' : 'bin',
-      isWin ? 'python.exe' : 'python'));
-    list.push(path.join(resources, 'sidecar', 'python', isWin ? '' : 'bin',
-      isWin ? 'python.exe' : 'python3'));
+    // Packaged apps run the frozen binary, not an interpreter. Kept in this
+    // list because resolveSidecar() takes the first entry either way.
+    list.push(path.join(resources, 'sidecar',
+      isWin ? 'grading-pipeline-sidecar.exe' : 'grading-pipeline-sidecar'));
   }
 
   if (env && env.GRADING_PIPELINE_PYTHON) list.push(env.GRADING_PIPELINE_PYTHON);
@@ -78,22 +78,40 @@ function interpreterCandidates({ packaged, resources, repoRoot, env, platform })
 
 console.log('\ninterpreter discovery');
 
-test('a packaged Windows build looks for python.exe, never python3', () => {
+test('a packaged app runs the frozen sidecar, not a Python interpreter', () => {
+  const list = asPlatform('linux', () => interpreterCandidates({
+    packaged: true, resources: '/app/resources', platform: 'linux', env: {},
+  }));
+  assert.ok(list[0].endsWith(path.join('sidecar', 'grading-pipeline-sidecar')),
+    `expected the bundled binary first, got: ${list[0]}`);
+});
+
+test('the frozen sidecar keeps its .exe suffix on Windows', () => {
   const list = asPlatform('win32', () => interpreterCandidates({
     packaged: true, resources: 'C:\\app\\resources', platform: 'win32', env: {},
   }));
-  const paths = list.filter((p) => p.includes(path.sep) || p.includes('\\'));
-  assert.ok(paths.length >= 2, list.join('\n'));
-  assert.ok(paths.every((p) => p.endsWith('python.exe')), list.join('\n'));
-  assert.ok(!list.some((p) => p.endsWith('python3')), 'python3 does not exist on Windows');
+  assert.ok(list[0].endsWith('grading-pipeline-sidecar.exe'), list[0]);
+  assert.ok(!list[0].endsWith('python3'), 'python3 does not exist on Windows');
 });
 
-test('a packaged POSIX build looks for the python3 layout', () => {
-  const list = asPlatform('darwin', () => interpreterCandidates({
-    packaged: true, resources: '/app/resources', platform: 'darwin', env: {},
+test('the bundled sidecar outranks any Python on the machine', () => {
+  // A developer running the packaged build next to a checkout would otherwise
+  // silently grade with the wrong code if the search fell through.
+  const list = asPlatform('linux', () => interpreterCandidates({
+    packaged: true, resources: '/app/resources', repoRoot: '/repo',
+    platform: 'linux', env: { GRADING_PIPELINE_PYTHON: '/custom/python' },
   }));
-  assert.ok(list.some((p) => p.endsWith('/bin/python3')));
-  assert.ok(!list.some((p) => p.endsWith('.exe')));
+  assert.ok(list[0].includes('grading-pipeline-sidecar'), list.join('\n'));
+  assert.ok(list.includes('/custom/python'), 'the override is still reachable');
+});
+
+test('an unpackaged build still resolves through the checkout', () => {
+  const list = asPlatform('linux', () => interpreterCandidates({
+    packaged: false, repoRoot: '/repo', platform: 'linux', env: {},
+  }));
+  assert.ok(!list.some((p) => p.includes('grading-pipeline-sidecar')),
+    'there is no frozen binary in development');
+  assert.ok(list[0].endsWith(path.join('.venv', 'bin', 'python')), list[0]);
 });
 
 test('an explicit override wins over everything', () => {

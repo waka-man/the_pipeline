@@ -43,6 +43,12 @@ jobs:
       - name: Tests
         run: python -m pytest sidecar/tests -q
 
+      # Both launch paths go through this module: the checkout uses it with an
+      # interpreter, the packaged app uses it frozen. A change that breaks it
+      # breaks the desktop app too, and only the packaging job would notice.
+      - name: Sidecar entry point
+        run: python sidecar/grading_sidecar.py --selftest
+
       # Guards the guarantee that generated artefacts do not vary by host.
       # Compared against chr(10) rather than an escape literal: the default
       # shell on windows-latest is PowerShell, which does not treat \ as an
@@ -127,3 +133,35 @@ jobs:
           assert exe.endswith((".exe", "python3")) or "python" in exe.lower(), exe
           print("ok")
           PY
+  # Freezing is the step most likely to rot silently: it depends on hidden
+  # imports that static analysis cannot see, so a new source converter breaks
+  # the freeze without breaking any test. One platform is enough to catch that,
+  # and the release workflow still builds all three.
+  frozen-sidecar:
+    name: frozen sidecar
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -e . pyinstaller
+
+      - name: Freeze and run it
+        run: python scripts/build_sidecar.py
+
+      - name: It serves, not just imports
+        shell: bash
+        run: |
+          BIN=apps/desktop/resources/sidecar/grading-pipeline-sidecar
+          GRADING_PIPELINE_HOME="$(mktemp -d)" "$BIN" > out.log 2> err.log &
+          PID=$!
+          for _ in $(seq 1 60); do
+            grep -q port out.log 2>/dev/null && break
+            sleep 1
+          done
+          PORT=$(python -c "import json;print(json.load(open('out.log'))['port'])" 2>/dev/null)
+          if [ -z "$PORT" ]; then cat err.log; exit 1; fi
+          curl -sf "http://127.0.0.1:$PORT/health" | tee /dev/stderr | grep -q '"ok": true'
+          kill $PID 2>/dev/null || true
+          echo "frozen sidecar served on $PORT"

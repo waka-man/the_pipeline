@@ -43,13 +43,11 @@ function candidates(root) {
   const list = [];
 
   if (app.isPackaged) {
-    // A bundled runtime ships as resources/sidecar with its venv inside.
-    const res = process.resourcesPath || '';
-    const isWin = process.platform === 'win32';
-    list.push(path.join(res, 'sidecar', '.venv', isWin ? 'Scripts' : 'bin',
-      isWin ? 'python.exe' : 'python'));
-    list.push(path.join(res, 'sidecar', 'python', isWin ? '' : 'bin',
-      isWin ? 'python.exe' : 'python3'));
+    // A packaged app ships the sidecar as a frozen binary in resources/sidecar,
+    // so there is no interpreter to find. Checked first: on a machine that also
+    // has a dev Python, that Python must not win over the shipped one.
+    const bundled = bundledSidecar();
+    if (bundled) list.push(bundled);
   }
 
   if (process.env.GRADING_PIPELINE_PYTHON) list.push(process.env.GRADING_PIPELINE_PYTHON);
@@ -72,6 +70,61 @@ function candidates(root) {
     list.push('py', 'python');
   }
   return list.filter(Boolean);
+}
+
+const BUNDLED_NAME = 'grading-pipeline-sidecar';
+
+/** Path of the frozen sidecar inside a packaged app, or null if not built. */
+function bundledSidecar() {
+  const res = process.resourcesPath || '';
+  if (!res) return null;
+  const exe = path.join(res, 'sidecar',
+    process.platform === 'win32' ? `${BUNDLED_NAME}.exe` : BUNDLED_NAME);
+  return fs.existsSync(exe) ? exe : null;
+}
+
+/**
+ * Decide what to run and how to launch it.
+ *
+ * A frozen binary and an interpreter need different arguments, so the launch
+ * shape travels with the choice rather than being assembled from a bare path.
+ */
+function resolveSidecar() {
+  if (app.isPackaged) {
+    const exe = bundledSidecar();
+    if (!exe) {
+      throw new Error(
+        `The packaged app is missing its sidecar at resources/sidecar/${BUNDLED_NAME}. ` +
+        'It was built without one; rebuild with scripts/build_sidecar.py first.'
+      );
+    }
+    const probe = spawnSync(exe, ['--selftest'], { encoding: 'utf8', timeout: 60000 });
+    if (probe.error || probe.status !== 0) {
+      throw new Error(
+        'The bundled sidecar did not start.\n\n' +
+        `${exe}: ${(probe.stderr || probe.error?.message || `exit ${probe.status}`).trim()}`
+      );
+    }
+    return { exe, argv: [] };
+  }
+
+  const found = interpreterWithSidecar();
+  if (!found) {
+    throw new Error(
+      'Could not find a Python runtime with the sidecar importable.\n\n' +
+      'Set GRADING_PIPELINE_PYTHON to an interpreter that can import pipeline.server.'
+    );
+  }
+  const { exe, codeRoot } = found;
+  return {
+    exe,
+    argv: ['-c', [
+      'import sys',
+      `sys.path.insert(0, ${JSON.stringify(codeRoot)})`,
+      'from grading_sidecar import serve',
+      'serve()',
+    ].join('\n')],
+  };
 }
 
 function interpreterWithSidecar() {
@@ -99,24 +152,8 @@ function portFor(url) {
 }
 
 async function startSidecar() {
-  const found = interpreterWithSidecar();
-  if (!found) {
-    throw new Error(
-      'Could not find a Python runtime with the sidecar importable.\n\n' +
-      'Set GRADING_PIPELINE_PYTHON to an interpreter that can import pipeline.server.'
-    );
-  }
-
-  const { exe, codeRoot } = found;
-  sidecar = spawn(exe, ['-c', [
-    'import sys, json',
-    `sys.path.insert(0, ${JSON.stringify(codeRoot)})`,
-    'from pipeline.server import serve',
-    'httpd, port = serve()',
-    "print(json.dumps({'port': port}), flush=True)",
-    'import time',
-    'while True: time.sleep(3600)',
-  ].join('\n')], {
+  const { exe, argv } = resolveSidecar();
+  sidecar = spawn(exe, argv, {
     env: {
       ...process.env,
       PYTHONUNBUFFERED: '1',

@@ -7,13 +7,16 @@
   "scripts": {
     "start": "electron .",
     "dev": "GRADING_PIPELINE_DEV=1 electron .",
-    "test": "node test/main.test.js"
+    "test": "node test/main.test.js",
+    "build": "electron-builder",
+    "build:dir": "electron-builder --dir"
   },
   "devDependencies": {
-    "electron": "^33.0.0"
+    "electron": "^33.0.0",
+    "electron-builder": "^25.1.8"
   },
   "build": {
-    "appId": "org.alu.gradingpipeline",
+    "appId": "org.gradepipeline.desktop",
     "productName": "Grading Pipeline",
     "files": [
       "main.js",
@@ -42,9 +45,23 @@
     },
     "linux": {
       "target": [
-        "AppImage"
+        "AppImage",
+        "deb"
       ],
       "category": "Education"
-    }
+    },
+    "directories": {
+      "output": "dist"
+    },
+    "artifactName": "${productName}-${version}-${os}-${arch}.${ext}"
+  },
+  "author": {
+    "name": "waka-man",
+    "email": "waka-man@users.noreply.github.com"
+  },
+  "homepage": "https://github.com/waka-man/the_pipeline",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/waka-man/the_pipeline.git"
   }
 }
