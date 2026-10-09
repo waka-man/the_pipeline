@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import queue
 import threading
+import time
 import traceback
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -185,38 +186,58 @@ class AppState:
         """Follow opencode's event stream for the duration of a grading job.
 
         `OpenCodeServer.events` existed but was never called, so there was no way
-        to see the agent work. Deltas are deliberately not logged: a reasoning
-        model streams thousands of them and the panel would be unreadable. Text
-        parts and tool calls are the useful signal.
+        to see the agent work.
+
+        The stream is supervised rather than opened once. A single open is not
+        enough: the connection can fail outright, and the Grader deliberately
+        restarts opencode when a provider refuses a large output budget, which
+        moves the server onto a new port and leaves the old stream pointing at
+        nothing. Without a reconnect the log goes permanently quiet after the
+        first such event, which looks exactly like a bug in the feature.
+
+        Deltas are deliberately not logged: a reasoning model streams thousands
+        of them and the panel would be unreadable. Tool calls and completed text
+        parts are the useful signal.
         """
         import queue as _queue
 
         stop = threading.Event()
-        out: _queue.Queue = _queue.Queue()
-        try:
-            srv.events(stop, out)
-        except Exception:
-            return stop
 
-        def drain() -> None:
+        def supervise() -> None:
+            backoff = 0.5
             while not stop.is_set():
+                out: _queue.Queue = _queue.Queue()
                 try:
-                    ev = out.get(timeout=0.5)
-                except Exception:
+                    srv.events(stop, out)
+                except Exception as exc:
+                    self.bus.emit("agent.log", {
+                        "message": f"agent log unavailable: {type(exc).__name__}"})
+                    time.sleep(backoff)
                     continue
-                if "__error__" in ev:
-                    continue
-                try:
-                    line = self._agent_log_line(ev)
-                except Exception:
-                    continue
-                if line is None:
-                    continue
-                row_id, text = line
-                self.record_agent_output(row_id, text)
-                self.bus.emit("agent.log", {"submission_row_id": row_id, "line": text})
+                while not stop.is_set():
+                    try:
+                        ev = out.get(timeout=0.5)
+                    except Exception:
+                        continue
+                    if ev.get("__error__"):
+                        # The stream ended. Back off and reopen, which picks up
+                        # both a transient failure and a restarted server.
+                        break
+                    try:
+                        line = self._agent_log_line(ev)
+                    except Exception:
+                        continue
+                    if line is None:
+                        continue
+                    row_id, text = line
+                    self.record_agent_output(row_id, text)
+                    self.bus.emit("agent.log", {"submission_row_id": row_id, "line": text})
+                if stop.is_set():
+                    return
+                time.sleep(backoff)
+                backoff = min(backoff * 2, 5.0)
 
-        threading.Thread(target=drain, name="agent-log", daemon=True).start()
+        threading.Thread(target=supervise, name="agent-log", daemon=True).start()
         return stop
 
     def opencode_env(self) -> dict[str, str]:

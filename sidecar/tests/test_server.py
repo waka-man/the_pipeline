@@ -625,3 +625,77 @@ def test_the_agent_log_is_bounded(live):
     lines = state.agent_logs[1]
     assert len(lines) == srv.AGENT_LOG_LINES
     assert lines[-1] == f"line {srv.AGENT_LOG_LINES + 249}", "kept the wrong tail"
+
+
+def test_the_agent_log_reconnects_when_the_stream_drops(live):
+    """A single stream open is not enough to keep the log alive.
+
+    The Grader restarts opencode when a provider refuses a large output budget,
+    which moves the server to a new port and leaves the old stream pointing at
+    nothing. With no reconnect the panel goes permanently quiet after the first
+    such event, which reads as a broken feature rather than a dropped connection.
+    """
+    _base, state, _fake, _spec = live
+    state.session_rows["ses_a"] = 1
+
+    class FlakyServer:
+        """Serves one batch, then drops the stream like a restarted server."""
+
+        def __init__(self):
+            self.opens = 0
+
+        def events(self, stop, out, directory=None):
+            self.opens += 1
+            n = self.opens
+
+            def feed():
+                out.put({"type": "message.part.updated",
+                         "properties": {"sessionID": "ses_a",
+                                        "part": {"type": "tool", "tool": f"read{n}"}}})
+                out.put({"__error__": "connection reset"})
+
+            threading.Thread(target=feed, daemon=True).start()
+            return threading.Thread(target=lambda: None, daemon=True)
+
+    srv_ = FlakyServer()
+    stop = state.start_agent_log(srv_)
+    try:
+        assert wait_for(lambda: srv_.opens >= 3, timeout=10), \
+            f"the stream was not reopened (opened {srv_.opens}x)"
+        lines = state.agent_logs.get(1, [])
+        assert any("read1" in x for x in lines), f"first batch missing: {lines}"
+        assert any("read2" in x for x in lines), f"second batch missing: {lines}"
+        # Bounded, so a long run cannot grow this without limit.
+        assert len(lines) <= srv.AGENT_LOG_LINES
+    finally:
+        stop.set()
+
+
+def test_agent_log_maps_real_opencode_event_shapes(live):
+    """Recorded from a live opencode server, not invented.
+
+    Every event carries properties.sessionID; tool calls and text arrive as
+    message.part.updated; the turn ends with session.idle.
+    """
+    _base, state, _fake, _spec = live
+    state.session_rows["ses_x"] = 3
+    line = state._agent_log_line
+
+    assert line({"type": "message.part.updated", "properties": {
+        "sessionID": "ses_x", "part": {"type": "tool", "tool": "bash"}}}) == (3, "-> bash")
+    assert line({"type": "message.part.updated", "properties": {
+        "sessionID": "ses_x", "part": {"type": "text", "text": "  reading  it \n"}}}) == (3, "reading it")
+    assert line({"type": "session.idle", "properties": {"sessionID": "ses_x"}}) == (3, "turn complete")
+    assert line({"type": "session.status", "properties": {
+        "sessionID": "ses_x", "status": {"type": "busy"}}}) == (3, "status: busy")
+
+    # Deltas, diffs and the parts this does not understand must stay out of the
+    # panel rather than flooding it.
+    for noise in (
+        {"type": "message.part.delta", "properties": {"sessionID": "ses_x", "delta": "tok"}},
+        {"type": "session.diff", "properties": {"sessionID": "ses_x", "diff": []}},
+        {"type": "message.part.updated", "properties": {
+            "sessionID": "ses_x", "part": {"type": "step-start"}}},
+        {"type": "server.heartbeat", "properties": {}},
+    ):
+        assert line(noise) is None, noise
