@@ -844,27 +844,39 @@ body {
 }
 
 /* ------------------------------------------------------------ slide-over
-   A panel that slides in from the right over the current view. Used for the
-   assignment list (so a long course list no longer forces a scroll) and for the
-   live agent log. Shared by both so they behave identically. */
+   A panel that opens over the content area. Used for the assignment list (so a
+   long course list no longer forces a scroll) and for the live agent log.
+
+   Centred over the working area rather than docked to the window edge: docked,
+   it covered the rubric aside and left the course list legible underneath, which
+   made it look like a second column rather than a dialog. */
 
 .slideover {
   position: fixed;
   inset: 0;
   display: flex;
-  justify-content: flex-end;
+  align-items: center;
+  justify-content: center;
+  padding: 6vh 24px;
   z-index: 40;
-  background: rgba(0, 0, 0, 0.42);
+  /* Opaque enough that the list behind is plainly dimmed, not still readable. */
+  background: rgba(4, 5, 8, 0.78);
+}
+
+:root[data-theme="light"] .slideover {
+  background: rgba(24, 26, 32, 0.6);
 }
 
 .slideover-panel {
-  width: min(560px, 92vw);
-  height: 100%;
+  width: min(760px, 100%);
+  max-height: 88vh;
   display: flex;
   flex-direction: column;
+  /* Fully solid. A translucent panel over a translucent scrim was unreadable. */
   background: var(--bg-1);
-  border-left: 1px solid var(--line);
-  box-shadow: -18px 0 48px rgba(0, 0, 0, 0.35);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  box-shadow: 0 28px 70px rgba(0, 0, 0, 0.55);
 }
 
 .slideover-head {
