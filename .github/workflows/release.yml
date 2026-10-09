@@ -23,7 +23,11 @@ jobs:
         include:
           - os: macos-latest
             label: mac arm64
-          - os: macos-13
+          # macos-13 was fully retired in December 2025. A job naming a
+          # retired label queues indefinitely instead of failing, so this has
+          # to be macos-15-intel. It is the last x86_64 image GitHub offers,
+          # available until roughly August 2027.
+          - os: macos-15-intel
             label: mac x64
           - os: windows-latest
             label: win x64
