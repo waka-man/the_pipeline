@@ -129,8 +129,12 @@ class AppState:
     controls: dict[str, "JobControl"] = field(default_factory=dict)
     # Ring buffer of recent agent output per submission, for the live log panel.
     agent_logs: dict[int, list[str]] = field(default_factory=dict)
-    # opencode session id -> submission row, so its event stream can be routed.
+    # opencode session id -> submission row, so its output can be routed.
     session_rows: dict[str, int] = field(default_factory=dict)
+    # session id -> (row id, workspace directory), the sessions being polled.
+    active_sessions: dict[str, tuple[int, str]] = field(default_factory=dict)
+    # session id -> part ids already written to the log, so nothing repeats.
+    agent_seen: dict[str, set[str]] = field(default_factory=dict)
 
     def client(self) -> CanvasClient:
         self.settings.check_canvas()
@@ -147,97 +151,63 @@ class AppState:
         if len(lines) > AGENT_LOG_LINES:
             del lines[: len(lines) - AGENT_LOG_LINES]
 
-    def _agent_log_line(self, ev: dict[str, Any]) -> tuple[int, str] | None:
-        """Turn one opencode event into a line for the live log panel.
+    def _format_part(self, part: dict[str, Any]) -> str | None:
+        """One line for a message part, or None if it is not worth showing.
 
-        Written against the event schema opencode actually emits rather than a
-        guess: every event carries properties.sessionID, text arrives as
-        message.part.updated with part.type "text", tool calls as
-        message.part.updated with part.type "tool", and the turn ends with
-        session.idle. Anything unrecognised is skipped rather than rendered, so a
-        schema change cannot flood the panel with noise.
+        Deltas are already gone by the time a part is read, so there is no way
+        to flood this the way a token stream would. Reasoning is included
+        because for a grader it is the most useful thing there is: it is the
+        agent reading the submission, and it arrives live.
         """
-        props = ev.get("properties") or {}
-        sid = props.get("sessionID")
-        if not sid:
-            return None
-        row_id = self.session_rows.get(sid)
-        if row_id is None:
-            return None
-        kind = ev.get("type") or ""
-        if kind == "message.part.updated":
-            part = props.get("part") or {}
-            ptype = part.get("type")
-            if ptype == "tool":
-                return row_id, f"-> {part.get('tool') or 'tool'}"
-            if ptype == "text":
-                text = " ".join((part.get("text") or "").split())
-                if text:
-                    return row_id, text[:240]
-            return None
-        if kind == "session.idle":
-            return row_id, "turn complete"
-        if kind == "session.status":
-            status = (props.get("status") or {}).get("type")
-            return (row_id, f"status: {status}") if status else None
+        kind = part.get("type") or ""
+        if kind == "tool":
+            name = part.get("tool") or "tool"
+            err = part.get("error") or {}
+            state = (err.get("name") or "error") if err else ""
+            return f"-> {name}" + (f" [{state}]" if state else "")
+        if kind == "reasoning":
+            text = " ".join((part.get("text") or "").split())
+            return ("thinking: " + text[:200]) if text else None
+        if kind == "text":
+            text = " ".join((part.get("text") or "").split())
+            return text[:240] if text else None
         return None
 
-    def start_agent_log(self, srv: OpenCodeServer) -> threading.Event:
-        """Follow opencode's event stream for the duration of a grading job.
+    def poll_agent_log(self, srv: OpenCodeServer, stop: threading.Event) -> None:
+        """Poll each active session and record parts the log has not seen.
 
-        `OpenCodeServer.events` existed but was never called, so there was no way
-        to see the agent work.
-
-        The stream is supervised rather than opened once. A single open is not
-        enough: the connection can fail outright, and the Grader deliberately
-        restarts opencode when a provider refuses a large output budget, which
-        moves the server onto a new port and leaves the old stream pointing at
-        nothing. Without a reconnect the log goes permanently quiet after the
-        first such event, which looks exactly like a bug in the feature.
-
-        Deltas are deliberately not logged: a reasoning model streams thousands
-        of them and the panel would be unreadable. Tool calls and completed text
-        parts are the useful signal.
+        Polling, not subscribing, and the reason is in OpenCodeServer.parts:
+        opencode's /event stream delivered only its opening frame and
+        heartbeats while a turn was demonstrably running, so the panel sat
+        empty for the entire grading run.
         """
-        import queue as _queue
-
-        stop = threading.Event()
-
-        def supervise() -> None:
-            backoff = 0.5
-            while not stop.is_set():
-                out: _queue.Queue = _queue.Queue()
+        while not stop.is_set():
+            for sid, (row_id, directory) in list(self.active_sessions.items()):
+                seen = self.agent_seen.setdefault(sid, set())
                 try:
-                    srv.events(stop, out)
-                except Exception as exc:
-                    self.bus.emit("agent.log", {
-                        "message": f"agent log unavailable: {type(exc).__name__}"})
-                    time.sleep(backoff)
+                    parts = srv.parts(sid, directory or None)
+                except Exception:
                     continue
-                while not stop.is_set():
+                for part in parts:
+                    pid = part["id"]
+                    if pid in seen:
+                        continue
+                    seen.add(pid)
                     try:
-                        ev = out.get(timeout=0.5)
+                        line = self._format_part(part)
                     except Exception:
                         continue
-                    if ev.get("__error__"):
-                        # The stream ended. Back off and reopen, which picks up
-                        # both a transient failure and a restarted server.
-                        break
-                    try:
-                        line = self._agent_log_line(ev)
-                    except Exception:
+                    if not line:
                         continue
-                    if line is None:
-                        continue
-                    row_id, text = line
-                    self.record_agent_output(row_id, text)
-                    self.bus.emit("agent.log", {"submission_row_id": row_id, "line": text})
-                if stop.is_set():
-                    return
-                time.sleep(backoff)
-                backoff = min(backoff * 2, 5.0)
+                    self.record_agent_output(row_id, line)
+                    self.bus.emit("agent.log", {"submission_row_id": row_id, "line": line})
+            stop.wait(1.5)
 
-        threading.Thread(target=supervise, name="agent-log", daemon=True).start()
+    def start_agent_log(self, srv: OpenCodeServer) -> threading.Event:
+        """Follow the agent's output for the duration of a grading job."""
+        stop = threading.Event()
+        threading.Thread(target=self.poll_agent_log, args=(srv, stop),
+                         name="agent-log", daemon=True).start()
         return stop
 
     def opencode_env(self) -> dict[str, str]:
@@ -611,14 +581,18 @@ def op_grade(state: AppState, run_id: int, body: dict[str, Any]) -> dict[str, An
             raise ApiError("No model selected.", 409)
         budget = state.choice.max_output_tokens if state.choice else config.DEFAULT_OUTPUT_BUDGET
         def emit_agent(event: str, data: dict[str, Any]) -> None:
+            sid = str(data.get("session_id") or "")
+            rid = data.get("submission_row_id")
             if event == "agent.start":
-                sid = str(data.get("session_id") or "")
-                rid = data.get("submission_row_id")
                 if sid and rid is not None:
                     state.session_rows[sid] = int(rid)
-                    state.record_agent_output(int(rid),
-                                              f"agent started ({data.get('model') or model}, "
-                                              f"attempt {data.get('attempt')})")
+                    state.active_sessions[sid] = (int(rid), str(data.get("directory") or ""))
+                    state.record_agent_output(
+                        int(rid), f"agent started ({data.get('model') or model}, "
+                                   f"attempt {data.get('attempt')})")
+            elif event in ("agent.done", "agent.error", "agent.retry") and sid:
+                state.active_sessions.pop(sid, None)
+                state.agent_seen.pop(sid, None)
             bus.emit(event, data)
 
         log_stop = state.start_agent_log(srv)

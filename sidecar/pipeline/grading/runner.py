@@ -169,13 +169,54 @@ class OpenCodeServer:
         data = err.get("data") or {}
         return data.get("message") or err.get("name")
 
+    def parts(self, session_id: str, directory: str | None = None) -> list[dict[str, Any]]:
+        """The session's message parts so far.
+
+        This, not opencode's /event stream, is what the live log reads from. The
+        stream proved unreliable in practice: against the same server, curl and
+        requests both received only the opening frame and heartbeats while the
+        turn was demonstrably running, so there was nothing to display. The REST
+        endpoint returns the reasoning and text parts as they are written, which
+        is the same information without depending on a long-lived connection
+        that a restarted server or a dropped socket can silently kill.
+        """
+        try:
+            r = requests.get(self.url(f"/session/{session_id}/message", directory), timeout=20)
+            if not r.ok:
+                return []
+            payload = r.json()
+        except Exception:
+            return []
+        out: list[dict[str, Any]] = []
+        for msg in (payload if isinstance(payload, list) else [payload]):
+            for part in (msg.get("parts") or []):
+                pid = part.get("id") or ""
+                if not pid:
+                    continue
+                out.append({
+                    "id": pid,
+                    "type": part.get("type") or "",
+                    "text": part.get("text") or "",
+                    "tool": part.get("tool") or "",
+                    "error": (part.get("state") or {}).get("error") or {},
+                })
+        return out
+
     def events(self, stop: threading.Event, out: queue.Queue,
                directory: str | None = None) -> threading.Thread:
         def run() -> None:
             try:
                 with requests.get(self.url("/event", directory), stream=True,
                                   timeout=(10, 3600)) as resp:
-                    for raw in resp.iter_lines(decode_unicode=True):
+                    # resp.raw.stream_lines, not resp.iter_lines. requests'
+                    # iter_lines sits on iter_content, which buffers instead of
+                    # yielding as the socket fills: against an endpoint that never
+                    # ends, that is an event stream that delivers nothing at all,
+                    # forever, with no error. Verified here - curl against the
+                    # same URL receives every event while requests received only
+                    # the opening frame and heartbeats. urllib3's stream_lines
+                    # exists for exactly this and yields per line.
+                    for raw in resp.raw.stream_lines(decode_unicode=True):
                         if stop.is_set():
                             return
                         if not raw or not raw.startswith("data:"):
@@ -364,6 +405,7 @@ class Grader:
         self.emit("agent.start", {
             "submission_row_id": submission_row_id, "student": unit.display_name,
             "session_id": session_id, "attempt": attempt_no, "model": self.model,
+            "directory": str(workspace),
         })
         response = self.server.prompt(
             session_id, message, system=system, agent=self.agent_name,
@@ -448,6 +490,7 @@ class Grader:
                 last_error = f"{type(exc).__name__}: {exc}"
                 self.store.finish_attempt(attempt_id, "error", session_id, last_error)
                 self.emit("agent.error", {"submission_row_id": submission_row_id,
+                                          "session_id": session_id,
                                           "message": last_error})
                 if attempt_no >= self.max_attempts:
                     self.store.set_submission_status(submission_row_id, "failed", last_error)
@@ -460,6 +503,7 @@ class Grader:
                 last_error = ("the agent finished without calling submit_scorecard")
                 self.store.finish_attempt(attempt_id, "no_scorecard", session_id, last_error)
                 self.emit("agent.warn", {"submission_row_id": submission_row_id,
+                                         "session_id": session_id,
                                          "message": last_error})
                 if attempt_no >= self.max_attempts:
                     self.store.set_submission_status(
@@ -484,6 +528,7 @@ class Grader:
                 self.store.set_submission_status(submission_row_id, "graded")
                 self.emit("agent.done", {
                     "submission_row_id": submission_row_id,
+                    "session_id": session_id,
                     "student": unit.display_name,
                     "earned": record["earned"], "possible": record["possible"],
                     "attempt": attempt_no,

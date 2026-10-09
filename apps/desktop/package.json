@@ -1,7 +1,7 @@
 {
   "name": "grading-pipeline",
   "productName": "Grading Pipeline",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Collect, grade, review and publish Canvas submissions.",
   "main": "main.js",
   "scripts": {

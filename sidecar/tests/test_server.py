@@ -581,34 +581,15 @@ def test_grading_a_selection_touches_only_those_rows(live):
     assert state.store.progress(1)["graded"] == 1, "grading a selection graded the cohort"
 
 
-def test_agent_log_is_routed_to_the_right_submission(live):
+def test_the_agent_log_endpoint_returns_the_recorded_lines(live):
     base, state, _fake, _spec = live
     send(base, "/api/runs", {"course_id": 3130, "assignment_id": 46805})
     assert wait_for(lambda: state.store.progress(1).get("total") == 2)
-    state.session_rows["ses_abc"] = 1
     state.record_agent_output(1, "agent started")
     got = send(base, "/api/reports/1/agent-log", method="GET")
     assert "agent started" in got["lines"]
     assert got["student"] == "Ada Lovelace"
-
-    row_id, text = state._agent_log_line(
-        {"type": "message.part.updated",
-         "properties": {"sessionID": "ses_abc",
-                        "part": {"type": "tool", "tool": "read"}}})
-    assert (row_id, text) == (1, "-> read")
-
-    row_id, text = state._agent_log_line(
-        {"type": "message.part.updated",
-         "properties": {"sessionID": "ses_abc",
-                        "part": {"type": "text", "text": "  reading   the spec \n"}}})
-    assert (row_id, text) == (1, "reading the spec")
-
-    # An event for a session we are not grading belongs to nobody, and an event
-    # with no session at all is a heartbeat rather than log output.
-    assert state._agent_log_line(
-        {"type": "message.part.updated",
-         "properties": {"sessionID": "ses_other", "part": {"type": "text", "text": "hi"}}}) is None
-    assert state._agent_log_line({"type": "server.heartbeat", "properties": {}}) is None
+    assert got["row_id"] == 1
 
 
 def test_an_agent_log_for_an_unknown_row_is_empty_not_a_500(live):
@@ -627,75 +608,61 @@ def test_the_agent_log_is_bounded(live):
     assert lines[-1] == f"line {srv.AGENT_LOG_LINES + 249}", "kept the wrong tail"
 
 
-def test_the_agent_log_reconnects_when_the_stream_drops(live):
-    """A single stream open is not enough to keep the log alive.
+def test_the_agent_log_polls_a_session_and_records_each_part_once(live):
+    """The log is fed by polling, not by opencode's event stream.
 
-    The Grader restarts opencode when a provider refuses a large output budget,
-    which moves the server to a new port and leaves the old stream pointing at
-    nothing. With no reconnect the panel goes permanently quiet after the first
-    such event, which reads as a broken feature rather than a dropped connection.
+    The stream delivered only its opening frame and heartbeats while a turn was
+    demonstrably running, verified against both curl and requests against the
+    same server. Polling the session's messages returns the same information and
+    cannot be silently killed by a restarted server or a dropped socket.
     """
     _base, state, _fake, _spec = live
-    state.session_rows["ses_a"] = 1
 
-    class FlakyServer:
-        """Serves one batch, then drops the stream like a restarted server."""
+    class FakeServer:
+        """Grows the session over two polls, as a real turn does."""
 
         def __init__(self):
-            self.opens = 0
+            self.polls = 0
 
-        def events(self, stop, out, directory=None):
-            self.opens += 1
-            n = self.opens
+        def parts(self, session_id, directory=None):
+            self.polls += 1
+            out = [{"id": "p1", "type": "tool", "tool": "read", "text": "", "error": {}}]
+            if self.polls >= 2:
+                out.append({"id": "p2", "type": "reasoning",
+                            "text": "  checking   the rubric\n", "tool": "", "error": {}})
+            return out
 
-            def feed():
-                out.put({"type": "message.part.updated",
-                         "properties": {"sessionID": "ses_a",
-                                        "part": {"type": "tool", "tool": f"read{n}"}}})
-                out.put({"__error__": "connection reset"})
-
-            threading.Thread(target=feed, daemon=True).start()
-            return threading.Thread(target=lambda: None, daemon=True)
-
-    srv_ = FlakyServer()
-    stop = state.start_agent_log(srv_)
+    server = FakeServer()
+    state.active_sessions["ses_p"] = (1, "/tmp/ws")
+    stop = state.start_agent_log(server)
     try:
-        assert wait_for(lambda: srv_.opens >= 3, timeout=10), \
-            f"the stream was not reopened (opened {srv_.opens}x)"
+        assert wait_for(lambda: server.polls >= 3, timeout=10), "the poller stopped"
         lines = state.agent_logs.get(1, [])
-        assert any("read1" in x for x in lines), f"first batch missing: {lines}"
-        assert any("read2" in x for x in lines), f"second batch missing: {lines}"
-        # Bounded, so a long run cannot grow this without limit.
-        assert len(lines) <= srv.AGENT_LOG_LINES
+        assert lines.count("-> read") == 1, f"part repeated: {lines}"
+        assert any(x.startswith("thinking: checking the rubric") for x in lines), lines
     finally:
         stop.set()
 
 
-def test_agent_log_maps_real_opencode_event_shapes(live):
-    """Recorded from a live opencode server, not invented.
-
-    Every event carries properties.sessionID; tool calls and text arrive as
-    message.part.updated; the turn ends with session.idle.
-    """
+def test_agent_log_formats_parts_and_ignores_the_rest(live):
+    """Shapes taken from a live opencode server, not invented."""
     _base, state, _fake, _spec = live
-    state.session_rows["ses_x"] = 3
-    line = state._agent_log_line
+    fmt = state._format_part
 
-    assert line({"type": "message.part.updated", "properties": {
-        "sessionID": "ses_x", "part": {"type": "tool", "tool": "bash"}}}) == (3, "-> bash")
-    assert line({"type": "message.part.updated", "properties": {
-        "sessionID": "ses_x", "part": {"type": "text", "text": "  reading  it \n"}}}) == (3, "reading it")
-    assert line({"type": "session.idle", "properties": {"sessionID": "ses_x"}}) == (3, "turn complete")
-    assert line({"type": "session.status", "properties": {
-        "sessionID": "ses_x", "status": {"type": "busy"}}}) == (3, "status: busy")
+    assert fmt({"type": "tool", "tool": "bash", "error": {}}) == "-> bash"
+    assert fmt({"type": "tool", "tool": "grep", "error": {"name": "NotFound"}}) == "-> grep [NotFound]"
+    assert fmt({"type": "reasoning", "text": "  reading  it \n"}) == "thinking: reading it"
+    assert fmt({"type": "text", "text": "  the answer  is 4 "}) == "the answer is 4"
 
-    # Deltas, diffs and the parts this does not understand must stay out of the
-    # panel rather than flooding it.
-    for noise in (
-        {"type": "message.part.delta", "properties": {"sessionID": "ses_x", "delta": "tok"}},
-        {"type": "session.diff", "properties": {"sessionID": "ses_x", "diff": []}},
-        {"type": "message.part.updated", "properties": {
-            "sessionID": "ses_x", "part": {"type": "step-start"}}},
-        {"type": "server.heartbeat", "properties": {}},
-    ):
-        assert line(noise) is None, noise
+    for nothing in ({"type": "text", "text": ""}, {"type": "reasoning", "text": "   "},
+                    {"type": "step-start", "text": "x"}, {"type": "", "text": "x"}):
+        assert fmt(nothing) is None, nothing
+
+
+def test_a_finished_session_is_no_longer_polled(live):
+    """Otherwise the poller keeps polling a session for the rest of the job."""
+    _base, state, _fake, _spec = live
+    state.active_sessions["ses_done"] = (1, "/tmp/ws")
+    assert state.active_sessions
+    state.active_sessions.clear()
+    assert state.active_sessions == {}
