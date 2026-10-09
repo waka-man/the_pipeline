@@ -168,6 +168,42 @@ jobs:
       - name: Freeze and run it
         run: python scripts/build_sidecar.py
 
+      # The asar failure mode: the renderer is served by the sidecar, a separate
+      # process with a real filesystem view, while a packaged renderer lives
+      # inside a virtual archive only Electron can read. Every route returned 200
+      # in a checkout and 404 on an install, and nothing caught it because this
+      # job pointed at the checkout. Building the real desktop app and asserting
+      # the renderer directory is unpacked is the only place that difference
+      # shows up.
+      - name: The packaged renderer is readable by the sidecar
+        run: |
+          npm --prefix apps/desktop ci
+          npx --prefix apps/desktop electron-builder --dir
+          RES=apps/desktop/dist/linux-unpacked/resources
+          test -f "$RES/app.asar.unpacked/renderer/index.html" || {
+            echo "renderer is not unpacked: the sidecar cannot read it"; exit 1; }
+          echo "renderer unpacked at $RES/app.asar.unpacked/renderer"
+
+      - name: The packaged app serves the UI
+        shell: bash
+        run: |
+          RES=apps/desktop/dist/linux-unpacked/resources
+          GRADING_PIPELINE_HOME="$(mktemp -d)" \
+          GRADING_PIPELINE_RENDERER="$PWD/$RES/app.asar.unpacked/renderer" \
+            "$RES/sidecar/grading-pipeline-sidecar" > packaged.log 2>&1 &
+          for _ in $(seq 1 60); do
+            grep -q port packaged.log 2>/dev/null && break
+            sleep 1
+          done
+          PORT=$(python -c "import json;print(json.load(open('packaged.log'))['port'])" 2>/dev/null)
+          if [ -z "$PORT" ]; then cat packaged.log; exit 1; fi
+          for path in /app/ /app/app.js /app/styles.css /app/ui.js; do
+            printf "%-16s " "$path"
+            curl -sf -o /dev/null -w "HTTP %{http_code}\n" "http://127.0.0.1:$PORT$path" \
+              || { echo FAILED; exit 1; }
+          done
+          kill %1 2>/dev/null || true
+
       # /health only proves the server booted. It is /app that actually delivers
       # the UI, and a packaged app shipped for weeks with /app returning 404
       # because the renderer was unreachable inside the asar. Check both, and

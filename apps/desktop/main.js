@@ -168,7 +168,12 @@ async function startSidecar() {
       ...process.env,
       PYTHONUNBUFFERED: '1',
       GRADING_PIPELINE_HOME: app.getPath('userData'),
-      GRADING_PIPELINE_RENDERER: path.join(__dirname, 'renderer'),
+      // The renderer is unpacked from the asar because the sidecar serves it and
+      // cannot read inside a virtual archive. Inside a packaged app __dirname is
+      // the asar itself, so point at the unpacked sibling instead.
+      GRADING_PIPELINE_RENDERER: path.join(
+        app.isPackaged ? path.join(process.resourcesPath, 'app.asar.unpacked') : __dirname,
+        'renderer'),
       // Only set when one actually shipped. Leaving it unset makes the sidecar
       // fall back to opencode on PATH, which is what a developer build wants.
       ...(bundledOpencode() ? { GRADING_PIPELINE_OPENCODE: bundledOpencode() } : {}),

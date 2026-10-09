@@ -67,7 +67,10 @@
     "directories": {
       "output": "dist"
     },
-    "artifactName": "${productName}-${version}-${os}-${arch}.${ext}"
+    "artifactName": "${productName}-${version}-${os}-${arch}.${ext}",
+    "asarUnpack": [
+      "renderer/**"
+    ]
   },
   "author": {
     "name": "waka-man",
