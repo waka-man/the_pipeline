@@ -11,20 +11,24 @@ permissions:
 
 jobs:
   # PyInstaller cannot cross-compile, so the sidecar is frozen once per OS and
-  # handed to electron-builder on that same runner.
+  # handed to electron-builder on that same runner. That constraint is also why
+  # macOS appears twice: each architecture needs its own frozen sidecar, so an
+  # x64 build has to happen on an Intel runner rather than by passing --x64.
   build:
-    name: ${{ matrix.os }}
+    name: ${{ matrix.label }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         include:
           - os: macos-latest
-            artifact: mac
+            label: mac arm64
+          - os: macos-13
+            label: mac x64
           - os: windows-latest
-            artifact: win
+            label: win x64
           - os: ubuntu-latest
-            artifact: linux
+            label: linux x64
 
     steps:
       - uses: actions/checkout@v4
@@ -92,7 +96,14 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: apps/desktop/dist/*
+          # Only the installers. builder-debug.yml is a build log and the
+          # blockmap/latest*.yml files are electron-updater metadata, which is
+          # inert here because the app ships no updater.
+          files: |
+            apps/desktop/dist/*
+            !apps/desktop/dist/builder-debug.yml
+            !apps/desktop/dist/*.blockmap
+            !apps/desktop/dist/latest*.yml
 
   # Once signing credentials exist, macOS additionally needs notarization or
   # Gatekeeper refuses the app even when it is correctly signed. Kept separate

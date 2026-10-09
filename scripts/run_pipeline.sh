@@ -1,54 +1,33 @@
 #!/usr/bin/env bash
-# Run the full pipeline for one course/assignment:
-#   bootstrap -> collect -> grade -> render -> publish (dry run)
-#
-# Usage:
-#   scripts/run_pipeline.sh <course> <assignment> [extra grade flags...]
-#
-# Publish is a dry run. Re-run the publish command yourself with --yes once you
-# have read the reports.
+# Start the desktop app in dev mode. The app drives the whole pipeline itself:
+# bootstrap, collect, grade, render and publish are all done from its UI.
 set -euo pipefail
 
-if [ $# -lt 2 ]; then
-  echo "usage: $(basename "$0") <course> <assignment> [grade flags...]" >&2
-  exit 2
-fi
-
-COURSE="$1"
-ASSIGNMENT="$2"
-shift 2
-
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+APP="$ROOT/apps/desktop"
 
-if [ -x "$ROOT/.venv/bin/grading-pipeline" ]; then
-  GP=("$ROOT/.venv/bin/grading-pipeline")
-elif command -v grading-pipeline >/dev/null 2>&1; then
-  GP=(grading-pipeline)
-else
-  echo "grading-pipeline not found; run: pip install -e \".[dev]\"" >&2
+# Electron refuses to run as root, and `sudo ... --no-sandbox` gets past that
+# check only by breaking the GPU process, so catch it here with an explanation
+# instead of a stack of unrelated Chromium errors.
+if [ "$(id -u)" -eq 0 ]; then
+  echo "do not run the app as root; run this script as your normal user." >&2
+  echo "if the SUID sandbox complains, either:" >&2
+  echo "  sudo chown root:root $APP/node_modules/electron/dist/chrome-sandbox" >&2
+  echo "  sudo chmod 4755 $APP/node_modules/electron/dist/chrome-sandbox" >&2
+  echo "or pass --no-sandbox to this script." >&2
   exit 1
 fi
 
-step() { echo; echo "=== $* ==="; }
+if [ ! -x "$APP/node_modules/.bin/electron" ]; then
+  echo "electron not installed; running npm install in apps/desktop" >&2
+  (cd "$APP" && npm install)
+fi
 
-step "bootstrap $COURSE/$ASSIGNMENT"
-"${GP[@]}" bootstrap --course "$COURSE" --assignment "$ASSIGNMENT"
+# The sidecar runs from the checkout's venv, not a frozen binary.
+if [ -z "${GRADING_PIPELINE_PYTHON:-}" ] && [ -x "$ROOT/.venv/bin/python" ]; then
+  export GRADING_PIPELINE_PYTHON="$ROOT/.venv/bin/python"
+fi
 
-step "collect"
-"${GP[@]}" collect --course "$COURSE" --assignment "$ASSIGNMENT"
-
-step "grade"
-"${GP[@]}" grade --course "$COURSE" --assignment "$ASSIGNMENT" "$@"
-
-step "render"
-"${GP[@]}" render --course "$COURSE" --assignment "$ASSIGNMENT"
-
-step "publish (dry run)"
-"${GP[@]}" publish --course "$COURSE" --assignment "$ASSIGNMENT"
-
-step "status"
-"${GP[@]}" status --course "$COURSE" --assignment "$ASSIGNMENT"
-
-echo
-echo "Reports are in the run directory. Review them, then publish for real:"
-echo "  ${GP[*]} publish --course $COURSE --assignment $ASSIGNMENT --yes"
+export GRADING_PIPELINE_DEV=1
+cd "$APP"
+exec ./node_modules/.bin/electron . "$@"

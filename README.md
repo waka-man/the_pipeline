@@ -56,9 +56,12 @@ the sidecar is bundled inside the app.
 
 | Platform | Artifact | Notes |
 | --- | --- | --- |
-| macOS | `.dmg` | Drag to Applications |
-| Windows | `-setup.exe` | NSIS installer |
-| Linux | `.AppImage`, `.deb` | `chmod +x` the AppImage, or install the `.deb` |
+| macOS (Apple silicon) | `-mac-arm64.dmg` | Drag to Applications |
+| macOS (Intel) | `-mac-x64.dmg` | Separate build: the frozen sidecar is native, not universal |
+| Windows | `-win-x64.exe` | NSIS installer |
+| Linux | `-linux-x86_64.AppImage`, `-linux-amd64.deb` | `chmod +x` the AppImage, or install the `.deb` |
+
+Windows on ARM is not built.
 
 **These builds are not code-signed.** macOS Gatekeeper will report the app as
 "damaged" and Windows SmartScreen will warn about an unknown publisher. Both are
