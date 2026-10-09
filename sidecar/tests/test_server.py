@@ -296,14 +296,15 @@ def test_publish_writes_the_rubric_assessment_once_confirmed(live):
     assert wait_for(lambda: state.store.report_for(1))
 
     send(base, "/api/runs/1/publish", {"row_ids": [1], "confirm": True})
-    assert wait_for(lambda: len(fake.published) == 1), state.job_errors
+    # The fake client records the call before the job commits the publication,
+    # so wait on the committed row rather than on the call, or this races.
+    assert wait_for(lambda: state.store.already_published(1)), state.job_errors
     written = fake.published[0]
     assert written["user_id"] == 7
     assert "rubric_assessment" in written
     first = spec.criteria[0].canvas_criterion_id
     assert "points" in written["rubric_assessment"][first]
     assert "comments" in written["rubric_assessment"][first]
-    assert state.store.already_published(1) is True
 
 
 def test_publish_without_any_graded_work_plans_nothing(live):

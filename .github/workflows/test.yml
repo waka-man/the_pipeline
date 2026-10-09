@@ -44,8 +44,11 @@ jobs:
         run: python -m pytest sidecar/tests -q
 
       # Guards the guarantee that generated artefacts do not vary by host.
+      # Compared against chr(10) rather than an escape literal: the default
+      # shell on windows-latest is PowerShell, which does not treat \ as an
+      # escape inside double quotes, so '\n' arrives at Python as backslash-n.
       - name: Newlines are platform-independent
-        run: python -c "from pipeline.config import NEWLINE; assert NEWLINE == '\\n', NEWLINE"
+        run: python -c "from pipeline.config import NEWLINE; assert NEWLINE == chr(10), repr(NEWLINE)"
 
       - name: Coverage
         run: |
