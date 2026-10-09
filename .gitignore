@@ -18,3 +18,6 @@ apps/desktop/resources/
 
 # opencode bundled into the packaged app
 apps/desktop/resources/opencode/
+
+# Scratch prefix used by `npm run fetch:opencode`
+apps/desktop/.opencode/

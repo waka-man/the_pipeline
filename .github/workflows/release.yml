@@ -5,11 +5,49 @@ on:
   push:
     tags: ["v*"]
   workflow_dispatch:
+    inputs:
+      platform:
+        description: "Which target to build. macOS costs 10x a Linux minute, so building one platform is much cheaper than all four."
+        type: choice
+        default: all
+        options:
+          - all
+          - linux
+          - windows
+          - mac-arm64
+          - mac-x64
 
 permissions:
   contents: write
 
 jobs:
+  # Chooses the matrix. Exists so a single target can be rebuilt without paying
+  # for four: macOS minutes are charged at 10x, so "just give me Windows" is a
+  # quarter of the cost of the whole release.
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.pick.outputs.matrix }}
+    steps:
+      - id: pick
+        env:
+          WANT: ${{ inputs.platform || 'all' }}
+        run: |
+          set -euo pipefail
+          full='[
+            {"os":"macos-latest","label":"mac arm64","key":"mac-arm64"},
+            {"os":"macos-15-intel","label":"mac x64","key":"mac-x64"},
+            {"os":"windows-latest","label":"win x64","key":"windows"},
+            {"os":"ubuntu-latest","label":"linux x64","key":"linux"}
+          ]'
+          if [ "$WANT" = "all" ]; then
+            echo "matrix=$full" >> "$GITHUB_OUTPUT"
+          else
+            picked=$(printf '%s' "$full" | python3 -c "import json,sys; k=sys.argv[1]; print(json.dumps([e for e in json.load(sys.stdin) if e['key']==k]))" "$WANT")
+            echo "matrix=$picked" >> "$GITHUB_OUTPUT"
+          fi
+          echo "building: $WANT"
+
   # PyInstaller cannot cross-compile, so the sidecar is frozen once per OS and
   # handed to electron-builder on that same runner. That constraint is also why
   # macOS appears twice: each architecture needs its own frozen sidecar, so an
@@ -17,22 +55,10 @@ jobs:
   build:
     name: ${{ matrix.label }}
     runs-on: ${{ matrix.os }}
+    needs: plan
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - os: macos-latest
-            label: mac arm64
-          # macos-13 was fully retired in December 2025. A job naming a
-          # retired label queues indefinitely instead of failing, so this has
-          # to be macos-15-intel. It is the last x86_64 image GitHub offers,
-          # available until roughly August 2027.
-          - os: macos-15-intel
-            label: mac x64
-          - os: windows-latest
-            label: win x64
-          - os: ubuntu-latest
-            label: linux x64
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
 
     steps:
       - uses: actions/checkout@v4
