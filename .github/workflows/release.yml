@@ -69,15 +69,22 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p apps/desktop/resources/opencode
+          name=opencode
+          [ "$RUNNER_OS" = "Windows" ] && name=opencode.exe
+          dest="apps/desktop/resources/opencode/$name"
+          bin="$RUNNER_TEMP/oc/node_modules/opencode-ai/bin"
           if npm install --prefix "$RUNNER_TEMP/oc" --no-audit --no-fund \
                "opencode-ai@${OPENCODE_VERSION}"; then
-            src=$(ls "$RUNNER_TEMP/oc/node_modules/opencode-ai/bin/" | head -1)
-            name=opencode
-            [ "$RUNNER_OS" = "Windows" ] && name=opencode.exe
-            cp "$RUNNER_TEMP/oc/node_modules/opencode-ai/bin/$src" \
-               "apps/desktop/resources/opencode/$name"
-            chmod +x "apps/desktop/resources/opencode/$name"
-            echo "bundled $src as $name ($(du -h "apps/desktop/resources/opencode/$name" | cut -f1))"
+            # find rather than ls: the payload's name is not guaranteed to be
+            # tidy, and this is the one place a shell glob would bite.
+            src=$(find "$bin" -maxdepth 1 -type f | head -1)
+            if [ -z "$src" ]; then
+              echo "::error::opencode-ai installed but shipped no binary"
+              exit 1
+            fi
+            cp "$src" "$dest"
+            chmod +x "$dest"
+            echo "bundled $(basename "$src") as $name ($(du -h "$dest" | cut -f1))"
             echo "present=true" >> "$GITHUB_OUTPUT"
           else
             echo "::error::could not fetch opencode; refusing to publish a release that needs a separate install"
@@ -91,8 +98,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          BIN=$(ls apps/desktop/resources/opencode/)
-          apps/desktop/resources/opencode/"$BIN" --version
+          name=opencode
+          [ "$RUNNER_OS" = "Windows" ] && name=opencode.exe
+          "apps/desktop/resources/opencode/$name" --version
 
       # Signing is opt-in, and the opt-in cannot be expressed in a step `env:`
       # block. GitHub renders an absent secret as an empty string rather than
