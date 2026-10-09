@@ -1,0 +1,153 @@
+{
+  "body": {
+    "button_display": "numeric",
+    "context_id": 3130,
+    "context_type": "Course",
+    "data": [
+      {
+        "criterion_use_range": null,
+        "description": "Correct extraction of required data types",
+        "id": "_753",
+        "ignore_for_scoring": null,
+        "long_description": "Regex patterns correctly identify the required data types from the input.",
+        "mastery_points": null,
+        "points": 9.0,
+        "ratings": [
+          {
+            "criterion_id": "_753",
+            "description": "Full Marks",
+            "id": "blank",
+            "long_description": null,
+            "points": 9.0
+          },
+          {
+            "criterion_id": "_753",
+            "description": "No Marks",
+            "id": "blank_2",
+            "long_description": null,
+            "points": 0.0
+          }
+        ],
+        "title": "Correct extraction of required data types"
+      },
+      {
+        "criterion_use_range": null,
+        "description": "Handling of edge cases and realistic variations",
+        "id": "_7607",
+        "ignore_for_scoring": null,
+        "long_description": "Program works with real-world variations and non-trivial inputs (e.g., spacing, punctuation, mixed formats).",
+        "mastery_points": null,
+        "points": 4.0,
+        "ratings": [
+          {
+            "criterion_id": "_7607",
+            "description": "Full Marks",
+            "id": "_1123",
+            "long_description": null,
+            "points": 4.0
+          },
+          {
+            "criterion_id": "_7607",
+            "description": "No Marks",
+            "id": "_7189",
+            "long_description": null,
+            "points": 0.0
+          }
+        ],
+        "title": "Handling of edge cases and realistic variations"
+      },
+      {
+        "criterion_use_range": null,
+        "description": "Security awareness and handling of unsafe input",
+        "id": "_2500",
+        "ignore_for_scoring": null,
+        "long_description": "Malicious, malformed, or injection-like inputs are rejected or safely ignored. Sensitive data is protected.",
+        "mastery_points": null,
+        "points": 6.0,
+        "ratings": [
+          {
+            "criterion_id": "_2500",
+            "description": "Full Marks",
+            "id": "_9257",
+            "long_description": null,
+            "points": 6.0
+          },
+          {
+            "criterion_id": "_2500",
+            "description": "No Marks",
+            "id": "_3350",
+            "long_description": null,
+            "points": 0.0
+          }
+        ],
+        "title": "Security awareness and handling of unsafe input"
+      },
+      {
+        "criterion_use_range": null,
+        "description": "Input design and realism",
+        "id": "_4568",
+        "ignore_for_scoring": null,
+        "long_description": "Sample inputs are realistic and resemble standard implementations of the data types.",
+        "mastery_points": null,
+        "points": 4.0,
+        "ratings": [
+          {
+            "criterion_id": "_4568",
+            "description": "Full Marks",
+            "id": "_9081",
+            "long_description": null,
+            "points": 4.0
+          },
+          {
+            "criterion_id": "_4568",
+            "description": "No Marks",
+            "id": "_2624",
+            "long_description": null,
+            "points": 0.0
+          }
+        ],
+        "title": "Input design and realism"
+      },
+      {
+        "criterion_use_range": null,
+        "description": "Code clarity, comments, and documentation",
+        "id": "_7796",
+        "ignore_for_scoring": null,
+        "long_description": "Code is readable, well-commented, and explains the regex and validation logic clearly.",
+        "mastery_points": null,
+        "points": 2.0,
+        "ratings": [
+          {
+            "criterion_id": "_7796",
+            "description": "Full Marks",
+            "id": "_7760",
+            "long_description": null,
+            "points": 2.0
+          },
+          {
+            "criterion_id": "_7796",
+            "description": "No Marks",
+            "id": "_2380",
+            "long_description": null,
+            "points": 0.0
+          }
+        ],
+        "title": "Code clarity, comments, and documentation"
+      }
+    ],
+    "free_form_criterion_comments": false,
+    "hide_score_total": false,
+    "id": 16230,
+    "points_possible": 25.0,
+    "public": false,
+    "rating_order": "descending",
+    "read_only": false,
+    "reusable": false,
+    "title": "Some Rubric (1)"
+  },
+  "link": null,
+  "method": "GET",
+  "name": "rubric",
+  "path": "/courses/3130/rubrics/16230",
+  "status": 200
+}

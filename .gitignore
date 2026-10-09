@@ -1,0 +1,13 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+apps/desktop/node_modules/
+apps/desktop/dist/
+*.log
+
+# Build artefacts
+*.egg-info/
+build/
+dist/
+.sidecar/

@@ -1,0 +1,14 @@
+{
+  "body": {
+    "errors": [
+      {
+        "message": "The specified resource does not exist."
+      }
+    ]
+  },
+  "link": null,
+  "method": "GET",
+  "name": "assignment_missing",
+  "path": "/courses/3130/assignments/99999999",
+  "status": 404
+}

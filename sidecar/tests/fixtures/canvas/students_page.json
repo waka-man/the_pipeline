@@ -1,0 +1,379 @@
+{
+  "body": [
+    {
+      "created_at": "2025-12-30T03:01:53Z",
+      "id": 11729,
+      "integration_id": "<redacted>",
+      "login_id": "<redacted>",
+      "name": "Ines Fontaine",
+      "short_name": "Ines Fontaine",
+      "sis_user_id": "<redacted>",
+      "sortable_name": "Ines Ueda"
+    },
+    {
+      "created_at": "2026-01-03T03:02:31Z",
+      "id": 11795,
+      "integration_id": "<redacted>",
+      "login_id": "<redacted>",
+      "name": "Dara Alvarez",
+      "short_name": "Dara Alvarez",
+      "sis_user_id": "<redacted>",
+      "sortable_name": "Tariq Alvarez"
+    },
+    {
+      "created_at": "2026-01-17T03:02:27Z",
+      "id": 12137,
+      "integration_id": "<redacted>",
+      "login_id": "<redacted>",
+      "name": "Vera Fontaine",
+      "short_name": "Vera Fontaine",
+      "sis_user_id": "<redacted>",
+      "sortable_name": "Wes Quintero"
+    },
+    {
+      "created_at": "2026-01-17T03:02:37Z",
+      "id": 12139,
+      "integration_id": "<redacted>",
+      "login_id": "<redacted>",
+      "name": "Wes Yilmaz",
+      "short_name": "Wes Yilmaz",
+      "sis_user_id": "<redacted>",
+      "sortable_name": "Luka Vasquez"
+    },
+    {
+      "created_at": "2026-01-17T11:02:22Z",
+      "id": 12150,
+      "integration_id": "<redacted>",
+      "login_id": "<redacted>",
+      "name": "Pia Eriksen",
+      "short_name": "Pia Eriksen",
+      "sis_user_id": "<redacted>",
+      "sortable_name": "Tariq Petrov"
+    },
+    {
+      "created_at": "2026-01-14T16:02:15Z",
+      "id": 12034,
+      "integration_id": "<redacted>",
+      "login_id": "<redacted>",
+      "name": "Tariq Quintero",
+      "short_name": "Tariq Quintero",
+      "sis_user_id": "<redacted>",
+      "sortable_name": "Gita Haddad"
+    },
+    {
+      "created_at": "2026-01-04T11:02:01Z",
+      "id": 11813,
+      "integration_id": "<redacted>",
+      "login_id": "<redacted>",
+      "name": "Jonas Tanaka",
+      "short_name": "Jonas Tanaka",
+      "sis_user_id": "<redacted>",
+      "sortable_name": "Ada Bennett"
+    },
+    {
+      "created_at": "2026-01-03T03:02:54Z",
+      "id": 11802,
+      "integration_id": "<redacted>",
+      "login_id": "<redacted>",
+      "name": "Ines Eriksen",
+      "short_name": "Ines Eriksen",
+      "sis_user_id": "<redacted>",
+      "sortable_name": "Hugo Lindqvist"
+    },
+    {
+      "created_at": "2025-12-30T16:01:59Z",
+      "id": 11745,
+      "integration_id": "<redacted>",
+      "login_id": "<redacted>",
+      "name": "Quinn Vasquez",
+      "short_name": "Quinn Vasquez",
+      "sis_user_id": "<redacted>",
+      "sortable_name": "Dara Eriksen"
+    },
+    {
+      "created_at": "2026-01-14T16:02:33Z",
+      "id": 12042,
+      "integration_id": "<redacted>",
+      "login_id": "<redacted>",
+      "name": "Omar Lindqvist",
+      "short_name": "Omar Lindqvist",
+      "sis_user_id": "<redacted>",
+      "sortable_name": "Sana Weber"
+    },
+    {
+      "created_at": "2026-01-15T06:34:12Z",
+      "id": 12044,
+      "integration_id": "<redacted>",
+      "login_id": "<redacted>",
+      "name": "Omar Quintero",
+      "short_name": "Omar Quintero",
+      "sis_user_id": "<redacted>",
+      "sortable_name": "Eve Rossi"
+    },
+    {
+      "created_at": "2026-01-04T11:02:23Z",
+      "id": 11819,
+      "integration_id": "<redacted>",
+      "login_id": "<redacted>",
+      "name": "Luka Eriksen",
+      "short_name": "Luka Eriksen",
+      "sis_user_id": "<redacted>",
+      "sortable_name": "Zane Okonkwo"
+    },
+    {
+      "created_at": "2025-12-31T11:02:09Z",
+      "id": 11764,
+      "integration_id": "<redacted>",
+      "login_id": "<redacted>",
+      "name": "Bruno Rossi",
+      "short_name": "Bruno Rossi",
+      "sis_user_id": "<redacted>",
+      "sortable_name": "Quinn Fontaine"
+    },
+    {
+      "created_at": "2026-01-03T03:03:04Z",
+      "id": 11806,
+      "integration_id": "<redacted>",
+      "login_id": "<redacted>",
+      "name": "Ines Petrov",
+      "short_name": "Ines Petrov",
+      "sis_user_id": "<redacted>",
+      "sortable_name": "Dara Alvarez"
+    },
+    {
+      "created_at": "2026-01-13T07:02:00Z",
+      "id": 11983,
+      "integration_id": "<redacted>",
+      "login_id": "<redacted>",
+      "name": "Kira Jansen",
+      "short_name": "Kira Jansen",
+      "sis_user_id": "<redacted>",
+      "sortable_name": "Noor Alvarez"
+    },
+    {
+      "created_at": "2025-12-15T14:54:41Z",
+      "id": 11635,
+      "integration_id": "<redacted>",
+      "login_id": "<redacted>",
+      "name": "Quinn Vasquez",
+      "short_name": "Quinn Vasquez",
+      "sis_user_id": "<redacted>",
+      "sortable_name": "Quinn Moreau"
+    },
+    {
+      "created_at": "2026-01-14T11:02:12Z",
+      "id": 12014,
+      "integration_id": "<redacted>",
+      "login_id": "<redacted>",
+      "name": "Farid Rossi",
+      "short_name": "Farid Rossi",
+      "sis_user_id": "<redacted>",
+      "sortable_name": "Pia Castillo"
+    },
+    {
+      "created_at": "2026-01-03T03:02:42Z",
+      "id": 11799,
+      "integration_id": "<redacted>",
+      "login_id": "<redacted>",
+      "name": "Hugo Lindqvist",
+      "short_name": "Hugo Lindqvist",
+      "sis_user_id": "<redacted>",
+      "sortable_name": "Zane Gupta"
+    },
+    {
+      "created_at": "2026-01-02T16:02:19Z",
+      "id": 11776,
+      "integration_id": "<redacted>",
+      "login_id": "<redacted>",
+      "name": "Zane Nakamura",
+      "short_name": "Zane Nakamura",
+      "sis_user_id": "<redacted>",
+      "sortable_name": "Omar Haddad"
+    },
+    {
+      "created_at": "2026-01-20T11:36:41Z",
+      "id": 12163,
+      "integration_id": "<redacted>",
+      "login_id": "<redacted>",
+      "name": "Noor Rossi",
+      "short_name": "Noor Rossi",
+      "sis_user_id": "<redacted>",
+      "sortable_name": "Ada Yilmaz"
+    },
+    {
+      "created_at": "2025-12-23T03:02:07Z",
+      "id": 11658,
+      "integration_id": "<redacted>",
+      "login_id": "<redacted>",
+      "name": "Luka Castillo",
+      "short_name": "Luka Castillo",
+      "sis_user_id": "<redacted>",
+      "sortable_name": "Sana Moreau"
+    },
+    {
+      "created_at": "2026-01-08T16:02:22Z",
+      "id": 11931,
+      "integration_id": "<redacted>",
+      "login_id": "<redacted>",
+      "name": "Ada Eriksen",
+      "short_name": "Ada Eriksen",
+      "sis_user_id": "<redacted>",
+      "sortable_name": "Mira Alvarez"
+    },
+    {
+      "created_at": "2026-01-14T03:02:03Z",
+      "id": 12010,
+      "integration_id": "<redacted>",
+      "login_id": "<redacted>",
+      "name": "Wes Tanaka",
+      "short_name": "Wes Tanaka",
+      "sis_user_id": "<redacted>",
+      "sortable_name": "Dara Eriksen"
+    },
+    {
+      "created_at": "2026-01-04T11:02:11Z",
+      "id": 11814,
+      "integration_id": "<redacted>",
+      "login_id": "<redacted>",
+      "name": "Zane Nakamura",
+      "short_name": "Zane Nakamura",
+      "sis_user_id": "<redacted>",
+      "sortable_name": "Ines Haddad"
+    },
+    {
+      "created_at": "2026-01-02T16:02:36Z",
+      "id": 11781,
+      "integration_id": "<redacted>",
+      "login_id": "<redacted>",
+      "name": "Sana Lindqvist",
+      "short_name": "Sana Lindqvist",
+      "sis_user_id": "<redacted>",
+      "sortable_name": "Zane Weber"
+    },
+    {
+      "created_at": "2026-01-04T16:02:33Z",
+      "id": 11847,
+      "integration_id": "<redacted>",
+      "login_id": "<redacted>",
+      "name": "Ada Fontaine",
+      "short_name": "Ada Fontaine",
+      "sis_user_id": "<redacted>",
+      "sortable_name": "Sana Gupta"
+    },
+    {
+      "created_at": "2026-01-03T03:02:44Z",
+      "id": 11800,
+      "integration_id": "<redacted>",
+      "login_id": "<redacted>",
+      "name": "Hugo Moreau",
+      "short_name": "Hugo Moreau",
+      "sis_user_id": "<redacted>",
+      "sortable_name": "Vera Nakamura"
+    },
+    {
+      "created_at": "2026-01-08T09:39:48Z",
+      "id": 11923,
+      "integration_id": "<redacted>",
+      "login_id": "<redacted>",
+      "name": "Kira Silva",
+      "short_name": "Kira Silva",
+      "sis_user_id": "<redacted>",
+      "sortable_name": "Kira Ueda"
+    },
+    {
+      "created_at": "2026-01-12T16:02:27Z",
+      "id": 11977,
+      "integration_id": "<redacted>",
+      "login_id": "<redacted>",
+      "name": "Gita Okonkwo",
+      "short_name": "Gita Okonkwo",
+      "sis_user_id": "<redacted>",
+      "sortable_name": "Jonas Castillo"
+    },
+    {
+      "created_at": "2026-01-16T11:03:16Z",
+      "id": 12106,
+      "integration_id": "<redacted>",
+      "login_id": "<redacted>",
+      "name": "Uma Dubois",
+      "short_name": "Uma Dubois",
+      "sis_user_id": "<redacted>",
+      "sortable_name": "Mira Ibrahim"
+    },
+    {
+      "created_at": "2026-01-16T11:02:56Z",
+      "id": 12098,
+      "integration_id": "<redacted>",
+      "login_id": "<redacted>",
+      "name": "Quinn Okonkwo",
+      "short_name": "Quinn Okonkwo",
+      "sis_user_id": "<redacted>",
+      "sortable_name": "Vera Silva"
+    },
+    {
+      "created_at": "2026-01-04T11:02:14Z",
+      "id": 11816,
+      "integration_id": "<redacted>",
+      "login_id": "<redacted>",
+      "name": "Chi Moreau",
+      "short_name": "Chi Moreau",
+      "sis_user_id": "<redacted>",
+      "sortable_name": "Pia Ueda"
+    },
+    {
+      "created_at": "2025-12-25T07:02:24Z",
+      "id": 11716,
+      "integration_id": "<redacted>",
+      "login_id": "<redacted>",
+      "name": "Wes Ueda",
+      "short_name": "Wes Ueda",
+      "sis_user_id": "<redacted>",
+      "sortable_name": "Ines Ueda"
+    },
+    {
+      "created_at": "2026-01-14T11:02:33Z",
+      "id": 12021,
+      "integration_id": "<redacted>",
+      "login_id": "<redacted>",
+      "name": "Sana Dubois",
+      "short_name": "Sana Dubois",
+      "sis_user_id": "<redacted>",
+      "sortable_name": "Farid Petrov"
+    },
+    {
+      "created_at": "2026-01-13T16:02:32Z",
+      "id": 12007,
+      "integration_id": "<redacted>",
+      "login_id": "<redacted>",
+      "name": "Jonas Castillo",
+      "short_name": "Jonas Castillo",
+      "sis_user_id": "<redacted>",
+      "sortable_name": "Ines Moreau"
+    },
+    {
+      "created_at": "2026-01-16T11:03:19Z",
+      "id": 12108,
+      "integration_id": "<redacted>",
+      "login_id": "<redacted>",
+      "name": "Rami Jansen",
+      "short_name": "Rami Jansen",
+      "sis_user_id": "<redacted>",
+      "sortable_name": "Noor Bennett"
+    },
+    {
+      "created_at": "2026-10-08T06:11:12Z",
+      "id": 13857,
+      "integration_id": "<redacted>",
+      "login_id": "<redacted>",
+      "name": "Luka Quintero",
+      "short_name": "Luka Quintero",
+      "sis_user_id": "<redacted>",
+      "sortable_name": "Vera Vasquez"
+    }
+  ],
+  "link": null,
+  "method": "GET",
+  "name": "students_page",
+  "path": "/courses/3130/students?per_page=2&include[]=groups",
+  "status": 200
+}

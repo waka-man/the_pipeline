@@ -1,0 +1,29 @@
+[project]
+name = "grading-pipeline"
+version = "0.1.0"
+description = "Collect, grade, review and publish Canvas submissions with agents."
+requires-python = ">=3.11"
+dependencies = [
+    "pydantic>=2.0",
+    "pyyaml>=6.0",
+    "requests>=2.31",
+    "html2text>=2024.2.26",
+    "pymupdf4llm>=0.0.17",
+    "python-docx>=1.1",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+grading-pipeline = "pipeline.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["sidecar"]
+
+[tool.pytest.ini_options]
+testpaths = ["sidecar/tests"]

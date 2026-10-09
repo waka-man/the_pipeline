@@ -1,0 +1,24 @@
+{
+  "body": {
+    "avatar_url": "https://example.instructure.com/images/thumbnails/58026/okUBfJ7YSKYiPP69sLTZ2EanKioLKwTWpXAXLLmY",
+    "created_at": "2023-03-28T16:53:31Z",
+    "effective_locale": "en",
+    "first_name": "Uma",
+    "id": 1602,
+    "last_name": "Vera",
+    "locale": null,
+    "name": "Vera Vasquez",
+    "permissions": {
+      "can_update_avatar": true,
+      "can_update_name": false,
+      "limit_parent_app_web_access": false
+    },
+    "short_name": "Vera Vasquez",
+    "sortable_name": "Yara Castillo"
+  },
+  "link": null,
+  "method": "GET",
+  "name": "users_self",
+  "path": "/users/self",
+  "status": 200
+}

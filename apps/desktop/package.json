@@ -1,0 +1,50 @@
+{
+  "name": "grading-pipeline",
+  "productName": "Grading Pipeline",
+  "version": "0.1.0",
+  "description": "Collect, grade, review and publish Canvas submissions.",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dev": "GRADING_PIPELINE_DEV=1 electron .",
+    "test": "node test/main.test.js"
+  },
+  "devDependencies": {
+    "electron": "^33.0.0"
+  },
+  "build": {
+    "appId": "org.alu.gradingpipeline",
+    "productName": "Grading Pipeline",
+    "files": [
+      "main.js",
+      "preload.js",
+      "renderer/**"
+    ],
+    "extraResources": [
+      {
+        "from": "resources/sidecar",
+        "to": "sidecar",
+        "filter": [
+          "**/*"
+        ]
+      }
+    ],
+    "mac": {
+      "category": "public.app-category.education",
+      "target": [
+        "dmg"
+      ]
+    },
+    "win": {
+      "target": [
+        "nsis"
+      ]
+    },
+    "linux": {
+      "target": [
+        "AppImage"
+      ],
+      "category": "Education"
+    }
+  }
+}

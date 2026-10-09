@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8" />
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'" />
+  <title>Grading Pipeline</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="shell">
+
+    <header class="topbar">
+      <div class="wordmark">grading&nbsp;pipeline <span class="dim">/ <span id="run-label">setup</span></span></div>
+      <div class="topbar-run" id="topbar-run"></div>
+      <div class="topbar-actions">
+        <span id="model-chip"></span>
+        <button class="btn" data-size="sm" data-variant="ghost" id="theme-toggle"
+                title="Toggle theme (Cmd/Ctrl+Shift+D)">light</button>
+      </div>
+    </header>
+
+    <nav class="spine" aria-label="Stages">
+      <div class="spine-label">Pipeline</div>
+      <ol class="stages" id="stages"></ol>
+      <div class="spine-foot">
+        <div id="spine-meta"></div>
+        <button id="restart-sidecar" title="Restart the pipeline service">Restart service</button>
+      </div>
+    </nav>
+
+    <main class="main" id="main" tabindex="-1"></main>
+
+    <aside class="aside">
+      <div class="aside-head">
+        <h2 id="aside-title">Activity</h2>
+        <button class="btn" data-size="sm" data-variant="ghost" id="aside-clear">clear</button>
+      </div>
+      <div class="aside-body">
+        <div class="console" id="console"></div>
+        <div id="aside-extra"></div>
+      </div>
+    </aside>
+
+  </div>
+
+  <div id="modal-root"></div>
+  <script type="module" src="app.js"></script>
+</body>
+</html>
