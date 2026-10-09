@@ -176,9 +176,12 @@ jobs:
       # the renderer directory is unpacked is the only place that difference
       # shows up.
       - name: The packaged renderer is readable by the sidecar
+        working-directory: apps/desktop
         run: |
-          npm --prefix apps/desktop ci
-          npx --prefix apps/desktop electron-builder --dir
+          npm ci
+          # npx ignores --prefix for locating package.json, so this has to run
+          # from the app directory.
+          npx electron-builder --dir
           RES=apps/desktop/dist/linux-unpacked/resources
           test -f "$RES/app.asar.unpacked/renderer/index.html" || {
             echo "renderer is not unpacked: the sidecar cannot read it"; exit 1; }
