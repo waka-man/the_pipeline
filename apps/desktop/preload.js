@@ -50,6 +50,9 @@ contextBridge.exposeInMainWorld('pipeline', {
     grade: (id, b) => req('POST', `/api/runs/${id}/grade`, b || {}),
     render: (id) => req('POST', `/api/runs/${id}/render`, {}),
     publish: (id, b) => req('POST', `/api/runs/${id}/publish`, b),
+    // Pause, resume or stop a long-running job.
+    control: (id, b) => req('POST', `/api/runs/${id}/control`, b),
+    agentLog: (row) => req('GET', `/api/reports/${row}/agent-log`),
     report: (row) => req('GET', `/api/reports/${row}`),
     saveReport: (row, markdown) => req('PUT', `/api/reports/${row}`, { markdown }),
   },

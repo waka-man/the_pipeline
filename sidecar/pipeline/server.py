@@ -32,6 +32,9 @@ from .report.render import render_report, report_filename
 from .store import Store
 from .config import NEWLINE as _NL
 
+# How much agent output to keep per submission for the live log panel.
+AGENT_LOG_LINES = 400
+
 CODE_ROOT = Path(__file__).resolve().parents[1]
 
 # The Electron renderer is served from here rather than from file://, because
@@ -122,10 +125,99 @@ class AppState:
     choice: Any = None
     jobs: dict[str, threading.Thread] = field(default_factory=dict)
     job_errors: dict[str, str] = field(default_factory=dict)
+    controls: dict[str, "JobControl"] = field(default_factory=dict)
+    # Ring buffer of recent agent output per submission, for the live log panel.
+    agent_logs: dict[int, list[str]] = field(default_factory=dict)
+    # opencode session id -> submission row, so its event stream can be routed.
+    session_rows: dict[str, int] = field(default_factory=dict)
 
     def client(self) -> CanvasClient:
         self.settings.check_canvas()
         return CanvasClient(self.settings.canvas_base_url, self.settings.canvas_api_token)
+
+    def record_agent_output(self, row_id: int, text: str) -> None:
+        """Keep a bounded tail of one submission's agent output.
+
+        Ring buffer rather than a growing list: a long agent run would otherwise
+        grow this without limit for every submission in a 150-row cohort.
+        """
+        lines = self.agent_logs.setdefault(row_id, [])
+        lines.extend(text.splitlines())
+        if len(lines) > AGENT_LOG_LINES:
+            del lines[: len(lines) - AGENT_LOG_LINES]
+
+    def _agent_log_line(self, ev: dict[str, Any]) -> tuple[int, str] | None:
+        """Turn one opencode event into a line for the live log panel.
+
+        Written against the event schema opencode actually emits rather than a
+        guess: every event carries properties.sessionID, text arrives as
+        message.part.updated with part.type "text", tool calls as
+        message.part.updated with part.type "tool", and the turn ends with
+        session.idle. Anything unrecognised is skipped rather than rendered, so a
+        schema change cannot flood the panel with noise.
+        """
+        props = ev.get("properties") or {}
+        sid = props.get("sessionID")
+        if not sid:
+            return None
+        row_id = self.session_rows.get(sid)
+        if row_id is None:
+            return None
+        kind = ev.get("type") or ""
+        if kind == "message.part.updated":
+            part = props.get("part") or {}
+            ptype = part.get("type")
+            if ptype == "tool":
+                return row_id, f"-> {part.get('tool') or 'tool'}"
+            if ptype == "text":
+                text = " ".join((part.get("text") or "").split())
+                if text:
+                    return row_id, text[:240]
+            return None
+        if kind == "session.idle":
+            return row_id, "turn complete"
+        if kind == "session.status":
+            status = (props.get("status") or {}).get("type")
+            return (row_id, f"status: {status}") if status else None
+        return None
+
+    def start_agent_log(self, srv: OpenCodeServer) -> threading.Event:
+        """Follow opencode's event stream for the duration of a grading job.
+
+        `OpenCodeServer.events` existed but was never called, so there was no way
+        to see the agent work. Deltas are deliberately not logged: a reasoning
+        model streams thousands of them and the panel would be unreadable. Text
+        parts and tool calls are the useful signal.
+        """
+        import queue as _queue
+
+        stop = threading.Event()
+        out: _queue.Queue = _queue.Queue()
+        try:
+            srv.events(stop, out)
+        except Exception:
+            return stop
+
+        def drain() -> None:
+            while not stop.is_set():
+                try:
+                    ev = out.get(timeout=0.5)
+                except Exception:
+                    continue
+                if "__error__" in ev:
+                    continue
+                try:
+                    line = self._agent_log_line(ev)
+                except Exception:
+                    continue
+                if line is None:
+                    continue
+                row_id, text = line
+                self.record_agent_output(row_id, text)
+                self.bus.emit("agent.log", {"submission_row_id": row_id, "line": text})
+
+        threading.Thread(target=drain, name="agent-log", daemon=True).start()
+        return stop
 
     def opencode_env(self) -> dict[str, str]:
         """Environment for the opencode process, including any configured key."""
@@ -164,31 +256,75 @@ class AppState:
 
 # -------------------------------------------------------------------- jobs
 
-def run_job(state: AppState, name: str, fn: Callable[[], Any]) -> None:
+class JobControl:
+    """Pause, resume and stop signals for one background job.
+
+    A 150-submission collection clones every repository and downloads every
+    attachment. Faculty need to be able to stop that, and to hold it while they
+    look at something, without killing the sidecar and losing their run.
+
+    Pausing waits *between* units rather than interrupting one: a half-cloned
+    repository or a half-written Markdown file is worse than finishing the
+    current student. So `wait_if_paused` blocks here, not inside the work.
+    """
+
+    def __init__(self) -> None:
+        self.resume = threading.Event()
+        self.resume.set()          # set means "running"
+        self.stopped = threading.Event()
+
+    @property
+    def paused(self) -> bool:
+        return not self.resume.is_set()
+
+    def pause(self) -> None:
+        self.resume.clear()
+
+    def request_stop(self) -> None:
+        self.stopped.set()
+        # A stop must also release a paused job, or it waits forever.
+        self.resume.set()
+
+    def wait_if_paused(self) -> bool:
+        """Block while paused. Returns False when the job was asked to stop."""
+        while not self.resume.wait(timeout=0.25):
+            if self.stopped.is_set():
+                return False
+        return not self.stopped.is_set()
+
+
+def run_job(state: AppState, name: str, fn: Callable[[Any], Any]) -> None:
     """Start a background job, replacing any previous run of the same name."""
 
-    def runner() -> None:
+    def runner(control: JobControl) -> None:
         state.job_errors.pop(name, None)
         try:
-            fn()
+            fn(control)
         except Exception as exc:
             state.job_errors[name] = f"{type(exc).__name__}: {exc}"
             state.bus.emit("job.error", {"job": name, "message": f"{type(exc).__name__}: {exc}"})
             state.bus.emit("job.done", {"job": name, "ok": False})
             traceback.print_exc()
+        finally:
+            state.controls.pop(name, None)
 
-    t = threading.Thread(target=runner, name=f"job-{name}", daemon=True)
+    control = JobControl()
+    state.controls[name] = control
+    t = threading.Thread(target=runner, args=(control,), name=f"job-{name}", daemon=True)
     state.jobs[name] = t
     t.start()
 
 
 def job_state(state: AppState, name: str) -> dict[str, Any]:
     t = state.jobs.get(name)
+    control = state.controls.get(name)
     if name in state.job_errors:
         return {"job": name, "status": "error", "error": state.job_errors[name]}
-    if t is None:
-        return {"job": name, "status": "idle"}
-    return {"job": name, "status": "running" if t.is_alive() else "done"}
+    if t is None or not t.is_alive():
+        return {"job": name, "status": "done" if t is not None else "idle",
+                "paused": False}
+    status = "paused" if control and control.paused else "running"
+    return {"job": name, "status": status, "paused": status == "paused"}
 
 
 # ------------------------------------------------------------- operations
@@ -314,7 +450,7 @@ def op_bootstrap(state: AppState, body: dict[str, Any]) -> dict[str, Any]:
     assignment_id = int(body["assignment_id"])
     store, bus = state.store, state.bus
 
-    def work() -> None:
+    def work(_control: JobControl) -> None:
         bus.emit("job.start", {"job": "bootstrap"})
         client = state.client()
         client.probe()
@@ -377,7 +513,7 @@ def op_submissions(state: AppState, run_id: int) -> dict[str, Any]:
 def op_collect(state: AppState, run_id: int, body: dict[str, Any]) -> dict[str, Any]:
     store, bus = state.store, state.bus
 
-    def work() -> None:
+    def work(control: JobControl) -> None:
         bus.emit("job.start", {"job": "collect"})
         run = store.get_run(run_id)
         spec = run["spec"]
@@ -390,8 +526,12 @@ def op_collect(state: AppState, run_id: int, body: dict[str, Any]) -> dict[str, 
             # Useful for trying the pipeline on a handful before committing to
             # a full cohort of clones.
             rows = rows[: int(body["limit"])]
-        done = failed = 0
+        done = failed = stopped = 0
         for i, row in enumerate(rows, 1):
+            if not control.wait_if_paused():
+                stopped = len(rows) - i + 1
+                bus.emit("collect.stopped", {"run_id": run_id, "remaining": stopped})
+                break
             unit = _unit_from_row(row)
             rid = int(row["id"])
             if not unit.is_submitted:
@@ -410,11 +550,19 @@ def op_collect(state: AppState, run_id: int, body: dict[str, Any]) -> dict[str, 
                 bus.emit("collect.error", {"submission_row_id": rid,
                                            "student": unit.display_name,
                                            "message": str(exc)[:200]})
-            bus.emit("collect.progress", {"run_id": run_id, "index": i,
-                                          "total": len(rows), "student": unit.display_name})
-        store.set_run_status(run_id, "collected")
-        bus.emit("job.done", {"job": "collect", "ok": True,
-                              "message": f"collected {done}, failed {failed}"})
+            bus.emit("collect.progress", {
+                "run_id": run_id, "index": i, "total": len(rows),
+                "student": unit.display_name,
+                # The authoritative counters travel with the event. The renderer
+                # reads them from the run object, so without this the meters only
+                # moved when something else happened to refresh the run.
+                "progress": store.progress(run_id),
+            })
+        if not stopped:
+            store.set_run_status(run_id, "collected")
+        bus.emit("job.done", {"job": "collect", "ok": not stopped, "stopped": bool(stopped),
+                              "message": (f"stopped with {stopped} remaining" if stopped
+                                          else f"collected {done}, failed {failed}")})
 
     run_job(state, "collect", work)
     return {"job": "collect"}
@@ -425,14 +573,15 @@ def op_grade(state: AppState, run_id: int, body: dict[str, Any]) -> dict[str, An
     stub = bool(body.get("stub"))
     workers = int(body.get("workers") or state.settings.workers)
 
-    def work() -> None:
+    def work(control: JobControl) -> None:
         bus.emit("job.start", {"job": "grade", "stub": stub, "workers": workers})
         run = store.get_run(run_id)
         spec = run["spec"]
 
         if stub:
-            _grade_stub(state, run_id, spec, workers)
-            bus.emit("job.done", {"job": "grade", "ok": True, "stub": True})
+            _grade_stub(state, run_id, spec, workers, body.get("row_ids"))
+            bus.emit("job.done", {"job": "grade", "ok": True, "stub": True,
+                                  "progress": store.progress(run_id)})
             return
 
         srv = state.ensure_opencode()
@@ -440,14 +589,32 @@ def op_grade(state: AppState, run_id: int, body: dict[str, Any]) -> dict[str, An
         if not model:
             raise ApiError("No model selected.", 409)
         budget = state.choice.max_output_tokens if state.choice else config.DEFAULT_OUTPUT_BUDGET
+        def emit_agent(event: str, data: dict[str, Any]) -> None:
+            if event == "agent.start":
+                sid = str(data.get("session_id") or "")
+                rid = data.get("submission_row_id")
+                if sid and rid is not None:
+                    state.session_rows[sid] = int(rid)
+                    state.record_agent_output(int(rid),
+                                              f"agent started ({data.get('model') or model}, "
+                                              f"attempt {data.get('attempt')})")
+            bus.emit(event, data)
+
+        log_stop = state.start_agent_log(srv)
         grader = Grader(srv, store, spec, run_id,
                         state.settings.run_dir(spec.course_id, spec.assignment_id),
                         CODE_ROOT, python_exe=_python_exe(),
-                        emit=lambda e, d: bus.emit(e, d), model=model, budget=budget)
+                        emit=emit_agent, model=model, budget=budget)
         rows = store.submissions_with_status(
             run_id, ("collected", "failed", "needs_review", "grading"))
         if body.get("only_pending"):
             rows = [r for r in rows if r["status"] == "collected"]
+        # Grade Selected. An explicit selection is honoured exactly, so grading
+        # "these five" cannot quietly turn into grading the rest of the cohort.
+        wanted = body.get("row_ids")
+        if wanted is not None:
+            keep = {int(x) for x in wanted}
+            rows = [r for r in rows if int(r["id"]) in keep]
         if body.get("limit"):
             rows = rows[: int(body["limit"])]
 
@@ -457,8 +624,16 @@ def op_grade(state: AppState, run_id: int, body: dict[str, Any]) -> dict[str, An
             futures = {}
             for row in rows:
                 unit = _unit_from_row(row)
+                # wait_if_paused before submitting: pausing must stop new work
+                # starting rather than only stopping completions.
+                if not control.wait_if_paused():
+                    break
                 futures[pool.submit(grader.grade, int(row["id"]), unit,
                                     store.sources_for(int(row["id"])))] = unit
+            if not futures:
+                bus.emit("job.done", {"job": "grade", "ok": True, "graded": 0,
+                                      "stopped": True})
+                return
             for fut in as_completed(futures):
                 unit = futures[fut]
                 try:
@@ -467,11 +642,13 @@ def op_grade(state: AppState, run_id: int, body: dict[str, Any]) -> dict[str, An
                     bus.emit("grade.progress", {
                         "run_id": run_id, "student": unit.display_name,
                         "status": res.status, "earned": res.earned,
-                        "possible": res.possible})
+                        "possible": res.possible,
+                        "progress": store.progress(run_id)})
                 except Exception as exc:
                     bus.emit("grade.error", {"student": unit.display_name,
                                              "message": str(exc)[:200]})
         store.set_run_status(run_id, "graded")
+        log_stop.set()
         bus.emit("job.done", {"job": "grade", "ok": True, "graded": graded,
                               "of": len(rows)})
 
@@ -479,12 +656,19 @@ def op_grade(state: AppState, run_id: int, body: dict[str, Any]) -> dict[str, An
     return {"job": "grade", "stub": stub}
 
 
-def _grade_stub(state: AppState, run_id: int, spec: Any, workers: int) -> None:
+def _grade_stub(state: AppState, run_id: int, spec: Any, workers: int,
+                row_ids: list[int] | None = None) -> None:
     from .stub import stub_scorecard
     from .models import validate_scorecard
 
     store, bus = state.store, state.bus
     rows = store.submissions_with_status(run_id, ("collected", "pending", "needs_review"))
+    # The stub path honours a selection too. It used to ignore it, so Grade
+    # Selected silently graded the whole cohort whenever stub grading was on,
+    # which is exactly the mode used for trying the pipeline out.
+    if row_ids is not None:
+        keep = {int(x) for x in row_ids}
+        rows = [r for r in rows if int(r["id"]) in keep]
     for i, row in enumerate(rows, 1):
         rid = int(row["id"])
         unit = _unit_from_row(row)
@@ -509,7 +693,7 @@ def _grade_stub(state: AppState, run_id: int, spec: Any, workers: int) -> None:
 def op_render(state: AppState, run_id: int) -> dict[str, Any]:
     store, bus = state.store, state.bus
 
-    def work() -> None:
+    def work(_control: JobControl) -> None:
         bus.emit("job.start", {"job": "render"})
         run = store.get_run(run_id)
         spec = run["spec"]
@@ -520,17 +704,9 @@ def op_render(state: AppState, run_id: int) -> dict[str, Any]:
         written = 0
         rows = store.submissions_with_status(run_id, ("graded", "needs_review"))
         for row in rows:
-            sc = store.best_scorecard(int(row["id"]))
-            if sc is None:
-                continue
-            unit = _unit_from_row(row)
-            md = render_report(spec, sc, unit, sources=store.sources_for(int(row["id"])),
-                               model=sc.model or run.get("model") or "",
-                               prompt_version=sc.prompt_version)
-            path = out_dir / report_filename(unit)
-            path.write_text(md, encoding="utf-8", newline=_NL)
-            store.save_report(int(row["id"]), str(path))
-            written += 1
+            md, _path = render_one(state, int(row["id"]))
+            if md:
+                written += 1
         bus.emit("job.done", {"job": "render", "ok": True, "written": written,
                               "dir": str(out_dir)})
 
@@ -538,16 +714,102 @@ def op_render(state: AppState, run_id: int) -> dict[str, Any]:
     return {"job": "render"}
 
 
+def render_one(state: AppState, row_id: int) -> tuple[str, str]:
+    """Render one report from its scorecard and persist it.
+
+    Shared by the render job and by report reads. A scorecard is the source of
+    truth and the Markdown is a pure function of it, so a missing report file
+    means the file was never written, not that there is nothing to show. Reading
+    a report regenerates it rather than returning an empty string, which is what
+    left the review page blank for anyone who graded and moved on without
+    pressing Render.
+    """
+    store = state.store
+    row = store.submission_row(row_id)
+    sc = store.best_scorecard(row_id)
+    if sc is None:
+        return "", ""
+    run = store.get_run(int(row["run_id"]))
+    spec = run["spec"]
+    spec.policy["_manual_only_ids"] = (
+        manual_only_criteria(spec) if spec.policy.get("manual_only_criteria") else [])
+    out_dir = state.settings.run_dir(spec.course_id, spec.assignment_id) / "reports"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    md = render_report(spec, sc, _unit_from_row(row), sources=store.sources_for(row_id),
+                       model=sc.model or run.get("model") or "",
+                       prompt_version=sc.prompt_version)
+    path = out_dir / report_filename(_unit_from_row(row))
+    path.write_text(md, encoding="utf-8", newline=_NL)
+    store.save_report(row_id, str(path))
+    return md, str(path)
+
+
+CONTROLLABLE = ("collect", "grade")
+
+
+def op_job_control(state: AppState, run_id: int, body: dict[str, Any]) -> dict[str, Any]:
+    """Pause, resume or stop a long-running job.
+
+    Only collect and grade are controllable. Bootstrap and publish are short, and
+    interrupting publish halfway would leave Canvas and the store disagreeing
+    about what was written.
+    """
+    action = str(body.get("action") or "")
+    job = str(body.get("job") or "")
+    if action not in ("pause", "resume", "stop"):
+        raise ApiError(f"unknown action: {action}", 400)
+    if job not in CONTROLLABLE:
+        raise ApiError(f"{job or 'that job'} cannot be paused or stopped", 400)
+    control = state.controls.get(job)
+    if control is None:
+        raise ApiError(f"{job} is not running", 409)
+    if action == "pause":
+        control.pause()
+    elif action == "resume":
+        control.resume.set()
+    else:
+        control.request_stop()
+    state.bus.emit("job.control", {"job": job, "action": action})
+    return {"job": job, "action": action, "state": job_state(state, job)}
+
+
+def op_agent_log(state: AppState, row_id: int) -> dict[str, Any]:
+    """Recent agent output for one submission, for the live log panel.
+
+    Polled repeatedly while a run is still bootstrapping, so an unknown row is
+    an empty log rather than a 500. The student name is a convenience; the lines
+    are keyed by row id and are what the panel needs.
+    """
+    # Route captures arrive as strings. The log is keyed by int, so without
+    # this every lookup misses and the panel is permanently empty.
+    row_id = int(row_id)
+    try:
+        student = state.store.submission_row(row_id)["student_name"]
+    except KeyError:
+        student = ""
+    return {"row_id": row_id, "student": student,
+            "lines": state.agent_logs.get(row_id, [])}
+
+
 def op_report(state: AppState, row_id: int) -> dict[str, Any]:
     row = state.store.submission_row(row_id)
     rep = state.store.report_for(row_id)
+    markdown, path = "", None
+    if rep and Path(rep["path"]).exists():
+        markdown = Path(rep["path"]).read_text(encoding="utf-8")
+        path = rep["path"]
+    else:
+        # No report on disk yet. Render it from the scorecard rather than
+        # handing the renderer an empty body, which is indistinguishable from a
+        # broken report.
+        markdown, path = render_one(state, row_id)
     sc = state.store.best_scorecard(row_id)
     return {
         "row_id": row_id,
         "student": row["student_name"],
-        "markdown": Path(rep["path"]).read_text(encoding="utf-8") if rep else "",
+        "markdown": markdown,
         "scorecard": sc.model_dump(mode="json") if sc else None,
-        "path": rep["path"] if rep else None,
+        "path": path,
     }
 
 
@@ -593,7 +855,7 @@ def op_publish(state: AppState, run_id: int, body: dict[str, Any]) -> dict[str, 
         return {"mode": "plan", "entries": plan,
                 "message": f"{len(plan)} submission(s) would be written to Canvas."}
 
-    def work() -> None:
+    def work(_control: JobControl) -> None:
         bus.emit("job.start", {"job": "publish"})
         client = state.client()
         ok = bad = 0
@@ -713,6 +975,14 @@ def _start_publish(state: AppState, run_id: int, body: dict[str, Any]) -> dict[s
     return op_publish(state, int(run_id), body)
 
 
+def _start_control(state: AppState, run_id: int, body: dict[str, Any]) -> dict[str, Any]:
+    return op_job_control(state, run_id, body)
+
+
+def _get_agent_log(state: AppState, row_id: int) -> dict[str, Any]:
+    return op_agent_log(state, row_id)
+
+
 def _get_report(state: AppState, row_id: int) -> dict[str, Any]:
     return op_report(state, int(row_id))
 
@@ -736,6 +1006,8 @@ ROUTES: list[Route_] = [
     Route_("POST", r"^/api/runs/(?P<run_id>\d+)/grade$", _start_grade),
     Route_("POST", r"^/api/runs/(?P<run_id>\d+)/render$", _start_render),
     Route_("POST", r"^/api/runs/(?P<run_id>\d+)/publish$", _start_publish),
+    Route_("POST", r"^/api/runs/(?P<run_id>\d+)/control$", _start_control),
+    Route_("GET", r"^/api/reports/(?P<row_id>\d+)/agent-log$", _get_agent_log),
     Route_("GET", r"^/api/reports/(?P<row_id>\d+)$", _get_report),
     Route_("PUT", r"^/api/reports/(?P<row_id>\d+)$", _put_report),
 ]

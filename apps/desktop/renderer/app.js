@@ -41,6 +41,12 @@ const api = bridge.api;
 
 /* ----------------------------------------------------------------- state */
 
+// Pagination sizes. Five recent courses is the number that fits without
+// scrolling on a laptop, which is the complaint: a faculty member with 40
+// courses had to scroll past all of them to reach the one they wanted.
+const COURSE_PAGE = 5;
+const ASSIGNMENT_PAGE = 8;
+
 const S = {
   stage: 'setup',
   status: null,
@@ -54,6 +60,14 @@ const S = {
   selected: new Set(),
   current: null,          // { rowId, markdown, scorecard }
   tab: 'read',
+  // Slide-over panels. `assign` lists a course's assignments; `log` shows one
+  // student's agent output live.
+  panel: null,          // null | { kind: 'assign' | 'log', rowId }
+  coursesShown: COURSE_PAGE,
+  assignmentsShown: ASSIGNMENT_PAGE,
+  logLines: [],
+  logTimer: null,
+  bootstrapping: false,
   editing: false,
   events: [],
   toast: null,
@@ -71,6 +85,7 @@ const STAGES = [
 
 const els = {
   main: document.getElementById('main'),
+  slideover: document.getElementById('slideover-slot'),
   stages: document.getElementById('stages'),
   console: document.getElementById('console'),
   extra: document.getElementById('aside-extra'),
@@ -148,7 +163,8 @@ function describe(event, d) {
 function stageEnabled(id) {
   switch (id) {
     case 'setup': case 'select': return true;
-    case 'collect': case 'grade': return !!S.run;
+    case 'collect': return !!S.run || S.bootstrapping;
+    case 'grade': return !!S.run;
     case 'review': return S.submissions.some((s) => s.score !== null);
     case 'publish': return S.submissions.some((s) => s.score !== null);
     default: return false;
@@ -293,6 +309,110 @@ function viewSetup() {
   );
 }
 
+/** A panel that slides in from the right. Used for assignments and the log. */
+function slideover(title, subtitle, body, foot) {
+  return h('div', {
+    class: 'slideover',
+    onclick: (e) => { if (e.target.classList.contains('slideover')) closePanel(); },
+  },
+    h('div', { class: 'slideover-panel', role: 'dialog', 'aria-label': title },
+      h('div', { class: 'slideover-head' },
+        h('div', {},
+          h('h2', {}, title),
+          subtitle ? h('div', { class: 'dim' }, subtitle) : null),
+        h('button', { class: 'btn', 'data-size': 'sm', 'data-variant': 'ghost',
+                      onclick: closePanel }, 'Close')),
+      h('div', { class: 'slideover-body' }, body),
+      foot ? h('div', { class: 'slideover-foot' }, foot) : null));
+}
+
+function closePanel() {
+  if (S.logTimer) { clearInterval(S.logTimer); S.logTimer = null; }
+  S.panel = null;
+  S.logLines = [];
+  render();
+}
+
+/** Polled rather than pushed: the sidecar keeps a bounded tail per row, and
+ *  only an open panel pays for the polling. */
+function openAgentLog(rowId) {
+  S.panel = { kind: 'log', rowId };
+  S.logLines = [];
+  render();
+  if (S.logTimer) clearInterval(S.logTimer);
+  const poll = async () => {
+    const got = await api.agentLog(rowId).catch(() => null);
+    if (got && Array.isArray(got.lines)) S.logLines = got.lines;
+    if (S.panel && S.panel.kind === 'log') renderPanel();
+    else if (S.logTimer) { clearInterval(S.logTimer); S.logTimer = null; }
+  };
+  poll();
+  S.logTimer = setInterval(poll, 1200);
+}
+
+function renderPanel() {
+  const el = document.getElementById('slideover-slot');
+  if (!el) return;
+  const panel = S.panel;
+  if (!panel) { mount(el); return; }
+
+  if (panel.kind === 'assign') {
+    const course = S.course;
+    const shown = S.assignments.slice(0, S.assignmentsShown);
+    const remaining = S.assignments.length - S.assignmentsShown;
+    mount(el, slideover(
+      course ? course.name : 'Assignments',
+      course ? `course ${course.id}` : null,
+      h('div', {},
+        h('div', { class: 'picklist' }, shown.length ? shown.map((a) => h('button', {
+          class: 'pick', 'aria-selected': String(S.assignment?.id === a.id),
+          disabled: !a.published,
+          onclick: () => {
+            S.assignment = a;
+            closePanel();
+            toast(`Selected ${a.name}.`);
+          },
+        },
+          h('div', {},
+            h('div', { class: 'pick-title' }, a.name),
+            h('div', { class: 'pick-sub' },
+              h('span', {}, `${a.criteria} criteria`),
+              h('span', {}, `${fmt(a.points_possible)} points`),
+              a.group ? h('span', {}, 'group') : null)),
+          h('div', { class: 'pick-meta' },
+            a.needs_grading != null ? h('span', {}, `${a.needs_grading} ungraded`) : null,
+            a.has_rubric ? null : chip('no rubric', 'flag'))))
+          : h('div', { style: 'padding:12px;color:var(--ink-3)' }, 'No assignments returned.')),
+        remaining > 0
+          ? h('div', { style: 'margin-top:14px' },
+              h('button', {
+                class: 'btn',
+                onclick: () => { S.assignmentsShown += ASSIGNMENT_PAGE; renderPanel(); },
+              }, `Load more (${remaining} remaining)`))
+          : null),
+      h('button', {
+        class: 'btn', 'data-variant': 'primary',
+        disabled: !S.assignment || !S.assignment.has_rubric,
+        onclick: () => { closePanel(); startRun(); },
+      }, 'Use this assignment')));
+    return;
+  }
+
+  if (panel.kind === 'log') {
+    const row = S.submissions.find((x) => x.row_id === panel.rowId);
+    mount(el, slideover(
+      row ? (row.student || row.student_name || 'Student') : 'Grading agent',
+      'Live agent output',
+      S.logLines.length
+        ? h('pre', { class: 'logview' }, S.logLines.map((line) => h('div', {
+            class: line.startsWith('->') ? 'log-tool'
+              : (line === 'turn complete' || line.startsWith('agent started')) ? 'log-done' : '',
+          }, line)))
+        : h('div', { style: 'color:var(--ink-3);font-size:12px' },
+            'Waiting for the agent. Output appears here as it runs.')));
+  }
+}
+
 function viewSelect() {
   const courses = S.courses;
   if (!courses.length) {
@@ -304,16 +424,28 @@ function viewSelect() {
       empty('No courses loaded yet', 'Load your Canvas courses to begin.'));
   }
 
-  const course = S.course;
-  const rows = courses.map((c) => h('button', {
-    class: 'pick', 'aria-selected': String(course?.id === c.id),
+  // Most recently active first, so the courses a lecturer actually teaches this
+  // term are the ones that fit above the fold.
+  const active = courses.filter((c) => c.workflow_state === 'available');
+  const ordered = [...active, ...courses.filter((c) => c.workflow_state !== 'available')];
+  const shown = ordered.slice(0, S.coursesShown);
+
+  const rows = shown.map((c) => h('button', {
+    class: 'pick', 'aria-selected': String(S.course?.id === c.id),
     onclick: async () => {
       S.assignment = null;
+      S.assignments = [];
+      S.assignmentsShown = ASSIGNMENT_PAGE;
       await guard(async () => {
         S.course = c;
+        S.coursesShown = Math.max(S.coursesShown, COURSE_PAGE);
         const data = await api.assignments(c.id);
-        S.assignments = data.assignments;
+        S.assignments = data.assignments || [];
+        // Assignments open in a panel rather than below the course list, so
+        // picking a course never pushes the page around under the user.
+        S.panel = { kind: 'assign', rowId: null };
       }, 'Could not load assignments');
+      render();
     },
   },
     h('div', {},
@@ -322,57 +454,60 @@ function viewSelect() {
         h('span', {}, `course ${c.id}`),
         c.code ? h('span', {}, c.code) : null,
         c.term ? h('span', {}, c.term) : null)),
-    h('div', { class: 'pick-meta' }, c.workflow_state === 'available' ? chip('available') : null)));
-
-  const assignments = S.assignments.map((a) => h('button', {
-    class: 'pick', 'aria-selected': String(S.assignment?.id === a.id),
-    disabled: !a.published,
-    onclick: () => { S.assignment = a; render(); },
-  },
-    h('div', {},
-      h('div', { class: 'pick-title' }, a.name),
-      h('div', { class: 'pick-sub' },
-        h('span', {}, `${a.criteria} criteria`),
-        h('span', {}, `${fmt(a.points_possible)} points`),
-        a.group ? h('span', {}, 'group') : null,
-        (a.submission_types || []).slice(0, 2).join(', ').length
-          ? h('span', {}, a.submission_types.slice(0, 2).join(', ')) : null)),
     h('div', { class: 'pick-meta' },
-      a.needs_grading != null ? h('span', {}, `${a.needs_grading} ungraded`) : null,
-      a.has_rubric ? null : chip('no rubric', 'flag'))));
+      c.workflow_state === 'available' ? chip('available') : null,
+      h('span', {}, 'open assignments'))));
 
   return h('div', {},
     h('div', { class: 'head' },
       h('h1', {}, 'Choose an assignment'),
-      h('p', {}, 'The rubric and instructions come straight from Canvas. A rubric is required — '
-               + 'the pipeline derives its criteria, point values and report structure from it.')),
+      h('p', {}, 'Pick a course, then choose an assignment from the panel. The rubric and '
+               + 'instructions come straight from Canvas — the pipeline derives its criteria, '
+               + 'point values and report structure from it.')),
 
-    card(S.course ? S.course.name : 'Courses',
-      S.course ? `course ${S.course.id}` : null,
-      h('div', { class: 'picklist' }, rows.length ? rows
-        : h('div', { style: 'padding:12px;color:var(--ink-3)' }, 'No courses returned.')),
+    card('Courses', `${shown.length} of ${ordered.length}`,
+      h('div', { class: 'picklist' }, rows),
+      ordered.length > S.coursesShown
+        ? h('div', { style: 'margin-top:14px' },
+            h('button', {
+              class: 'btn',
+              onclick: () => { S.coursesShown += COURSE_PAGE; render(); },
+            }, `Load more (${ordered.length - S.coursesShown} remaining)`))
+        : null),
 
-      S.course ? h('div', { style: 'margin-top:18px' },
-        h('div', { class: 'card-head' },
-          h('h2', {}, 'Assignments'),
-          h('button', { class: 'btn', 'data-size': 'sm', 'data-variant': 'ghost',
-                        onclick: () => go('select') }, 'change course')),
-        h('div', { class: 'picklist' }, assignments.length ? assignments
-          : h('div', { style: 'padding:12px;color:var(--ink-3)' }, 'No assignments returned.'))) : null),
-
-    h('div', { style: 'margin-top:16px;display:flex;justify-content:flex-end;gap:8px' },
+    h('div', { style: 'margin-top:16px;display:flex;justify-content:space-between;gap:8px' },
       h('button', { class: 'btn', onclick: () => go('setup') }, 'Back'),
-      h('button', {
-        class: 'btn', 'data-variant': 'primary',
-        disabled: !S.assignment || !S.assignment.has_rubric,
-        onclick: startRun,
-      }, 'Use this assignment')));
+      S.assignment
+        ? h('button', {
+            class: 'btn', 'data-variant': 'primary',
+            disabled: !S.assignment.has_rubric,
+            onclick: startRun,
+          }, `Use ${S.assignment.name}`)
+        : h('button', { class: 'btn', disabled: true }, 'Choose an assignment first')));
+}
+
+function waiting(title, detail) {
+  return h('div', { class: 'waiting' },
+    h('div', { style: 'font-size:14px;color:var(--ink-1)' }, title),
+    h('div', { class: 'waiting-bar' }),
+    h('div', { style: 'max-width:420px;font-size:12px;line-height:1.6' }, detail));
 }
 
 function viewCollect() {
   const run = S.run;
-  if (!run) return empty('No run', 'Choose an assignment first.');
+  if (!run) {
+    // A blank "No run, choose an assignment first" right after choosing one
+    // reads as a dead end. Bootstrap is genuinely in flight here.
+    if (S.bootstrapping) {
+      return waiting('Preparing this run',
+        'Reading the assignment, rubric and submissions from Canvas. '
+        + 'This takes a moment for a large cohort.');
+    }
+    return empty('No run', 'Choose an assignment first.');
+  }
   const progress = run.progress || {};
+  const collecting = (S.status?.jobs?.collect?.status || 'idle') !== 'idle';
+  const paused = S.status?.jobs?.collect?.status === 'paused';
   const total = progress.total || 0;
   const done = total - (progress.pending || 0) - (progress.collecting || 0);
   const pct = total ? Math.round((done / total) * 100) : 0;
@@ -383,7 +518,9 @@ function viewCollect() {
       h('p', {}, 'Downloads every attachment, clones each repository, and converts documents '
                + 'to Markdown so the grader reads material rather than links.')),
 
-    card(run.title, `${run.criteria.length} criteria · ${fmt(run.points_possible)} points`,
+    card(run.title,
+      `${run.criteria.length} criteria · ${fmt(run.points_possible)} points`
+      + (collecting ? ` · ${paused ? 'paused' : 'running'}` : ''),
       h('div', { class: 'stats', style: 'margin-bottom:16px' },
         h('div', { class: 'stat' }, h('div', { class: 'stat-v' }, total), h('div', { class: 'stat-k' }, 'submissions')),
         h('div', { class: 'stat' }, h('div', { class: 'stat-v' }, progress.collected || 0), h('div', { class: 'stat-k' }, 'collected')),
@@ -393,14 +530,26 @@ function viewCollect() {
       h('div', { class: 'meter', style: 'margin-bottom:16px' },
         h('div', { class: 'meter-fill', style: `width:${pct}%` })),
 
-      h('div', { style: 'display:flex;gap:8px' },
+      h('div', { style: 'display:flex;gap:8px;flex-wrap:wrap' },
         h('button', {
-          class: 'btn', 'data-variant': 'primary',
+          class: 'btn', 'data-variant': 'primary', disabled: collecting,
           onclick: () => guard(async () => {
             await api.collect(run.run_id, { limit: null });
-            toast('Collecting. Progress appears on the right.');
+            toast('Collecting. Progress updates live.');
           }, 'Could not start collection'),
-        }, 'Collect'),
+        }, collecting ? 'Collecting…' : 'Collect'),
+        collecting ? h('button', {
+          class: 'btn',
+          onclick: () => guard(
+            () => api.control(run.run_id, { job: 'collect', action: paused ? 'resume' : 'pause' }),
+            'Could not change the collection'),
+        }, paused ? 'Resume' : 'Pause') : null,
+        collecting ? h('button', {
+          class: 'btn', 'data-variant': 'ghost',
+          onclick: () => guard(
+            () => api.control(run.run_id, { job: 'collect', action: 'stop' }),
+            'Could not stop the collection'),
+        }, 'Stop') : null,
         h('button', {
           class: 'btn', disabled: !done,
           onclick: () => go('grade'),
@@ -414,6 +563,8 @@ function viewGrade() {
   if (!run) return empty('No run', 'Choose an assignment first.');
   const graded = S.submissions.filter((s) => s.score !== null).length;
   const flagged = S.submissions.filter((s) => (s.flags || []).some((f) => f.severity === 'block')).length;
+  const gradeable = S.submissions.filter((s) => s.score === null);
+  const grading = (S.status?.jobs?.grade?.status || 'idle') !== 'idle';
 
   return h('div', {},
     h('div', { class: 'head' },
@@ -421,6 +572,24 @@ function viewGrade() {
       h('p', {}, 'Each submission is graded in its own agent session, so no student\'s work '
                + 'can influence another\'s. Scores arrive as structured data and are rendered '
                + 'into a report — the agent never formats the page itself.')),
+
+    card('Select submissions',
+      `${gradeable.length} awaiting, ${S.selected.size} selected`,
+      h('div', { style: 'display:flex;gap:8px;flex-wrap:wrap;align-items:center' },
+        h('button', {
+          class: 'btn', 'data-size': 'sm', disabled: !gradeable.length,
+          onclick: () => {
+            const all = gradeable.every((s) => S.selected.has(s.row_id));
+            gradeable.forEach((s) => (all ? S.selected.delete(s.row_id) : S.selected.add(s.row_id)));
+            render();
+          },
+        }, gradeable.length && gradeable.every((s) => S.selected.has(s.row_id))
+            ? `Clear selection (${gradeable.length})`
+            : `Select all ${gradeable.length ? `(${gradeable.length})` : ''}`.trim()),
+        h('button', {
+          class: 'btn', 'data-size': 'sm', 'data-variant': 'ghost', disabled: !S.selected.size,
+          onclick: () => { S.selected.clear(); render(); },
+        }, 'Clear'))),
 
     card('Run grading', S.model?.selected ? `model ${S.model.selected}` : null,
       h('div', { class: 'stats', style: 'margin-bottom:16px' },
@@ -433,11 +602,19 @@ function viewGrade() {
       h('div', { style: 'display:flex;gap:8px;flex-wrap:wrap' },
         h('button', {
           class: 'btn', 'data-variant': 'primary',
+          disabled: grading || !gradeable.length,
           onclick: () => guard(async () => {
             await api.grade(run.run_id, {});
-            toast('Grading started.');
+            toast(`Grading ${gradeable.length} submissions.`);
           }, 'Could not start grading'),
-        }, 'Grade'),
+        }, grading ? 'Grading…' : `Grade All (${gradeable.length})`),
+        h('button', {
+          class: 'btn', disabled: grading || !S.selected.size,
+          onclick: () => guard(async () => {
+            await api.grade(run.run_id, { row_ids: [...S.selected] });
+            toast(`Grading ${S.selected.size} selected.`);
+          }, 'Could not start grading'),
+        }, `Grade Selected (${S.selected.size})`),
         h('button', {
           class: 'btn',
           title: 'Produce reports without calling a model, to exercise the review and publish paths',
@@ -458,7 +635,7 @@ function viewGrade() {
 
     notice('Posting is always optional. If a run does not hold up you can grade from the reports in your own words.', null),
 
-    S.submissions.length ? submissionTable(true) : null);
+    S.submissions.length ? submissionTable(false) : null);
 }
 
 function viewReview() {
@@ -655,12 +832,30 @@ function showPublishPlan(plan) {
 /* -------------------------------------------------------------- fragments */
 
 function submissionTable(compact) {
-  const rows = S.submissions.map((s) => h('div', { class: 'row' },
-    h('span', { style: 'color:var(--ink-3)' }, ''),
+  const rows = S.submissions.map((s) => h('div', {
+    class: 'row', 'data-selected': String(S.selected.has(s.row_id)),
+  },
+    compact ? h('span', { style: 'color:var(--ink-3)' }, '')
+      : h('input', {
+          type: 'checkbox',
+          checked: S.selected.has(s.row_id),
+          onchange: (e) => {
+            e.target.checked ? S.selected.add(s.row_id) : S.selected.delete(s.row_id);
+            render();
+          },
+        }),
     h('span', { class: 'row-name', title: s.primary_url || '' }, s.student),
     h('span', { class: 'row-score' }, s.score === null ? '—' : fmt(s.score)),
     h('span', {}, statusChip(s.status)),
-    h('span', { class: 'row-act' },
+    h('span', { class: 'row-act', style: 'display:flex;gap:6px;justify-content:flex-end' },
+      // While a row is being graded the agent output is the only way to see
+      // what it is doing, so that row gets a way in.
+      ['grading', 'collected'].includes(s.status) && s.score === null
+        ? h('button', {
+            class: 'btn', 'data-size': 'sm', 'data-variant': 'ghost',
+            onclick: () => openAgentLog(s.row_id),
+          }, 'agent log')
+        : null,
       s.primary_url ? h('button', {
         class: 'btn', 'data-size': 'sm', 'data-variant': 'ghost',
         onclick: () => window.open(s.primary_url, '_blank'),
@@ -777,6 +972,9 @@ function render() {
     ? h('div', { style: 'margin-bottom:14px' }, notice(S.toast.message, S.toast.tone))
     : null;
   mount(els.main, banner, node);
+  // The slide-over lives outside #main so a stage re-render cannot wipe it
+  // open, which means it has to be re-rendered explicitly on every paint.
+  renderPanel();
 }
 
 function openModal(node) { mount(els.modal, h('div', { class: 'scrim' }, node)); }
@@ -806,6 +1004,9 @@ async function loadModels() {
 async function loadCourses() {
   const data = await api.courses().catch(() => null);
   if (data) S.courses = data.courses;
+  // Without this the button appears to do nothing: the state changed but
+  // nothing was repainted.
+  render();
 }
 
 /* ------------------------------------------------------------------- init */
@@ -816,13 +1017,46 @@ function applyTheme(theme) {
   try { localStorage.setItem('gp-theme', theme); } catch (_) {}
 }
 
+// Progress events arrive per submission. Re-fetching the whole submission list
+// on each one is a request per student across a 150-row cohort, so the list
+// refresh is coalesced while the counters are applied immediately from the
+// event payload.
+let submissionsPending = false;
+function scheduleSubmissionsRefresh() {
+  if (submissionsPending) return;
+  submissionsPending = true;
+  setTimeout(() => {
+    submissionsPending = false;
+    if (S.run) refreshSubmissions();
+  }, 500);
+}
+
 bridge.events(
   (msg) => {
     log(msg.event, msg.data);
-    if (msg.event === 'run.ready') { S.run = { run_id: msg.data.run_id }; refreshRun(); }
-    if (msg.event === 'job.done') refreshStatus();
-    if (/^(grade|collect|publish|render)\./.test(msg.event) || msg.event === 'job.done') {
-      if (S.run) refreshSubmissions();
+    if (msg.event === 'run.ready') {
+      S.bootstrapping = false;
+      S.run = { run_id: msg.data.run_id };
+      refreshRun();
+    }
+    if (msg.event === 'job.start' && msg.data.job === 'bootstrap') {
+      S.bootstrapping = true;
+      render();
+    }
+    // The counters live on the run object, so the meters only moved when
+    // something else happened to refresh it. The payload carries them now.
+    if (msg.data && msg.data.progress && S.run) {
+      S.run.progress = msg.data.progress;
+      render();
+    }
+    if (msg.event === 'job.done') { refreshStatus(); render(); }
+    if (msg.event === 'collect.stopped') {
+      toast(msg.data.remaining
+        ? `Collection stopped with ${msg.data.remaining} remaining.`
+        : 'Collection stopped.');
+    }
+    if (/^(grade|collect|publish|render|agent)\./.test(msg.event) || msg.event === 'job.done') {
+      scheduleSubmissionsRefresh();
     }
   },
   () => log('error', { message: 'Lost connection to the service; retrying.' }),
@@ -845,6 +1079,10 @@ function fatal(err, where) {
       notice(msg, 'bad'));
   } catch (_) {}
 }
+
+window.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && S.panel) closePanel();
+});
 
 window.addEventListener('error', (e) => fatal(e.error || e.message, 'loading'));
 window.addEventListener('unhandledrejection', (e) => fatal(e.reason, 'loading'));

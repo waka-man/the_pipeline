@@ -842,3 +842,113 @@ body {
   .row { grid-template-columns: 26px minmax(0, 1fr) 84px 100px; }
   .row > :nth-child(5) { display: none; }
 }
+
+/* ------------------------------------------------------------ slide-over
+   A panel that slides in from the right over the current view. Used for the
+   assignment list (so a long course list no longer forces a scroll) and for the
+   live agent log. Shared by both so they behave identically. */
+
+.slideover {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  justify-content: flex-end;
+  z-index: 40;
+  background: rgba(0, 0, 0, 0.42);
+}
+
+.slideover-panel {
+  width: min(560px, 92vw);
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-1);
+  border-left: 1px solid var(--line);
+  box-shadow: -18px 0 48px rgba(0, 0, 0, 0.35);
+}
+
+.slideover-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px 18px;
+  border-bottom: 1px solid var(--line);
+}
+
+.slideover-head h2 { margin: 0 0 2px; font-size: 15px; }
+.slideover-head .dim { font-size: 11px; }
+
+.slideover-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 14px 18px;
+  min-height: 0;
+}
+
+.slideover-foot {
+  padding: 12px 18px;
+  border-top: 1px solid var(--line);
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+/* The agent log is a terminal, so it must not collapse whitespace or wrap
+   mid-token the way prose would. */
+.logview {
+  margin: 0;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--ink-2);
+}
+
+.logview .log-tool { color: var(--accent); }
+.logview .log-done { color: var(--ink-1); font-weight: 600; }
+
+/* An indeterminate wait: the shape of the problem in screenshot 2 was a blank
+   "No run" page that looked like a dead end rather than work in progress. */
+.waiting {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  padding: 56px 20px;
+  text-align: center;
+  color: var(--ink-3);
+}
+
+.waiting-bar {
+  width: 220px;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--line);
+  overflow: hidden;
+  position: relative;
+}
+
+.waiting-bar::after {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 40%;
+  border-radius: 2px;
+  background: var(--accent);
+  animation: waiting-slide 1.15s ease-in-out infinite;
+}
+
+@keyframes waiting-slide {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(250%); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .waiting-bar::after { animation: none; width: 100%; opacity: 0.5; }
+}
+
+.spinner-list { display: flex; flex-direction: column; gap: 10px; }
+.spinner-row { height: 44px; border-radius: 6px; background: var(--line); opacity: 0.45; }

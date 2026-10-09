@@ -454,3 +454,174 @@ def test_tests_never_write_to_the_developers_real_secrets(live, tmp_path):
     real = Path.home() / ".local" / "share" / "grading-pipeline" / "secrets.json"
     if real.exists():
         assert "sk-or-not-real" not in real.read_text(), "wrote into the real secrets file"
+
+
+def test_reading_a_report_renders_it_when_none_was_written(live):
+    """Grading then going straight to Review must not show a blank report.
+
+    Grading produces a scorecard; rendering produces Markdown. Nothing forces the
+    second step, so a report read has to be able to produce it. Returning an
+    empty string here is indistinguishable from a broken report in the UI.
+    """
+    base, state, _fake, _spec = live
+    send(base, "/api/runs", {"course_id": 3130, "assignment_id": 46805})
+    assert wait_for(lambda: state.store.progress(1).get("total") == 2)
+    send(base, "/api/runs/1/grade", {"stub": True})
+    assert wait_for(lambda: state.store.progress(1).get("graded") == 1), state.job_errors
+
+    # Grade without rendering: no report row exists yet.
+    rid = 1
+    assert state.store.report_for(rid) is None
+
+    got = send(base, f"/api/reports/{rid}", method="GET")
+    assert got["markdown"].strip(), "report markdown is empty"
+    assert got["scorecard"] is not None
+    assert got["path"], "the rendered report was not persisted"
+    # And it is now on disk, so a second read is a plain file read.
+    assert state.store.report_for(rid) is not None
+    again = send(base, f"/api/reports/{rid}", method="GET")
+    assert again["markdown"] == got["markdown"]
+
+
+def test_a_report_with_no_scorecard_is_still_empty_not_an_error(live):
+    base, state, _fake, _spec = live
+    send(base, "/api/runs", {"course_id": 3130, "assignment_id": 46805})
+    assert wait_for(lambda: state.store.progress(1).get("total") == 2)
+    got = send(base, "/api/reports/1", method="GET")
+    assert got["markdown"] == ""
+    assert got["scorecard"] is None
+
+
+# ------------------------------------------------------- job control
+
+def test_collect_can_be_paused_resumed_and_stopped(live):
+    base, state, _fake, _spec = live
+    send(base, "/api/runs", {"course_id": 3130, "assignment_id": 46805})
+    assert wait_for(lambda: state.store.progress(1).get("total") == 2)
+
+    # Pause while nothing is running yet, then confirm the control exists.
+    started = send(base, "/api/runs/1/collect", {"limit": 2})
+    assert started["job"] == "collect"
+    assert wait_for(lambda: "collect" in state.controls)
+    assert send(base, "/api/runs/1/control", {"job": "collect", "action": "stop"})["action"] == "stop"
+    assert wait_for(lambda: "collect" not in state.controls), "the job ignored stop"
+
+
+def test_control_rejects_jobs_that_are_not_pausable(live):
+    """Stopping publish would leave Canvas and the store disagreeing."""
+    base, state, _fake, _spec = live
+    for job in ("publish", "render", "bootstrap"):
+        with pytest.raises(urllib.error.HTTPError) as e:
+            send(base, "/api/runs/1/control", {"job": job, "action": "stop"})
+        assert e.value.code == 400
+
+
+def test_control_on_an_idle_job_is_a_conflict_not_a_silent_no_op(live):
+    base, _state, _fake, _spec = live
+    with pytest.raises(urllib.error.HTTPError) as e:
+        send(base, "/api/runs/1/control", {"job": "collect", "action": "pause"})
+    assert e.value.code == 409
+
+
+def test_control_rejects_an_unknown_action(live):
+    base, state, _fake, _spec = live
+    send(base, "/api/runs", {"course_id": 3130, "assignment_id": 46805})
+    assert wait_for(lambda: state.store.progress(1).get("total") == 2)
+    send(base, "/api/runs/1/collect", {})
+    assert wait_for(lambda: "collect" in state.controls)
+    with pytest.raises(urllib.error.HTTPError) as e:
+        send(base, "/api/runs/1/control", {"job": "collect", "action": "detonate"})
+    assert e.value.code == 400
+
+
+def test_pausing_actually_holds_the_job():
+    """A pause that does not block is worse than none: the UI would lie."""
+    control = srv.JobControl()
+    control.pause()
+    assert control.paused
+    freed = threading.Event()
+
+    def worker():
+        freed.set()
+        control.wait_if_paused()
+
+    threading.Thread(target=worker, daemon=True).start()
+    assert freed.wait(2), "a paused job ran anyway"
+    control.resume.set()
+    assert freed.wait(2)
+
+
+def test_stopping_a_paused_job_releases_it():
+    """Otherwise stopping a paused job waits for a resume that never comes."""
+    control = srv.JobControl()
+    control.pause()
+    control.request_stop()
+    assert not control.paused
+    assert control.wait_if_paused() is False
+
+
+# --------------------------------------------------- grading a selection
+
+def test_grading_a_selection_touches_only_those_rows(live):
+    """Grade Selected must not quietly grade the rest of the cohort."""
+    base, state, _fake, _spec = live
+    send(base, "/api/runs", {"course_id": 3130, "assignment_id": 46805})
+    assert wait_for(lambda: state.store.progress(1).get("total") == 2)
+    send(base, "/api/runs/1/collect", {})
+    assert wait_for(lambda: state.store.progress(1).get("collected") == 1), state.job_errors
+
+    # Row 2 is unsubmitted, so selecting it must grade nothing at all. That is
+    # the sharper check: if row_ids were ignored, this would grade row 1.
+    send(base, "/api/runs/1/grade", {"stub": True, "row_ids": [2]})
+    assert wait_for(lambda: "grade" not in state.controls)
+    assert state.store.progress(1).get("graded", 0) == 0, "row_ids was ignored"
+
+    send(base, "/api/runs/1/grade", {"stub": True, "row_ids": [1]})
+    assert wait_for(lambda: state.store.progress(1).get("graded") == 1), state.job_errors
+    assert state.store.progress(1)["graded"] == 1, "grading a selection graded the cohort"
+
+
+def test_agent_log_is_routed_to_the_right_submission(live):
+    base, state, _fake, _spec = live
+    send(base, "/api/runs", {"course_id": 3130, "assignment_id": 46805})
+    assert wait_for(lambda: state.store.progress(1).get("total") == 2)
+    state.session_rows["ses_abc"] = 1
+    state.record_agent_output(1, "agent started")
+    got = send(base, "/api/reports/1/agent-log", method="GET")
+    assert "agent started" in got["lines"]
+    assert got["student"] == "Ada Lovelace"
+
+    row_id, text = state._agent_log_line(
+        {"type": "message.part.updated",
+         "properties": {"sessionID": "ses_abc",
+                        "part": {"type": "tool", "tool": "read"}}})
+    assert (row_id, text) == (1, "-> read")
+
+    row_id, text = state._agent_log_line(
+        {"type": "message.part.updated",
+         "properties": {"sessionID": "ses_abc",
+                        "part": {"type": "text", "text": "  reading   the spec \n"}}})
+    assert (row_id, text) == (1, "reading the spec")
+
+    # An event for a session we are not grading belongs to nobody, and an event
+    # with no session at all is a heartbeat rather than log output.
+    assert state._agent_log_line(
+        {"type": "message.part.updated",
+         "properties": {"sessionID": "ses_other", "part": {"type": "text", "text": "hi"}}}) is None
+    assert state._agent_log_line({"type": "server.heartbeat", "properties": {}}) is None
+
+
+def test_an_agent_log_for_an_unknown_row_is_empty_not_a_500(live):
+    """The panel polls this while a run may still be bootstrapping."""
+    base, _state, _fake, _spec = live
+    got = send(base, "/api/reports/999/agent-log", method="GET")
+    assert got["lines"] == [] and got["student"] == ""
+
+
+def test_the_agent_log_is_bounded(live):
+    _base, state, _fake, _spec = live
+    for i in range(srv.AGENT_LOG_LINES + 250):
+        state.record_agent_output(1, f"line {i}")
+    lines = state.agent_logs[1]
+    assert len(lines) == srv.AGENT_LOG_LINES
+    assert lines[-1] == f"line {srv.AGENT_LOG_LINES + 249}", "kept the wrong tail"
