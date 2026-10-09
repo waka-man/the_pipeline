@@ -34,12 +34,10 @@ jobs:
           WANT: ${{ inputs.platform || 'all' }}
         run: |
           set -euo pipefail
-          full='[
-            {"os":"macos-latest","label":"mac arm64","key":"mac-arm64"},
-            {"os":"macos-15-intel","label":"mac x64","key":"mac-x64"},
-            {"os":"windows-latest","label":"win x64","key":"windows"},
-            {"os":"ubuntu-latest","label":"linux x64","key":"linux"}
-          ]'
+          # One line. GITHUB_OUTPUT takes a single line per value, so a
+          # multi-line JSON silently truncates to "[" and fromJSON then fails,
+          # which drops the build job entirely instead of failing loudly.
+          full='[{"os":"macos-latest","label":"mac arm64","key":"mac-arm64"},{"os":"macos-15-intel","label":"mac x64","key":"mac-x64"},{"os":"windows-latest","label":"win x64","key":"windows"},{"os":"ubuntu-latest","label":"linux x64","key":"linux"}]'
           if [ "$WANT" = "all" ]; then
             echo "matrix=$full" >> "$GITHUB_OUTPUT"
           else
