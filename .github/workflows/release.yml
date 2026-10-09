@@ -49,22 +49,43 @@ jobs:
       - name: Freeze and smoke-test the sidecar
         run: python scripts/build_sidecar.py
 
+      # Signing is opt-in, and the opt-in cannot be expressed in a step `env:`
+      # block. GitHub renders an absent secret as an empty string rather than
+      # leaving it unset, and electron-builder reads an empty CSC_LINK as a
+      # certificate *file path*: it resolves "" against the working directory
+      # and aborts with "<cwd> not a file". So a plain
+      # `CSC_LINK: ${{ secrets.X }}` fails the build precisely when you have no
+      # certificate yet, which is the case this workflow is designed to support.
+      #
+      # The names are therefore only written to $GITHUB_ENV when the secret is
+      # present, leaving them genuinely unset otherwise.
+      - name: Configure code signing
+        shell: bash
+        env:
+          CERT_PFX_BASE64: ${{ secrets.WINDOWS_CERT_PFX_BASE64 }}
+          CERT_PFX_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
+        run: |
+          set -euo pipefail
+          # Stops electron-builder probing the keychain on runners that have
+          # none, and keeps unsigned builds ad-hoc signed.
+          echo "CSC_IDENTITY_AUTO_DISCOVERY=false" >> "$GITHUB_ENV"
+          if [ -n "$CERT_PFX_BASE64" ]; then
+            pfx="$RUNNER_TEMP/cert.pfx"
+            printf '%s' "$CERT_PFX_BASE64" | base64 --decode > "$pfx"
+            {
+              echo "CSC_LINK=$pfx"
+              echo "CSC_KEY_PASSWORD=$CERT_PFX_PASSWORD"
+              echo "CSC_IDENTITY_AUTO_DISCOVERY=true"
+            } >> "$GITHUB_ENV"
+            echo "code signing: certificate found, artifacts will be signed"
+          else
+            echo "code signing: no certificate, building unsigned"
+          fi
+
       - name: Build installables
         working-directory: apps/desktop
-        env:
-          # Signing is opt-in. With no certificate the build still produces a
-          # usable artifact, so an unsigned release never blocks on secrets.
-          CSC_LINK: ${{ secrets.WINDOWS_CERT_PFX_BASE64 }}
-          CSC_KEY_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-        run: |
-          if [ -n "$CSC_LINK" ]; then
-            echo "$CSC_LINK" | base64 --decode > "$RUNNER_TEMP/cert.pfx"
-            echo "CSC_LINK=$RUNNER_TEMP/cert.pfx" >> "$GITHUB_ENV"
-          fi
-          npx electron-builder --publish never
+        shell: bash
+        run: npx electron-builder --publish never
 
       # A run with no tag should not attempt to attach to a release.
       - name: Collect artifacts
