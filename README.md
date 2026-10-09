@@ -163,10 +163,28 @@ Unsigned builds work but draw security warnings. To sign:
 - **Windows** — an Authenticode code-signing certificate.
 
 Set them as repository or environment secrets and the release workflow picks them
-up automatically. The workflow signs and notarizes only when the secrets are
-present, so unsigned builds keep working in the meantime. Set `CSC_IDENTITY_AUTO_DISCOVERY=false`
-and `CSC_LINK`/`CSC_KEY_PASSWORD` for Windows, and `APPLE_ID`,
-`APPLE_APP_SPECIFIC_PASSWORD`, `APPLE_TEAM_ID` with `notarize: true` for macOS.
+up automatically. The workflow signs only when the secrets are present, so
+unsigned builds keep working in the meantime.
+
+macOS needs notarization on top of signing, since Gatekeeper refuses a signed but
+un-notarized app. That job is gated on a repository **variable** rather than a
+secret, because the secrets context is not available in a job-level `if:`:
+
+| Type | Name | Value |
+| --- | --- | --- |
+| Variable | `APPLE_NOTARIZE` | `true` |
+| Secret | `APPLE_ID`, `APPLE_APP_SPECIFIC_PASSWORD`, `APPLE_TEAM_ID` | Apple Developer credentials |
+| Secret | `WINDOWS_CERT_PFX_BASE64` | base64 of the Authenticode `.pfx` |
+| Secret | `WINDOWS_CERT_PASSWORD` | that certificate's password |
+
+Build a release with a tag:
+
+```sh
+git tag v0.1.0 && git push --tags
+```
+
+Workflow files are linted in CI with `actionlint`, because an invalid workflow
+fails as an opaque zero-second stub run rather than a useful error.
 
 ## Licence
 

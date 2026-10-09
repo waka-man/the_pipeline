@@ -76,9 +76,13 @@ jobs:
   # Once signing credentials exist, macOS additionally needs notarization or
   # Gatekeeper refuses the app even when it is correctly signed. Kept separate
   # because it needs a privileged step that should not run in every build.
+  #
+  # The gate reads a repository *variable*, not a secret: the secrets context is
+  # not available in a job-level `if:`. Set APPLE_NOTARIZE=true plus the three
+  # APPLE_* secrets to enable it.
   notarize:
     name: notarize (macOS)
-    if: startsWith(github.ref, 'refs/tags/') && secrets.APPLE_ID != ''
+    if: startsWith(github.ref, 'refs/tags/') && vars.APPLE_NOTARIZE == 'true'
     needs: build
     runs-on: macos-latest
     steps:
