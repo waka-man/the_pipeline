@@ -73,6 +73,16 @@ function candidates(root) {
 }
 
 const BUNDLED_NAME = 'grading-pipeline-sidecar';
+const BUNDLED_OPENCODE = 'opencode';
+
+/** Path of the opencode binary shipped with the app, or null if absent. */
+function bundledOpencode() {
+  const res = process.resourcesPath || '';
+  if (!res) return null;
+  const exe = path.join(res, 'opencode',
+    process.platform === 'win32' ? `${BUNDLED_OPENCODE}.exe` : BUNDLED_OPENCODE);
+  return fs.existsSync(exe) ? exe : null;
+}
 
 /** Path of the frozen sidecar inside a packaged app, or null if not built. */
 function bundledSidecar() {
@@ -159,6 +169,9 @@ async function startSidecar() {
       PYTHONUNBUFFERED: '1',
       GRADING_PIPELINE_HOME: app.getPath('userData'),
       GRADING_PIPELINE_RENDERER: path.join(__dirname, 'renderer'),
+      // Only set when one actually shipped. Leaving it unset makes the sidecar
+      // fall back to opencode on PATH, which is what a developer build wants.
+      ...(bundledOpencode() ? { GRADING_PIPELINE_OPENCODE: bundledOpencode() } : {}),
     },
     stdio: ['ignore', 'pipe', 'pipe'],
     // Own process group on POSIX, so opencode (a child of the sidecar) is

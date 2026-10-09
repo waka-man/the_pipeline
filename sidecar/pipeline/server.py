@@ -127,10 +127,33 @@ class AppState:
         self.settings.check_canvas()
         return CanvasClient(self.settings.canvas_base_url, self.settings.canvas_api_token)
 
+    def opencode_env(self) -> dict[str, str]:
+        """Environment for the opencode process, including any configured key."""
+        extra: dict[str, str] = {}
+        key = self.settings.openrouter_api_key
+        if key:
+            # opencode reads this directly, so it works regardless of how it
+            # resolves its data directory on a given platform.
+            extra["OPENROUTER_API_KEY"] = key
+            data_home = self.settings.data / "opencode-home"
+            try:
+                config.write_opencode_auth(key, data_home)
+                extra["XDG_DATA_HOME"] = str(data_home)
+            except OSError:
+                # The env var alone is enough; the auth file is belt and braces.
+                pass
+        return extra
+
+    def stop_opencode(self) -> None:
+        if self.server is not None:
+            self.server.stop()
+            self.server = None
+            self.catalogue = {}
+
     def ensure_opencode(self) -> OpenCodeServer:
         if self.server is None:
             srv = OpenCodeServer()
-            srv.start()
+            srv.start(self.opencode_env())
             self.server = srv
             try:
                 self.catalogue = srv.catalogue()
@@ -184,6 +207,9 @@ def op_status(state: AppState) -> dict[str, Any]:
     st = state.settings
     return {
         "canvas_configured": bool(st.canvas_base_url and st.canvas_api_token),
+        # Reported as a flag only. A key is never echoed back to the renderer,
+        # so it cannot end up in a DOM node or a screenshot.
+        "model_key_configured": bool(st.openrouter_api_key),
         "workspace": str(st.workspace),
         "data_dir": str(st.data),
         "jobs": {n: job_state(state, n) for n in
@@ -196,7 +222,19 @@ def op_save_settings(state: AppState, body: dict[str, Any]) -> dict[str, Any]:
         config.set_secret("canvas_base_url", str(body["canvas_base_url"]).rstrip("/"))
     if body.get("canvas_api_token"):
         config.set_secret("canvas_api_token", str(body["canvas_api_token"]))
+    if "openrouter_api_key" in body:
+        key = str(body["openrouter_api_key"]).strip()
+        if key:
+            config.set_secret("openrouter_api_key", key)
+        else:
+            # An empty field means "remove the key". Ignoring it would leave a
+            # user with no way to unconfigure one they pasted by mistake.
+            config.delete_secret("openrouter_api_key")
     state.settings = config.Settings.load()
+    # The opencode process holds the old environment, so it has to be restarted
+    # before a new or removed key takes effect.
+    if "openrouter_api_key" in body and state.server is not None:
+        state.stop_opencode()
     return op_status(state)
 
 

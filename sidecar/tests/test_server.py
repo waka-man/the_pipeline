@@ -16,6 +16,7 @@ from pathlib import Path
 
 import pytest
 
+from pipeline import config
 from pipeline import server as srv
 from pipeline.canvas.spec import spec_from_assignment
 from pipeline.models import SubmissionUnit
@@ -72,6 +73,12 @@ class FakeCanvas:
 @pytest.fixture()
 def live(tmp_path, monkeypatch):
     """A running sidecar with a stubbed Canvas and a temporary data directory."""
+    # Isolate secret storage before anything constructs Settings. Without this
+    # a test that saves a credential writes it into the developer's real
+    # secrets.json, or a CI runner's home directory.
+    monkeypatch.setenv("GRADING_PIPELINE_HOME", str(tmp_path / "home"))
+    (tmp_path / "home").mkdir(parents=True, exist_ok=True)
+
     store = Store(tmp_path / "pipeline.db")
     bus = srv.EventBus(store)
     state = srv.AppState(store=store, bus=bus)
@@ -365,3 +372,85 @@ def test_bus_drops_slow_subscribers_rather_than_blocking(live):
         state.bus.emit("noise", {"n": n})
     assert q.qsize() < 2500       # publisher was never blocked
     state.bus.unsubscribe(q)
+
+# ------------------------------------------------------- model credentials
+
+def test_a_model_key_is_saved_cleared_and_never_echoed(live):
+    """The key is stored, can be removed, and is never returned to the renderer."""
+    base, state, _fake, _spec = live
+
+    assert send(base, "/api/status", method="GET")["model_key_configured"] is False
+
+    saved = send(base, "/api/settings", {"openrouter_api_key": "  sk-or-secret  "})
+    assert saved["model_key_configured"] is True
+    # Whitespace trimmed on the way in.
+    assert state.settings.openrouter_api_key == "sk-or-secret"
+    # The key must not come back over HTTP, or it lands in the DOM.
+    assert "sk-or-secret" not in json.dumps(saved)
+
+    cleared = send(base, "/api/settings", {"openrouter_api_key": ""})
+    assert cleared["model_key_configured"] is False
+    assert state.settings.openrouter_api_key == ""
+
+
+def test_the_key_reaches_opencode_as_an_env_var_and_an_auth_file(live):
+    base, state, _fake, _spec = live
+
+    send(base, "/api/settings", {"openrouter_api_key": "sk-or-abc123"})
+    env = state.opencode_env()
+
+    # The env var is the route that works on every platform.
+    assert env["OPENROUTER_API_KEY"] == "sk-or-abc123"
+
+    auth = Path(state.settings.data) / "opencode-home" / "opencode" / "auth.json"
+    assert auth.exists(), "opencode auth.json was not written"
+    stored = json.loads(auth.read_text())
+    assert stored["openrouter"] == {"type": "api", "key": "sk-or-abc123"}
+    assert env["XDG_DATA_HOME"] == str(auth.parent.parent)
+
+
+def test_without_a_key_opencode_gets_nothing_extra(live):
+    _base, state, _fake, _spec = live
+    state.settings.openrouter_api_key = ""
+    assert state.opencode_env() == {}
+
+
+def test_changing_the_key_restarts_a_running_opencode(live):
+    base, state, _fake, _spec = live
+
+    stopped = []
+
+    class FakeServer:
+        def stop(self):
+            stopped.append(True)
+
+    state.server = FakeServer()
+    send(base, "/api/settings", {"openrouter_api_key": "sk-or-abc123"})
+    assert stopped == [True], "opencode kept running with the old key"
+    assert state.server is None
+
+
+def test_saving_canvas_settings_does_not_restart_opencode(live):
+    """Only a key change needs a restart; a Canvas change must not kill a run."""
+    base, state, _fake, _spec = live
+    state.server = None
+    state.settings.canvas_base_url = "https://school.instructure.com"
+    state.settings.canvas_api_token = "tok"
+    send(base, "/api/settings", {"canvas_base_url": "https://school.instructure.com"})
+    assert state.server is None
+
+
+def test_tests_never_write_to_the_developers_real_secrets(live, tmp_path):
+    """Guards the fixture itself.
+
+    A test that saves a credential into the real secrets file is a slow way to
+    discover the fixture stopped isolating storage: the assertion passes, the
+    run is green, and the developer's own configuration has been overwritten.
+    """
+    base, _state, _fake, _spec = live
+    send(base, "/api/settings", {"openrouter_api_key": "sk-or-not-real"})
+    on_disk = config.secrets_file()
+    assert str(tmp_path) in str(on_disk), f"secrets escaped the tmp dir: {on_disk}"
+    real = Path.home() / ".local" / "share" / "grading-pipeline" / "secrets.json"
+    if real.exists():
+        assert "sk-or-not-real" not in real.read_text(), "wrote into the real secrets file"

@@ -194,6 +194,19 @@ function viewSetup() {
     onclick: () => { token.type = token.type === 'password' ? 'text' : 'password'; },
   }, 'show');
 
+  const hasKey = !!st.model_key_configured;
+  const orKey = h('input', {
+    class: 'input', id: 'or-key', type: 'password',
+    placeholder: hasKey ? 'A key is already saved' : 'sk-or-v1-...',
+    // Never prefilled. The saved value is not sent to the renderer, so this
+    // field only ever holds a newly typed key, and clearing it removes it.
+    value: '',
+  });
+  const showOr = h('button', {
+    class: 'btn', 'data-size': 'sm', 'data-variant': 'ghost',
+    onclick: () => { orKey.type = orKey.type === 'password' ? 'text' : 'password'; },
+  }, 'show');
+
   return h('div', {},
     h('div', { class: 'head' },
       h('h1', {}, 'Set up'),
@@ -224,6 +237,30 @@ function viewSetup() {
       connected ? h('div', { style: 'margin-top:14px' },
         notice('Connected. You can move on to choosing a course.', 'ok')) : null),
 
+    card('OpenRouter key', hasKey ? 'saved' : 'not set',
+      field('API key', h('div', { style: 'display:flex;gap:8px' },
+        h('div', { style: 'flex:1' }, orKey), showOr)),
+      h('div', { class: 'hint', style: 'margin-top:8px' },
+        'Used to authenticate the bundled agent runtime. Free OpenRouter models '
+        + 'work without one, so this is only needed for paid models. Clearing the '
+        + 'field and saving removes the stored key.'),
+      h('div', { style: 'display:flex;gap:8px;margin-top:10px' },
+        h('button', {
+          class: 'btn', 'data-variant': hasKey ? 'ghost' : 'primary',
+          onclick: async () => {
+            const res = await guard(
+              () => api.saveSettings({ openrouter_api_key: orKey.value.trim() }),
+              'Could not save the key');
+            if (res) {
+              S.status = res;
+              orKey.value = '';
+              toast(res.model_key_configured
+                ? 'Key saved. The agent runtime restarts on the next grading run.'
+                : 'Key removed.');
+            }
+          },
+        }, hasKey ? 'Replace or remove key' : 'Save key'))),
+
     card('Grading model', S.model ? S.model.selected : 'not chosen',
       h('div', { style: 'display:flex;gap:8px;align-items:center;flex-wrap:wrap' },
         h('button', { class: 'btn', onclick: () => guard(loadModels, 'Could not read models') },
@@ -231,7 +268,7 @@ function viewSetup() {
         S.model ? h('span', { class: 'chip', dataset: { tone: 'accent' } },
           `${S.model.selected} · ${S.model.tier} · ${S.model.output_budget} tokens`) : null),
       h('div', { class: 'hint', style: 'margin-top:10px' },
-        'Models are read from the bundled agent runtime, which holds the API keys. ',
+        'Models are read from the bundled agent runtime, which holds the API key. ',
         'Free OpenRouter models are tried first, then low-cost models, then the strongest available.'),
       S.model?.candidates?.length
         ? h('div', { class: 'picklist', style: 'margin-top:12px' },
@@ -360,7 +397,7 @@ function viewCollect() {
         h('button', {
           class: 'btn', 'data-variant': 'primary',
           onclick: () => guard(async () => {
-            await api.collect(run.run_id, { limit: args.limit || null });
+            await api.collect(run.run_id, { limit: null });
             toast('Collecting. Progress appears on the right.');
           }, 'Could not start collection'),
         }, 'Collect'),
@@ -522,6 +559,32 @@ function viewPublish() {
 
     card('Select submissions',
       `${graded.length} graded, ${graded.filter((s) => S.selected.has(s.row_id)).length} selected`,
+
+      // A full cohort is the normal case, so the common action is one click.
+      // Without this the only route is a checkbox per student, which for a
+      // 150-submission assignment means 150 clicks.
+      h('div', { style: 'display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap;align-items:center' },
+        h('button', {
+          class: 'btn', 'data-size': 'sm', disabled: !graded.length,
+          onclick: () => {
+            const allSelected = graded.length > 0
+              && graded.every((s) => S.selected.has(s.row_id));
+            if (allSelected) {
+              // Drop only the rows on screen, so a selection made elsewhere
+              // survives a visit to this stage.
+              graded.forEach((s) => S.selected.delete(s.row_id));
+            } else {
+              graded.forEach((s) => S.selected.add(s.row_id));
+            }
+            render();
+          },
+        }, graded.length > 0 && graded.every((s) => S.selected.has(s.row_id))
+            ? `Clear selection (${graded.length})`
+            : `Select all ${graded.length ? `(${graded.length})` : ''}`.trim()),
+        graded.filter((s) => !s.published).length !== graded.length
+          ? h('span', { class: 'hint' }, 'Already-published submissions are excluded.')
+          : null),
+
       h('div', { class: 'rows' },
         h('div', { class: 'row row-head' },
           h('span', {}, ''), h('span', {}, 'Student'), h('span', { style: 'text-align:right' }, 'Score'),

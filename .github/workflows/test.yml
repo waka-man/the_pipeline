@@ -82,8 +82,26 @@ jobs:
         with:
           node-version: "22"
 
+      - name: Install
+        working-directory: apps/desktop
+        run: npm ci
+
+      # no-undef is the rule that would have caught the Collect button's
+      # `args is not defined`. A reference to a name that does not exist only
+      # fails when the handler runs, so it is invisible to any test that reads
+      # source rather than executing it.
+      - name: Lint
+        working-directory: apps/desktop
+        run: npm run lint
+
       - name: Main-process logic tests
         run: node apps/desktop/test/main.test.js
+
+      # Drives the real renderer in a DOM and clicks every button in every
+      # stage, so a handler that throws fails the build.
+      - name: Renderer tests
+        working-directory: apps/desktop
+        run: node test/renderer.test.js
 
   # The sidecar must start on a clean machine with no project checkout present,
   # because that is what a packaged app looks like. Electron itself is heavy and
@@ -150,11 +168,17 @@ jobs:
       - name: Freeze and run it
         run: python scripts/build_sidecar.py
 
-      - name: It serves, not just imports
+      # /health only proves the server booted. It is /app that actually delivers
+      # the UI, and a packaged app shipped for weeks with /app returning 404
+      # because the renderer was unreachable inside the asar. Check both, and
+      # check the assets, not just the entry point.
+      - name: It serves the UI, not just a health check
         shell: bash
         run: |
           BIN=apps/desktop/resources/sidecar/grading-pipeline-sidecar
-          GRADING_PIPELINE_HOME="$(mktemp -d)" "$BIN" > out.log 2> err.log &
+          GRADING_PIPELINE_HOME="$(mktemp -d)" \
+          GRADING_PIPELINE_RENDERER="$PWD/apps/desktop/renderer" \
+            "$BIN" > out.log 2> err.log &
           PID=$!
           for _ in $(seq 1 60); do
             grep -q port out.log 2>/dev/null && break
@@ -162,9 +186,14 @@ jobs:
           done
           PORT=$(python -c "import json;print(json.load(open('out.log'))['port'])" 2>/dev/null)
           if [ -z "$PORT" ]; then cat err.log; exit 1; fi
-          curl -sf "http://127.0.0.1:$PORT/health" | tee /dev/stderr | grep -q '"ok": true'
+          for path in /health /app/ /app/app.js /app/styles.css /app/ui.js; do
+            printf "%-16s " "$path"
+            curl -sf -o /dev/null -w "HTTP %{http_code}\n" "http://127.0.0.1:$PORT$path" \
+              || { echo "FAILED"; curl -s "http://127.0.0.1:$PORT$path"; exit 1; }
+          done
+          curl -sf "http://127.0.0.1:$PORT/app/" | grep -qi "<html"
           kill $PID 2>/dev/null || true
-          echo "frozen sidecar served on $PORT"
+          echo "frozen sidecar served the UI on $PORT"
 
   # An invalid workflow file does not produce a readable error. GitHub records a
   # stub run that fails in 0s with "likely failed because of a workflow file

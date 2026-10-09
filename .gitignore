@@ -15,3 +15,6 @@ dist/
 # Frozen sidecar and PyInstaller work dir. Built by scripts/build_sidecar.py;
 # the ~115 MiB binary is a build output, not source.
 apps/desktop/resources/
+
+# opencode bundled into the packaged app
+apps/desktop/resources/opencode/

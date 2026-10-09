@@ -81,16 +81,27 @@ Outputs land in `apps/desktop/dist/`.
 
 ## Model setup
 
-Grading shells out to `opencode`, so **`opencode` must be installed and signed
-in separately**. The pipeline never stores a model key.
+The desktop app **ships its own opencode**, so there is nothing to install and
+nothing to authenticate by hand. The pipeline still never calls a provider
+itself: all model work happens inside that opencode process, and the pipeline
+holds no provider client.
+
+**OpenRouter key.** Free OpenRouter models work without one, so it is only
+needed for paid models. Enter it in **Setup → OpenRouter key**. It is stored in
+your system keychain, passed to opencode as `OPENROUTER_API_KEY`, and also
+written to an app-owned `auth.json` so a bundled opencode picks it up. Clearing
+the field and saving removes it. The key is never sent back to the renderer, so
+it cannot appear in the DOM.
+
+Using the CLI instead of the app? Install and sign in opencode yourself:
 
 ```sh
 npm install -g opencode
 opencode auth login
 ```
 
-Free models are preferred by default, read from opencode's own catalogue, so a
-default install needs no billing. `--no-prefer-free` opts out.
+Free models are preferred by default, read from opencode's own catalogue.
+`--no-prefer-free` opts out.
 
 ## Commands
 
@@ -106,6 +117,10 @@ status      show run progress
 Every command accepts `--run N`; `collect`, `grade`, `render` and `publish` also
 accept `--course` and `--assignment` to work without an explicit run. `grade`
 takes `--limit`, `--workers`, `--attempts`, `--dry-run` and `--include-needs-review`.
+
+The publish stage has a **Select all** toggle, so a full cohort is one click
+rather than one click per student. Already-published rows are excluded. Selecting
+everything and publishing is still a two-step confirmation.
 
 **`publish` is a dry run unless you pass `--yes`.** It prints the exact payload it
 would send and writes nothing. `grade --dry-run` likewise prints prompts and
@@ -145,8 +160,19 @@ criteria reserved for a human, or a rubric note. See `docs/ARCHITECTURE.md`.
 ```sh
 python3 -m venv .venv && ./.venv/bin/pip install -e ".[dev]"
 PYTHONPATH=sidecar python -m pytest sidecar/tests -q
-cd apps/desktop && npm install && npm test
+
+cd apps/desktop
+npm install
+npm run lint            # no-undef catches handlers that reference names which do not exist
+npm test                # main-process tests, then renderer tests
 ```
+
+The renderer tests run the real renderer in a DOM and click every button in
+every stage. That is deliberate: two shipping bugs were invisible to tests that
+read source rather than executing it, one of which was a button that threw on
+every click. A test that clicks a handler also asserts the click reached the API,
+because the app's own error handling swallows the exception that would otherwise
+have been the signal.
 
 Recorded Canvas responses in `sidecar/tests/fixtures/` are replayed rather than
 hand-written, so the transport tests exercise real response shapes. They are

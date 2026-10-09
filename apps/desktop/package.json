@@ -7,13 +7,20 @@
   "scripts": {
     "start": "electron .",
     "dev": "GRADING_PIPELINE_DEV=1 electron .",
-    "test": "node test/main.test.js",
+    "test": "node test/main.test.js && node test/renderer.test.js",
     "build": "electron-builder",
-    "build:dir": "electron-builder --dir"
+    "build:dir": "electron-builder --dir",
+    "lint": "eslint .",
+    "fetch:opencode": "npm install --no-save --prefix .opencode opencode-ai@1.18.35 && mkdir -p resources/opencode && cp .opencode/node_modules/opencode-ai/bin/* resources/opencode/opencode && chmod +x resources/opencode/opencode"
   },
   "devDependencies": {
+    "@eslint/js": "^10.0.1",
     "electron": "^33.0.0",
-    "electron-builder": "^25.1.8"
+    "electron-builder": "^25.1.8",
+    "esbuild": "^0.28.2",
+    "eslint": "^10.12.0",
+    "globals": "^17.13.0",
+    "jsdom": "^30.1.2"
   },
   "build": {
     "appId": "org.gradepipeline.desktop",
@@ -27,6 +34,13 @@
       {
         "from": "resources/sidecar",
         "to": "sidecar",
+        "filter": [
+          "**/*"
+        ]
+      },
+      {
+        "from": "resources/opencode",
+        "to": "opencode",
         "filter": [
           "**/*"
         ]

@@ -81,10 +81,16 @@ class OpenCodeServer:
     _base: str = ""
 
     def __post_init__(self) -> None:
+        # The packaged app ships its own opencode and points at it through the
+        # environment, so a user is not required to install one. A developer's
+        # own opencode is used when nothing is specified.
+        override = os.environ.get("GRADING_PIPELINE_OPENCODE", "").strip()
+        if override:
+            self.binary = override
         self._base = f"http://{self.hostname}:{self.port}"
 
     def start(self, extra_env: dict[str, str] | None = None) -> None:
-        if shutil.which(self.binary) is None:
+        if not Path(self.binary).is_file() and shutil.which(self.binary) is None:
             raise RunnerError(
                 f"'{self.binary}' is not on PATH. Install opencode, or set "
                 "GRADING_PIPELINE_OPENCODE to its path."

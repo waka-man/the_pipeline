@@ -53,6 +53,47 @@ jobs:
       - name: Freeze and smoke-test the sidecar
         run: python scripts/build_sidecar.py
 
+      # Ships opencode with the app so nobody has to install and authenticate
+      # it separately. The npm package always names its payload opencode.exe
+      # even when it is an ELF or Mach-O binary, so it is renamed here. Its
+      # postinstall fetches the build for whichever runner is doing the install,
+      # which is why this cannot be done once and shared across the matrix.
+      #
+      # Required, not best effort. A release without it ships an app that
+      # demands a separate opencode install, which is the whole thing this
+      # bundle exists to remove. electron-builder silently skips a missing
+      # resources/opencode, so nothing downstream would catch it.
+      - name: Fetch opencode
+        id: opencode
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p apps/desktop/resources/opencode
+          if npm install --prefix "$RUNNER_TEMP/oc" --no-audit --no-fund \
+               "opencode-ai@${OPENCODE_VERSION}"; then
+            src=$(ls "$RUNNER_TEMP/oc/node_modules/opencode-ai/bin/" | head -1)
+            name=opencode
+            [ "$RUNNER_OS" = "Windows" ] && name=opencode.exe
+            cp "$RUNNER_TEMP/oc/node_modules/opencode-ai/bin/$src" \
+               "apps/desktop/resources/opencode/$name"
+            chmod +x "apps/desktop/resources/opencode/$name"
+            echo "bundled $src as $name ($(du -h "apps/desktop/resources/opencode/$name" | cut -f1))"
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::could not fetch opencode; refusing to publish a release that needs a separate install"
+            exit 1
+          fi
+        env:
+          OPENCODE_VERSION: "1.18.35"
+
+      - name: Smoke-test the bundled opencode
+        if: steps.opencode.outputs.present == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          BIN=$(ls apps/desktop/resources/opencode/)
+          apps/desktop/resources/opencode/"$BIN" --version
+
       # Signing is opt-in, and the opt-in cannot be expressed in a step `env:`
       # block. GitHub renders an absent secret as an empty string rather than
       # leaving it unset, and electron-builder reads an empty CSC_LINK as a
@@ -131,6 +172,11 @@ jobs:
           pip install pyinstaller
           npm --prefix apps/desktop ci
           python scripts/build_sidecar.py
+          mkdir -p apps/desktop/resources/opencode
+          npm install --prefix "$RUNNER_TEMP/oc" --no-audit --no-fund opencode-ai@1.18.35
+          cp "$RUNNER_TEMP/oc/node_modules/opencode-ai/bin/"* \
+             apps/desktop/resources/opencode/opencode
+          chmod +x apps/desktop/resources/opencode/opencode
           cd apps/desktop
           npx electron-builder --mac dmg --publish never
       - name: Submit for notarization

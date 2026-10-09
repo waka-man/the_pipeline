@@ -51,7 +51,7 @@ def secrets_file() -> Path:
     return data_dir() / "secrets.json"
 
 
-SECRET_KEYS = ("canvas_base_url", "canvas_api_token")
+SECRET_KEYS = ("canvas_base_url", "canvas_api_token", "openrouter_api_key")
 
 
 # --------------------------------------------------------------- secrets
@@ -68,6 +68,15 @@ def _keychain_set(name: str, value: str) -> bool:
     try:
         import keyring  # type: ignore
         keyring.set_password(APP_NAME, name, value)
+        return True
+    except Exception:
+        return False
+
+
+def _keychain_delete(name: str) -> bool:
+    try:
+        import keyring  # type: ignore
+        keyring.delete_password(APP_NAME, name)
         return True
     except Exception:
         return False
@@ -107,6 +116,23 @@ def set_secret(name: str, value: str) -> None:
         path.chmod(0o600)
     except OSError:
         pass
+
+
+def delete_secret(name: str) -> None:
+    """Remove a stored secret, so a key can be cleared as well as set."""
+    if _keychain_delete(name):
+        return
+    path = secrets_file()
+    if not path.exists():
+        return
+    try:
+        data = json.loads(path.read_text())
+    except Exception:
+        return
+    if name not in data:
+        return
+    data.pop(name, None)
+    path.write_text(json.dumps(data, indent=2), newline=NEWLINE)
 
 
 def all_secrets() -> dict[str, str | None]:
@@ -280,10 +306,44 @@ def pick_model(available: dict[str, list[str]], preferred: str | None = None,
 
 # --------------------------------------------------------------- settings
 
+def write_opencode_auth(api_key: str, data_home: Path) -> Path:
+    """Write opencode's auth.json under an app-owned data directory.
+
+    opencode reads credentials from ``<XDG_DATA_HOME>/opencode/auth.json``.
+    Pointing XDG_DATA_HOME at a directory the app owns keeps the bundled
+    opencode independent of whatever the user has configured for their own
+    opencode install, which matters when the app ships its own binary.
+
+    The environment variable OPENROUTER_API_KEY is set as well and is the
+    primary route: it is honoured by opencode on every platform, whereas
+    XDG_DATA_HOME handling on Windows is not something to bet a release on.
+    """
+    target = data_home / "opencode" / "auth.json"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    existing: dict[str, Any] = {}
+    if target.exists():
+        try:
+            existing = json.loads(target.read_text())
+        except Exception:
+            existing = {}
+    if not isinstance(existing, dict):
+        existing = {}
+    existing["openrouter"] = {"type": "api", "key": api_key}
+    target.write_text(json.dumps(existing, indent=2) + "\n")
+    try:
+        os.chmod(target, 0o600)
+    except OSError:
+        pass
+    return target
+
+
 @dataclass
 class Settings:
     canvas_base_url: str = ""
     canvas_api_token: str = ""
+    # Held so it can be handed to opencode. The pipeline never talks to a model
+    # provider itself; this exists only to configure the opencode process.
+    openrouter_api_key: str = ""
     model: str | None = None
     workers: int = 3
     data: Path = field(default_factory=data_dir)
@@ -294,6 +354,7 @@ class Settings:
         return cls(
             canvas_base_url=get_secret("canvas_base_url") or "",
             canvas_api_token=get_secret("canvas_api_token") or "",
+            openrouter_api_key=get_secret("openrouter_api_key") or "",
             model=model,
             workers=int(os.environ.get("GRADING_PIPELINE_WORKERS", "3")),
         )

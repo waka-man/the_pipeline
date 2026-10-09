@@ -436,9 +436,34 @@ def test_pick_model_returns_none_without_a_catalogue():
     assert config.pick_model({}) is None
 
 
-def test_pipeline_holds_no_model_credentials():
-    assert "openrouter_api_key" not in config.SECRET_KEYS
-    assert "anthropic_api_key" not in config.SECRET_KEYS
+def test_only_the_openrouter_key_is_stored_and_nothing_else():
+    """One provider key is now stored, to configure the bundled opencode.
+
+    The point of the narrow list is that the pipeline does not become a place
+    where provider credentials accumulate. Anything beyond the one key the
+    bundled runtime needs should be rejected here rather than quietly added.
+    """
+    assert "openrouter_api_key" in config.SECRET_KEYS
+    for other in ("anthropic_api_key", "openai_api_key", "google_api_key",
+                  "groq_api_key", "mistral_api_key"):
+        assert other not in config.SECRET_KEYS
+
+
+def test_the_pipeline_never_calls_a_model_provider_directly():
+    """The stored key configures opencode. It is not a licence to call a provider.
+
+    This is the invariant that actually matters and that the old
+    `holds_no_model_credentials` test was reaching for. Storing one key is
+    compatible with it; issuing a request to a provider from this codebase is
+    not, because that is what would let a student's work leave the machine
+    without the user choosing the destination.
+    """
+    root = Path(__file__).resolve().parent.parent / "pipeline"
+    text = "\n".join(p.read_text() for p in sorted(root.rglob("*.py")))
+    for host in ("openrouter.ai", "api.anthropic.com", "api.openai.com",
+                 "generativelanguage.googleapis.com", "api.groq.com",
+                 "api.mistral.ai", "huggingface.co"):
+        assert host not in text, f"the pipeline now talks to {host} directly"
 
 # --------------------------------------------------------------- api router
 
