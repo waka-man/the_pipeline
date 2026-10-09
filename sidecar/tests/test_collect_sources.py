@@ -122,7 +122,7 @@ def pdf_bytes() -> bytes:
     import fitz
     doc = fitz.open()
     page = doc.new_page()
-    page.insert_text((72, 100), "ALU Database Design Document", fontsize=18)
+    page.insert_text((72, 100), "Example Course Design Document", fontsize=18)
     page.insert_text((72, 140), "Entities: User, Message, Transaction", fontsize=11)
     blob = doc.tobytes()
     doc.close()

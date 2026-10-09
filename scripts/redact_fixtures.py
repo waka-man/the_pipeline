@@ -20,6 +20,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import re
 import sys
 from pathlib import Path
@@ -42,7 +43,12 @@ COURSES = ["Course Alpha", "Course Bravo", "Course Charlie", "Course Delta",
 HOST = "example.instructure.com"
 # Matches the bare host in any position: as a URL host, in prose, or embedded
 # in an HTML email domain.
-ORIGINAL_HOST = re.compile(r"[A-Za-z0-9.-]*alueducation[A-Za-z0-9.-]*")
+# The host to scrub is supplied by the operator, never hardcoded: a public
+# repository must not name the institution it was built against. Set
+# GRADING_PIPELINE_CANVAS_HOST when recording from a live instance.
+_ORIGINAL = os.environ.get("GRADING_PIPELINE_CANVAS_HOST", "").strip()
+ORIGINAL_HOST = re.compile(
+    r"[A-Za-z0-9.-]*" + re.escape(_ORIGINAL) + r"[A-Za-z0-9.-]*") if _ORIGINAL else re.compile(r"(?!x)x")
 HANDLE_RE = re.compile(r"github\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)")
 # Deliberately absent: a regex for "capitalised words in free text". It cannot
 # tell a person's name from rubric terminology, and guessing wrong rewrites the
@@ -189,10 +195,15 @@ class Redactor:
             if original and original in value:
                 value = value.replace(original, self.handles[original])
         value = ORIGINAL_HOST.sub(HOST, value)
-        value = re.sub(r"alueducation[A-Za-z0-9.-]*", HOST, value, flags=re.IGNORECASE)
-        # Term titles carry the institution's initials, e.g. "2023 May Term (ALU)".
-        value = re.sub(r"\((?:ALU|AFL|ACADEMIC)\)", "", value)
-        value = re.sub(r"\bALU\b", "Institute", value)
+        if _ORIGINAL:
+            value = re.sub(re.escape(_ORIGINAL) + r"[A-Za-z0-9.-]*", HOST, value,
+                           flags=re.IGNORECASE)
+        # Term titles carry the institution's initials in parentheses. Supplied
+        # by the operator for the same reason the host is.
+        initials = os.environ.get("GRADING_PIPELINE_INSTITUTION_INITIALS", "").strip()
+        if initials:
+            value = re.sub(r"\(" + re.escape(initials) + r"\)", "", value)
+            value = re.sub(r"\b" + re.escape(initials) + r"\b", "Institute", value)
         value = re.sub(r"/files/\d+/", "/files/0/", value)
         return value
 
@@ -247,11 +258,12 @@ def main() -> int:
     if args.check:
         # `alu-regex-...` is the assignment's own required repository name, not
         # an identity; it is the author's material and stays put.
+        # No real names here: in a public repository the check itself must not
+        # publish the identities it is looking for. `scripts/check_identifiers.py`
+        # is what verifies that nothing identifying was committed.
         problems = verify({
-            "student name": r"Lilian|Kamikazi|Abdikarim|Irumva|Mwiza|Ikechukwu",
-            "institution host": r"alueducation",
-            "operator name": r"Wakuma|Debela",
-            "institution initials": r"\bALU\b(?!-regex)|\bAFL\b",
+            "institution host": r"\bcanvas\.(?!example\.)[a-z0-9-]+\b",
+            "real credential": r"gh[pousr]_[A-Za-z0-9]{20,}|sk-or-v1-[A-Za-z0-9]{20,}",
         })
         for p in problems:
             print(f"  {p}")

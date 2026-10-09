@@ -101,7 +101,7 @@ def test_instructions_are_converted_to_markdown(spec):
     text = spec.instructions_markdown
     assert len(text) > 1000
     assert "<" not in text.split("##")[0][:200] or True
-    assert "alueducation" in text.lower() or "email" in text.lower()
+    assert "example.instructure.com" in text.lower() or "email" in text.lower()
 
 
 def test_group_assignment_is_detected(assignment):

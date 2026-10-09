@@ -343,9 +343,11 @@ def test_every_fixture_is_actually_redacted():
     assert len(files) >= 8
 
     blob = "\n".join(f.read_text() for f in files)
-    # `alu-regex-...` is the assignment's own required repository name and is
-    # the author's own material, so it is deliberately not scrubbed.
-    for pattern in (r"alueducation", r"\bALU\b(?!-regex)", r"@alueducation"):
+    # The institution is identified by reference, not by name: this repository
+    # must not contain the string in the first place.
+    assert "example.instructure.com" in blob, "fixtures lost their placeholder host"
+    for pattern in (r"\bcanvas\.(?!example\.)[a-z0-9-]+\b",
+                    r"gh[pousr]_[A-Za-z0-9]{20,}", r"sk-or-v1-[A-Za-z0-9]{20,}"):
         assert not re.search(pattern, blob, re.IGNORECASE), f"unredacted: {pattern}"
 
 

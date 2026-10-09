@@ -40,6 +40,11 @@ jobs:
       - name: Fixtures are anonymised
         run: python scripts/redact_fixtures.py --check
 
+      # A separate sweep over every tracked file, source as well as fixtures,
+      # for the identifiers a redactor cannot be relied on to catch.
+      - name: No identifying strings are committed
+        run: python scripts/check_identifiers.py
+
       - name: Tests
         run: python -m pytest sidecar/tests -q
 

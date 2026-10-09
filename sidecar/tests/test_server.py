@@ -88,7 +88,7 @@ def live(tmp_path, monkeypatch):
 
     fake = FakeCanvas(
         spec,
-        courses=[{"id": 3130, "name": "ALU Regex", "term": "m2026", "workflow_state": "available"}],
+        courses=[{"id": 3130, "name": "Example Regex", "term": "m2026", "workflow_state": "available"}],
         assignments=[{"id": 46805, "name": "Regex Onboarding Hackathon", "points_possible": 25.0,
                       "published": True, "due_at": None, "rubric": assignment["rubric"],
                       "needs_grading_count": 2, "group_category_id": None,
@@ -169,7 +169,7 @@ def test_malformed_json_is_a_clean_400(live):
 def test_courses_are_listed(live):
     base = live[0]
     body = get(base, "/api/courses")
-    assert [c["name"] for c in body["courses"]] == ["ALU Regex"]
+    assert [c["name"] for c in body["courses"]] == ["Example Regex"]
 
 
 def test_assignments_report_their_rubric_size(live):
