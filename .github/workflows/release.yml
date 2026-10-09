@@ -21,9 +21,12 @@ permissions:
   contents: write
 
 jobs:
-  # Chooses the matrix. Exists so a single target can be rebuilt without paying
-  # for four: macOS minutes are charged at 10x, so "just give me Windows" is a
+  # Chooses the matrix, so a single target can be rebuilt without paying for
+  # four: macOS minutes are charged at 10x, so "just give me Windows" is about a
   # quarter of the cost of the whole release.
+  #
+  # The output must be an object with `include`, which is the shape the dynamic
+  # matrix expects. A bare array parses and then yields no jobs at all.
   plan:
     runs-on: ubuntu-latest
     outputs:
@@ -34,14 +37,11 @@ jobs:
           WANT: ${{ inputs.platform || 'all' }}
         run: |
           set -euo pipefail
-          # One line. GITHUB_OUTPUT takes a single line per value, so a
-          # multi-line JSON silently truncates to "[" and fromJSON then fails,
-          # which drops the build job entirely instead of failing loudly.
-          full='[{"os":"macos-latest","label":"mac arm64","key":"mac-arm64"},{"os":"macos-15-intel","label":"mac x64","key":"mac-x64"},{"os":"windows-latest","label":"win x64","key":"windows"},{"os":"ubuntu-latest","label":"linux x64","key":"linux"}]'
+          all='{"include":[{"os":"macos-latest","label":"mac arm64","key":"mac-arm64"},{"os":"macos-15-intel","label":"mac x64","key":"mac-x64"},{"os":"windows-latest","label":"win x64","key":"windows"},{"os":"ubuntu-latest","label":"linux x64","key":"linux"}]}'
           if [ "$WANT" = "all" ]; then
-            echo "matrix=$full" >> "$GITHUB_OUTPUT"
+            echo "matrix=$all" >> "$GITHUB_OUTPUT"
           else
-            picked=$(printf '%s' "$full" | python3 -c "import json,sys; k=sys.argv[1]; print(json.dumps([e for e in json.load(sys.stdin) if e['key']==k]))" "$WANT")
+            picked=$(printf '%s' "$all" | python3 -c 'import json,sys; k=sys.argv[1]; d=json.load(sys.stdin); print(json.dumps({"include":[e for e in d["include"] if e["key"]==k]}))' "$WANT")
             echo "matrix=$picked" >> "$GITHUB_OUTPUT"
           fi
           echo "building: $WANT"
