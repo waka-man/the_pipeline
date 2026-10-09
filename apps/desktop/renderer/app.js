@@ -310,12 +310,17 @@ function viewSetup() {
 }
 
 /** A panel that slides in from the right. Used for assignments and the log. */
-function slideover(title, subtitle, body, foot) {
+function slideover(title, subtitle, body, foot, wide) {
   return h('div', {
     class: 'slideover',
     onclick: (e) => { if (e.target.classList.contains('slideover')) closePanel(); },
   },
-    h('div', { class: 'slideover-panel', role: 'dialog', 'aria-label': title },
+    h('div', {
+      // The log gets more width: agent output lines are long and a 760px
+      // terminal wraps them into something hard to follow.
+      class: wide ? 'slideover-panel slideover--wide' : 'slideover-panel',
+      role: 'dialog', 'aria-label': title,
+    },
       h('div', { class: 'slideover-head' },
         h('div', {},
           h('h2', {}, title),
@@ -409,7 +414,9 @@ function renderPanel() {
               : (line === 'turn complete' || line.startsWith('agent started')) ? 'log-done' : '',
           }, line)))
         : h('div', { style: 'color:var(--ink-3);font-size:12px' },
-            'Waiting for the agent. Output appears here as it runs.')));
+            'Waiting for the agent. Output appears here as it runs.'),
+      null,
+      true));
   }
 }
 

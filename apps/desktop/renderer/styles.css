@@ -879,6 +879,8 @@ body {
   box-shadow: 0 28px 70px rgba(0, 0, 0, 0.55);
 }
 
+.slideover--wide { width: min(1080px, 100%); }
+
 .slideover-head {
   display: flex;
   align-items: flex-start;
@@ -909,6 +911,8 @@ body {
 
 /* The agent log is a terminal, so it must not collapse whitespace or wrap
    mid-token the way prose would. */
+.slideover--wide .slideover-body { padding: 12px 16px; }
+
 .logview {
   margin: 0;
   font-family: var(--mono);
