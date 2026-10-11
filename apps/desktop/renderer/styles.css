@@ -432,6 +432,24 @@ body {
   min-width: 0;
 }
 .card + .card { margin-top: 14px; }
+
+/* Keeps the grading controls on screen while you work down the list.
+   A cohort of 150 means selecting a student at the bottom and scrolling back
+   to the top to press Grade Selected, which is the whole trip the sticky bar
+   exists to remove.
+
+   The gap above the card is padding on an opaque background rather than a
+   margin: a margin leaves a transparent band pinned to the top of the scroll
+   area, and rows scrolling up behind the bar are visible through it. */
+.sticky-acts {
+  position: sticky;
+  top: 0;
+  z-index: 6;
+  padding-top: 14px;
+  background: var(--desk);
+}
+.sticky-acts > .card { margin-top: 0; }
+.sticky-acts > .notice { margin-bottom: 14px; }
 .card-head {
   display: flex;
   align-items: baseline;
@@ -873,8 +891,8 @@ body {
   display: flex;
   flex-direction: column;
   /* Fully solid. A translucent panel over a translucent scrim was unreadable. */
-  background: var(--bg-1);
-  border: 1px solid var(--line);
+  background: var(--surface);
+  border: 1px solid var(--rule);
   border-radius: 10px;
   box-shadow: 0 28px 70px rgba(0, 0, 0, 0.55);
 }
@@ -887,7 +905,7 @@ body {
   justify-content: space-between;
   gap: 12px;
   padding: 16px 18px;
-  border-bottom: 1px solid var(--line);
+  border-bottom: 1px solid var(--rule);
 }
 
 .slideover-head h2 { margin: 0 0 2px; font-size: 15px; }
@@ -902,7 +920,7 @@ body {
 
 .slideover-foot {
   padding: 12px 18px;
-  border-top: 1px solid var(--line);
+  border-top: 1px solid var(--rule);
   display: flex;
   gap: 8px;
   align-items: center;
@@ -944,7 +962,7 @@ body {
 }
 
 .log-text {
-  color: var(--ink-1);
+  color: var(--ink);
   white-space: pre-wrap;
   word-break: break-word;
 }
@@ -963,7 +981,7 @@ body {
 .log-think .log-text {
   color: var(--ink-2);
   font-style: italic;
-  border-left: 2px solid var(--line);
+  border-left: 2px solid var(--rule);
   padding-left: 9px;
 }
 
@@ -988,7 +1006,7 @@ body {
 
 .log-count {
   color: var(--ink-3);
-  background: var(--line);
+  background: var(--rule);
   border-radius: 8px;
   padding: 0 6px;
   font-size: 10px;
@@ -1010,7 +1028,7 @@ body {
   width: 220px;
   height: 3px;
   border-radius: 2px;
-  background: var(--line);
+  background: var(--rule);
   overflow: hidden;
   position: relative;
 }
@@ -1035,7 +1053,7 @@ body {
 }
 
 .spinner-list { display: flex; flex-direction: column; gap: 10px; }
-.spinner-row { height: 44px; border-radius: 6px; background: var(--line); opacity: 0.45; }
+.spinner-row { height: 44px; border-radius: 6px; background: var(--rule); opacity: 0.45; }
 
 
 /* ---------------------------------------------------------- checkboxes
@@ -1050,7 +1068,7 @@ input[type="checkbox"] {
   height: 15px;
   margin: 0;
   flex: 0 0 auto;
-  border: 1px solid var(--line);
+  border: 1px solid var(--rule);
   border-radius: 4px;
   background: transparent;
   cursor: pointer;
@@ -1117,5 +1135,5 @@ input[type="checkbox"]:disabled {
 }
 
 .row input[type="checkbox"]:checked ~ .row-name {
-  color: var(--ink-1);
+  color: var(--ink);
 }

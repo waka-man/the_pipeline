@@ -580,6 +580,45 @@ def test_grading_a_selection_touches_only_those_rows(live):
     assert wait_for(lambda: state.store.progress(1).get("graded") == 1), state.job_errors
     assert state.store.progress(1)["graded"] == 1, "grading a selection graded the cohort"
 
+    # Row 1 is marked. Row 2 submitted nothing, and that is finished with
+    # rather than outstanding, so this run really is complete. It took a
+    # deliberate extra step to get a genuinely part-graded run to assert on
+    # below, because the obvious fixture does not produce one.
+    assert state.store.get_run(1)["status"] == "graded", state.store.get_run(1)["status"]
+
+
+def test_a_partly_graded_run_is_not_reported_as_graded(live):
+    """A job that stopped early must not leave the run claiming it finished.
+
+    This is the defect from the saved-session list: a card reading "graded"
+    directly beside "30/151 graded". The job returns when the provider quota
+    runs out or a key dies, not only when the cohort is done, and it used to
+    record `graded` either way.
+    """
+    base, state, _fake, _spec = live
+    send(base, "/api/runs", {"course_id": 3130, "assignment_id": 46805})
+    assert wait_for(lambda: state.store.progress(1).get("total") == 2)
+    send(base, "/api/runs/1/collect", {})
+    assert wait_for(lambda: state.store.progress(1).get("collected") == 1), state.job_errors
+
+    # The fixture's second row submitted nothing, which is finished with. Turn
+    # it into an outstanding submission so the run is genuinely part-graded:
+    # this is the state a cohort of 151 is in after the quota dies at 30.
+    state.store.set_submission_status(2, "collected")
+    send(base, "/api/runs/1/grade", {"stub": True, "row_ids": [1]})
+    assert wait_for(lambda: state.store.progress(1).get("graded") == 1), state.job_errors
+
+    run = state.store.get_run(1)
+    assert run["status"] == "grading", f'still claiming {run["status"]} at 1 of 2'
+    card = next(r for r in state.store.list_runs() if r["id"] == 1)
+    assert card["status"] == "grading", card
+    assert card["graded"] == 1 and card["total"] == 2
+
+    # Finish the cohort and it settles the other way.
+    send(base, "/api/runs/1/grade", {"stub": True, "row_ids": [2]})
+    assert wait_for(lambda: state.store.get_run(1)["status"] == "graded"), \
+        (state.job_errors, state.store.get_run(1))
+
 
 def test_the_agent_log_endpoint_returns_the_recorded_lines(live):
     base, state, _fake, _spec = live

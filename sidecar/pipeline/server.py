@@ -831,7 +831,10 @@ def op_grade(state: AppState, run_id: int, body: dict[str, Any]) -> dict[str, An
                 except Exception as exc:
                     bus.emit("grade.error", {"student": unit.display_name,
                                              "message": str(exc)[:200]})
-        store.set_run_status(run_id, "graded")
+        # Only claim the run is graded if it is. The job can return early on
+        # quota, a dead key, or a deliberate "grade these five", and a run that
+        # says `graded` while 121 rows are ungraded will be believed.
+        store.set_run_status(run_id, _settled_status(store, run_id))
         log_stop.set()
         bus.emit("job.done", {"job": "grade", "ok": True, "graded": graded,
                               "of": len(rows)})
@@ -871,7 +874,20 @@ def _grade_stub(state: AppState, run_id: int, spec: Any, workers: int,
         bus.emit("grade.progress", {"run_id": run_id, "student": unit.display_name,
                                     "status": "graded", "earned": result.earned,
                                     "possible": result.possible, "stub": True})
-    store.set_run_status(run_id, "graded")
+    store.set_run_status(run_id, _settled_status(store, run_id))
+
+
+def _settled_status(store: Any, run_id: int) -> str:
+    """What a finished grading job should leave behind as the run status.
+
+    "Finished" is not "complete": the job returns when the quota runs out, a key
+    dies, or the caller graded a selection rather than the cohort. Recording
+    `graded` regardless is what let a run claim it was finished with 30 of 151
+    marked.
+    """
+    counts = store.progress(run_id)
+    return "graded" if counts["total"] and counts["finished"] >= counts["total"] \
+        else "grading"
 
 
 def op_render(state: AppState, run_id: int) -> dict[str, Any]:

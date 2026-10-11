@@ -206,6 +206,17 @@ async function refreshSubmissions() {
   if (data) S.submissions = data.submissions;
 }
 
+/** Points earned, from the scorecard as the API sends it.
+ *
+ * Not `scorecard.total_earned`: that is a property on the model, and properties
+ * do not survive model_dump, so the field never arrives and the total renders
+ * as a dash above every report. The criterion scores are in the dump.
+ */
+function earnedOf(scorecard) {
+  if (!scorecard || !Array.isArray(scorecard.criterion_scores)) return null;
+  return scorecard.criterion_scores.reduce((sum, c) => sum + (c.points_earned || 0), 0);
+}
+
 /* ------------------------------------------------------------------ views */
 
 function viewSetup() {
@@ -798,6 +809,8 @@ function viewGrade() {
         'Free models first, so a stronger one here is a deliberate cost. '
         + 'Applies to the next run and leaves your saved default alone.')),
 
+    // Sticky, so the controls stay reachable from the bottom of a long list.
+    h('div', { class: 'sticky-acts' },
     card('Run grading', S.model?.selected ? `model ${S.model.selected}` : null,
       h('div', { class: 'stats', style: 'margin-bottom:16px' },
         h('div', { class: 'stat' }, h('div', { class: 'stat-v' }, graded), h('div', { class: 'stat-k' }, 'graded')),
@@ -825,25 +838,10 @@ function viewGrade() {
             toast(`Grading ${S.selected.size} selected${S.runModel ? ` with ${S.runModel}` : ''}.`);
           }, 'Could not start grading'),
         }, `Grade Selected (${S.selected.size})`),
-        h('button', {
-          class: 'btn',
-          title: 'Produce reports without calling a model, to exercise the review and publish paths',
-          onclick: () => guard(async () => {
-            await api.grade(run.run_id, { stub: true });
-            toast('Stub grading started — these are not real marks.');
-          }, 'Could not start stub grading'),
-        }, 'Run stub grading'),
-        h('button', {
-          class: 'btn',
-          onclick: () => guard(async () => {
-            await api.render(run.run_id);
-            toast('Rendering reports.');
-          }, 'Could not render'),
-        }, 'Render reports'),
         h('button', { class: 'btn', disabled: !graded, onclick: () => go('review') },
           'Continue to review'))),
 
-    notice('Posting is always optional. If a run does not hold up you can grade from the reports in your own words.', null),
+    notice('Posting is always optional. If a run does not hold up you can grade from the reports in your own words.', null)),
 
     S.submissions.length ? submissionTable(false) : null);
 }
@@ -923,7 +921,9 @@ function reportPane() {
       h('div', {},
         h('h2', { class: 'reader-title' }, S.current.student),
         h('div', { class: 'reader-meta' },
-          scorecard ? chip(`${fmt(scorecard.total_earned)} / ${fmt(run.points_possible)}`, 'accent') : null,
+          scorecard
+            ? chip(`${fmt(earnedOf(scorecard))} / ${fmt(run.points_possible)}`, 'accent')
+            : null,
           (scorecard?.flags || []).map((f) => chip(f.code, f.severity === 'block' ? 'flag' : null)),
           h('button', { class: 'rowlink',
             onclick: () => bridge.revealPath(S.current.path) }, 'show file'))),
@@ -1047,11 +1047,30 @@ function submissionTable(compact) {
   const gradeable = S.submissions.filter((s) => s.score === null);
   const allSelected = gradeable.length > 0
     && gradeable.every((s) => S.selected.has(s.row_id));
-  const rows = S.submissions.map((s) => h('div', {
-    class: 'row', 'data-selected': String(S.selected.has(s.row_id)),
-  },
-    compact || s.score !== null ? h('span', { style: 'color:var(--ink-3)' }, '')
-      : h('input', {
+  // Once a row has a mark its checkbox goes away, but the row may still be in
+  // the selection: grading is asynchronous, so the list refreshes with a score
+  // on a row that was ticked a moment earlier. Hiding the control then left it
+  // selected with no way to remove it, and it went on being counted in Grade
+  // Selected. So a selected row keeps a checkbox even when it is not gradeable.
+  const pickable = (s) => !compact && (s.score === null || S.selected.has(s.row_id));
+  const rows = S.submissions.map((s) => {
+    const toggle = () => {
+      S.selected.has(s.row_id) ? S.selected.delete(s.row_id) : S.selected.add(s.row_id);
+      render();
+    };
+    return h('div', {
+      class: 'row', 'data-selected': String(S.selected.has(s.row_id)),
+      // The row is the hit target, so a ticked row can be unticked by clicking
+      // anywhere on it even where no checkbox is drawn. Buttons and links keep
+      // their own behaviour.
+      onclick: (e) => {
+        if (compact || (!pickable(s) && !S.selected.has(s.row_id))) return;
+        if (e.target.closest('button, a, input')) return;
+        toggle();
+      },
+      style: pickable(s) ? 'cursor:pointer' : null,
+    },
+    pickable(s) ? h('input', {
           type: 'checkbox',
           title: s.student || s.student_name || '',
           checked: S.selected.has(s.row_id),
@@ -1059,7 +1078,9 @@ function submissionTable(compact) {
             e.target.checked ? S.selected.add(s.row_id) : S.selected.delete(s.row_id);
             render();
           },
-        }),
+          onclick: (e) => e.stopPropagation(),
+        })
+      : h('span', { style: 'color:var(--ink-3)' }, ''),
     h('span', { class: 'row-name', title: s.primary_url || '' }, s.student),
     h('span', { class: 'row-score' }, s.score === null ? '—' : fmt(s.score)),
     h('span', {}, statusChip(s.status)),
@@ -1075,7 +1096,8 @@ function submissionTable(compact) {
       s.primary_url ? h('button', {
         class: 'btn', 'data-size': 'sm', 'data-variant': 'ghost',
         onclick: () => window.open(s.primary_url, '_blank'),
-      }, 'repo') : null)));
+      }, 'repo') : null));
+  });
   return h('div', { style: 'margin-top:18px' },
     h('div', { class: 'card-head' }, h('h2', {}, 'Submissions'), h('span', { class: 'note' }, `${S.submissions.length}`)),
     h('div', { class: 'rows' },
@@ -1212,7 +1234,18 @@ function renderAside() {
 function render() {
   renderSpine();
   renderTopbar();
-  renderAside();
+  // The aside describes the run you are in. Before you have picked one there is
+  // nothing to describe, and a stale count from the last session is worse than
+  // an empty panel.
+  if (S.launching) {
+    // Clear the whole panel, not just the log: the counts beside it belong to
+    // the run you were last in, not to the choice you have not made yet.
+    mount(els.console);
+    mount(els.extra);
+    document.getElementById('aside-title').textContent = '';
+  } else {
+    renderAside();
+  }
 
   const views = {
     setup: viewSetup, select: viewSelect, collect: viewCollect,

@@ -129,6 +129,31 @@ CREATE INDEX IF NOT EXISTS idx_events_run ON events(run_id, id);
 """
 
 
+# Submission states in which a row is finished with: it carries a mark, it was
+# flagged for a human, or there was never anything to mark.
+TERMINAL_SUBMISSION_STATUSES = ("graded", "needs_review", "reviewed", "no_submission")
+
+
+def effective_run_status(status: str, graded: int, total: int) -> str:
+    """The run status as it should be shown, given how far the marking got.
+
+    A run is recorded as `graded` when its grading job returns, which is true
+    even when that job stopped early: the provider quota ran out, a key expired,
+    or someone graded five rows on purpose. A saved-session card then claimed
+    "graded" directly beside "30/151 graded", and the only way to tell the two
+    apart was to read both.
+
+    So `graded` is only reported once every submission is finished with.
+    Otherwise the run is still in progress, because work remains.
+
+    `published` is left alone: publishing can cover part of a cohort, and a run
+    that has been posted to the course has in fact been published.
+    """
+    if status in ("graded", "reviewing", "reviewed"):
+        return status if total > 0 and graded >= total else "grading"
+    return status
+
+
 class Store:
     def __init__(self, path: Path | str):
         self.path = Path(path)
@@ -200,6 +225,10 @@ class Store:
             raise KeyError(f"no run {run_id}")
         d = dict(row)
         d["spec"] = AssignmentSpec.model_validate_json(d.pop("spec_json"))
+        counts = self.progress(run_id)
+        d.update(counts)
+        d["status"] = effective_run_status(
+            d["status"], counts["finished"], counts["total"])
         return d
 
     def list_runs(self) -> list[dict[str, Any]]:
@@ -226,7 +255,15 @@ class Store:
                 ORDER BY r.updated_at DESC, r.id DESC
                 """
             ).fetchall()
-        return [dict(r) for r in rows]
+        out = []
+        for r in rows:
+            d = dict(r)
+            # Derived rather than stored: a run marked `graded` by a job that
+            # stopped at 30 of 151 is not graded, and every card in the list
+            # would otherwise overstate it.
+            d["status"] = effective_run_status(d["status"], d["graded"] or 0, d["total"] or 0)
+            out.append(d)
+        return out
 
     def set_label(self, run_id: int, label: str | None) -> None:
         with self.connect() as db:
@@ -324,6 +361,15 @@ class Store:
             ).fetchall()
         counts = {r["status"]: r["n"] for r in rows}
         counts["total"] = sum(counts.values())
+        # A submission is finished with once it carries a mark, was flagged for
+        # a human, or turned out to have nothing to mark. A student who never
+        # submitted is not work left to do, so leaving them out of this count
+        # would pin a run at "grading" forever.
+        #
+        # Named `finished` and not `graded`: the per-status entries above are
+        # this method's contract, and `counts["graded"]` already means "rows in
+        # the graded state" to existing callers.
+        counts["finished"] = sum(counts.get(s, 0) for s in TERMINAL_SUBMISSION_STATUSES)
         return counts
 
     def submissions_with_status(self, run_id: int, statuses: tuple[str, ...]) -> list[dict[str, Any]]:

@@ -897,6 +897,168 @@ async function run() {
     stubState.jobs = {};
   });
 
+  await test('the launcher does not show Activity for a run you have not picked', async () => {
+    const { window } = await reboot();
+
+    // On the launcher there is no run yet, so the aside has nothing to describe.
+    // Leaving the previous run's counts there showed "36 graded" against a
+    // screen whose only job is to choose a run, which reads as this run's
+    // progress and is simply wrong.
+    assert.strictEqual(await window.eval(
+      "document.querySelector('#aside-title').textContent.trim()"), '',
+      'the launcher titled the aside anyway');
+    assert.strictEqual(await window.eval(
+      "document.querySelector('#aside-extra').textContent.trim()"), '',
+      'the launcher showed the previous run\'s counts');
+
+    // And the aside must come back once a run is actually open.
+    await gotoOn(window, 'Grade');
+    assert.strictEqual(await window.eval(
+      "document.querySelector('#aside-title').textContent.trim()"), 'Activity',
+    'the aside did not come back on a real run');
+  });
+
+  await test('the grade stage offers no stub grading and no render buttons', async () => {
+    const { window } = await reboot();
+    await gotoOn(window, 'Grade');
+
+    // Stub grading produced marks that were not real marks, on a screen whose
+    // output is a grade that gets posted to a real course. Render reports
+    // duplicated the review page, which renders on read anyway.
+    const texts = await buttonTexts(window);
+    for (const gone of ['Run stub grading', 'Render reports']) {
+      assert.ok(!texts.some((t) => t.startsWith(gone)), `${gone} is still offered`);
+    }
+    assert.ok(texts.some((t) => t.startsWith('Grade All')),
+      'the real grading controls should still be there');
+  });
+
+  await test('a report shows the earned total, not a dash', async () => {
+    const { window } = await reboot();
+    await gotoOn(window, 'Review');
+
+    // The stub returns criterion scores summing to 8 + 6 + 7 over 25 possible.
+    // `total_earned` is a property on the model and properties do not survive
+    // model_dump, so reading it off the response gave undefined and the header
+    // rendered "— / 25" above every report.
+    const chip = await window.eval(
+      "(document.querySelector('.reader-meta') || {}).textContent || ''");
+    assert.match(chip, /\b21\s*\/\s*25(?![\d.])/,
+      `expected 21 / 25 in the report header, got: ${JSON.stringify(chip)}`);
+  });
+
+  await test('every CSS custom property the stylesheet uses is defined', () => {
+    // A border written as `var(--line)` when the token is `--rule` is not a
+    // visible error: the declaration is invalid, the element silently gets no
+    // border, and a checkbox with no border is an invisible checkbox. Nothing
+    // else catches that.
+    const css = fs.readFileSync(path.join(RENDERER, 'styles.css'), 'utf8');
+    const used = new Set([...css.matchAll(/var\((--[a-z0-9-]+)/g)].map((m) => m[1]));
+    const missing = [...used].filter(
+      (name) => !new RegExp(`^\\s*${name}\\s*:`, 'm').test(css));
+    assert.deepStrictEqual(missing, [], `undefined tokens: ${missing.join(', ')}`);
+  });
+
+  await test('a row graded while selected can still be deselected', async () => {
+    const { window } = await reboot();
+    await gotoOn(window, 'Grade');
+
+    // Tick an ungraded row, then have it come back with a mark on it, which is
+    // exactly what happens when grading is still running: the list refreshes
+    // with a score on a row that was ticked a moment earlier.
+    await window.eval(`(() => {
+      const rows = [...document.querySelectorAll('.rows .row:not(.row-head)')];
+      const row = rows.find((r) => r.querySelector('input[type=checkbox]'));
+      row.querySelector('input[type=checkbox]').click();
+    })()`);
+    await tick(40);
+    const before = (await buttonTexts(window)).find((t) => t.startsWith('Grade Selected'));
+    assert.match(before, /Grade Selected \(1\)/, `expected 1 selected, got: ${before}`);
+
+    // The row now has a score, so its checkbox is gone.
+    await window.eval(`(() => {
+      window.pipeline.api.submissions = () => Promise.resolve({ submissions: [
+        { row_id: 1, student: 'Ada Lovelace', score: 8, status: 'graded', collected: true },
+        { row_id: 2, student: 'Grace Hopper', score: 17, status: 'graded', collected: true },
+        { row_id: 3, student: 'Alan Turing', score: null, status: 'collected', collected: true },
+      ] });
+      window.pipeline.api.run = () => Promise.resolve({ ...({
+        run_id: 1, course_id: 3130, assignment_id: 46805, title: 'Assignment',
+        status: 'graded', points_possible: 25,
+        criteria: [{ id: 'c1', name: 'Correct extraction', points: 10 },
+                   { id: 'c2', name: 'Edge cases', points: 8 },
+                   { id: 'c3', name: 'Security awareness', points: 7 }],
+      }), progress: { graded: 2, collected: 3, total: 3 } });
+    })()`);
+    await window.eval(`window.dispatchEvent(new Event('focus'))`);
+    await window.eval(`(() => { document.querySelector('#main button'); })()`);
+    await tick(200);
+
+    // Ada still counts as selected, and there must be a way to take her out.
+    const stillSelected = await window.eval(
+      "[...document.querySelectorAll('#main button')].map((b) => b.textContent.trim())"
+      + ".find((t) => t.startsWith('Grade Selected'))");
+    assert.match(String(stillSelected), /Grade Selected \(1\)/,
+      `the graded row fell out of the count entirely: ${stillSelected}`);
+
+    const unticked = await window.eval(`(() => {
+      const rows = [...document.querySelectorAll('.rows .row:not(.row-head)')];
+      const row = rows.find((r) => r.textContent.includes('Grace Hopper'));
+      if (!row) return 'no-row';
+      const box = row.querySelector('input[type=checkbox]');
+      if (box) { box.click(); return 'checkbox'; }
+      row.click();
+      return 'row';
+    })()`);
+    assert.ok(['checkbox', 'row'].includes(unticked), `nothing to click: ${unticked}`);
+    await tick(60);
+
+    const after = (await buttonTexts(window)).find((t) => t.startsWith('Grade Selected'));
+    assert.match(after, /Grade Selected \(0\)/,
+      `clicking the graded row did not clear the selection: ${after}`);
+  });
+
+  await test('clicking a row toggles it without disturbing its buttons', async () => {
+    const { window } = await reboot();
+    await gotoOn(window, 'Grade');
+
+    // The row is the hit target now, so a click that lands on the agent-log
+    // button must reach the button and not also select the row.
+    await window.eval(`(() => {
+      const rows = [...document.querySelectorAll('.rows .row:not(.row-head)')];
+      const row = rows.find((r) => r.querySelector('button'));
+      row.querySelector('button').click();
+    })()`);
+    await tick(60);
+    const texts = await buttonTexts(window);
+    const sel = texts.find((t) => t.startsWith('Grade Selected'));
+    assert.match(sel, /Grade Selected \(0\)/,
+      `a button click also toggled the row: ${sel}`);
+  });
+
+  await test('the grading controls stay on screen while scrolling the list', async () => {
+    const { window } = await reboot();
+    await gotoOn(window, 'Grade');
+
+    // With 150 students you tick someone at the bottom of the list, and the
+    // only control that can act on that tick is at the top. Scrolling back up
+    // every time is the cost this removes.
+    const inside = await window.eval(`(() => {
+      const bar = document.querySelector('.sticky-acts');
+      if (!bar) return 'no-bar';
+      const btns = [...bar.querySelectorAll('button')].map((b) => b.textContent.trim());
+      return btns.some((t) => t.startsWith('Grade Selected')) ? 'ok' : btns.join(' | ');
+    })()`);
+    assert.strictEqual(inside, 'ok', `Grade Selected is not inside the sticky bar: ${inside}`);
+
+    // And the bar is actually sticky rather than merely present: jsdom has no
+    // layout, so the declaration is what can be asserted here.
+    const css = fs.readFileSync(path.join(RENDERER, 'styles.css'), 'utf8');
+    const rule = css.match(/\.sticky-acts\s*\{[^}]*\}/);
+    assert.ok(rule, 'no .sticky-acts rule in the stylesheet');
+    assert.match(rule[0], /position:\s*sticky/, rule[0]);
+  });
+
   await test('no handler threw while every button was clicked', () => {
     assert.deepStrictEqual(base.window.__errs, [],
       `uncaught in renderer:\n  ${base.window.__errs.join('\n  ')}`);

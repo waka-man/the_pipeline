@@ -44,7 +44,7 @@ from pipeline.models import (
     scorecard_json_schema,
     validate_scorecard,
 )
-from pipeline.store import Store
+from pipeline.store import Store, effective_run_status
 from pipeline.stub import stub_scorecard
 
 CODE_ROOT = Path(__file__).resolve().parents[1]
@@ -110,6 +110,55 @@ def test_progress_counts_by_status(store, spec):
     assert counts["graded"] == 1
     assert counts["no_submission"] == 1
     assert counts["total"] == 2
+    # A student who submitted nothing is finished with, not work left over, so
+    # this run counts as complete. Getting this wrong pins a run at "grading"
+    # for ever with nothing left to grade.
+    assert counts["finished"] == 2
+
+
+def test_a_run_marked_graded_partway_through_still_reads_as_grading():
+    """The defect: a card said "graded" directly beside "30/151 graded".
+
+    The grading job returns when the quota runs out or a key dies, not only when
+    the cohort is done, and it used to record `graded` either way.
+    """
+    assert effective_run_status("graded", 30, 151) == "grading"
+    assert effective_run_status("graded", 36, 37) == "grading"
+    assert effective_run_status("graded", 151, 151) == "graded"
+    assert effective_run_status("graded", 0, 0) == "grading"
+
+    # Stages that have nothing to do with marking are untouched, so a run being
+    # collected is never relabelled.
+    assert effective_run_status("collected", 0, 117) == "collected"
+    assert effective_run_status("collecting", 0, 117) == "collecting"
+    # Publishing can cover part of a cohort, and a posted run is published.
+    assert effective_run_status("published", 30, 151) == "published"
+
+
+def test_list_runs_reports_a_partial_run_as_grading(store, spec):
+    run_id = store.upsert_run(spec)
+    store.replace_submissions(run_id, [unit(), unit(canvas_submission_id=2, student_name="B")])
+    store.set_submission_status(1, "graded")
+    store.set_run_status(run_id, "graded")  # as the job records it when it stops early
+
+    card = next(r for r in store.list_runs() if r["id"] == run_id)
+    assert card["graded"] == 1 and card["total"] == 2
+    assert card["status"] == "grading", card
+
+    store.set_submission_status(2, "graded")
+    card = next(r for r in store.list_runs() if r["id"] == run_id)
+    assert card["status"] == "graded", card
+
+
+def test_get_run_reports_a_partial_run_as_grading(store, spec):
+    run_id = store.upsert_run(spec)
+    store.replace_submissions(run_id, [unit(), unit(canvas_submission_id=2, student_name="B")])
+    store.set_submission_status(1, "graded")
+    store.set_run_status(run_id, "graded")
+
+    assert store.get_run(run_id)["status"] == "grading"
+    store.set_submission_status(2, "graded")
+    assert store.get_run(run_id)["status"] == "graded"
 
 
 def test_only_the_valid_scorecard_is_returned(store, spec):
