@@ -1151,6 +1151,80 @@ await test('the log panel offers Stop while a submission is being graded', async
     'Stop is offered on a row that has already finished');
 });
 
+await test('reports flagged for review can be listed and walked', async () => {
+    const { window } = await reboot();
+
+    // Two flagged among three, so the filter has something to do and the count
+    // in the notice is not the whole cohort.
+    await window.eval(`(() => {
+      window.pipeline.api.submissions = () => Promise.resolve({ submissions: [
+        { row_id: 1, student: 'Ada Lovelace', score: 13, status: 'graded',
+          flags: [{ code: 'missing_peer_reviewed_sources', severity: 'block' }] },
+        { row_id: 2, student: 'Grace Hopper', score: 21, status: 'graded', flags: [] },
+        { row_id: 3, student: 'Alan Turing', score: 18, status: 'graded',
+          flags: [{ code: 'ai_detection_unchecked', severity: 'block' }] },
+      ] });
+    })()`);
+    await gotoOn(window, 'Review');
+    // The review stage reads the submissions already in hand rather than
+    // fetching its own, so the new fixture has to be pulled in the way the app
+    // pulls one in.
+    await window.eval(`window.__emit(${JSON.stringify({
+      event: 'grade.progress', data: { run_id: 1, student: 'Ada Lovelace', status: 'graded' },
+    })})`);
+    await tick(700);  // the refresh is debounced
+    await window.eval(`window.__emit(${JSON.stringify({ event: 'job.done', data: { job: 'grade', ok: true } })})`);
+    await tick(120);
+
+    const rows = () => window.eval("document.querySelectorAll('.review-list .row:not(.row-head)').length");
+    assert.strictEqual(await rows(), 3, 'the cohort should start unfiltered');
+
+    const clickText = (text) => window.eval(`(() => {
+      const b = [...document.querySelectorAll('#main button')]
+        .find((x) => x.textContent.trim() === ${JSON.stringify(text)});
+      if (!b) return 'missing';
+      if (b.disabled) return 'disabled';
+      b.click();
+      return 'clicked';
+    })()`);
+
+    assert.strictEqual(await clickText('Open flagged (2)'), 'clicked',
+      'no way to narrow the list to what needs a decision');
+    await tick(80);
+    assert.strictEqual(await rows(), 2, 'the filter did not narrow the list');
+
+    // And the two shown are the flagged ones, not the first two.
+    const names = await window.eval(
+      "[...document.querySelectorAll('.review-list .row:not(.row-head)')]"
+      + ".map((r) => r.textContent).join('|')");
+    assert.match(names, /Ada Lovelace/, names);
+    assert.match(names, /Alan Turing/, names);
+    assert.ok(!names.includes('Grace Hopper'), `an unflagged report is still listed: ${names}`);
+
+    // Turning it off restores the cohort.
+    assert.strictEqual(await clickText('Showing flagged'), 'clicked');
+    await tick(60);
+    assert.strictEqual(await rows(), 3, 'clearing the filter did not restore the cohort');
+
+    // Next flagged walks them one at a time, so a run of flagged reports can be
+    // worked through without going back to the list each time.
+    const openRow = () => window.eval(`(() => {
+      const r = document.querySelector('.review-list .row[data-selected="true"]');
+      return r ? r.textContent.trim() : '';
+    })()`);
+    assert.strictEqual(await clickText('Next flagged'), 'clicked');
+    await tick(120);
+    const first = await openRow();
+    assert.strictEqual(await clickText('Next flagged'), 'clicked');
+    await tick(120);
+    const second = await openRow();
+    // "Next" means next, so it advances from whatever is open rather than
+    // always opening the first flagged report.
+    assert.match(first, /Ada Lovelace|Alan Turing/, `not on a flagged report: ${first}`);
+    assert.match(second, /Ada Lovelace|Alan Turing/, `not on a flagged report: ${second}`);
+    assert.notStrictEqual(first, second, `Next flagged stayed on the same report: ${first}`);
+});
+
 await test('no handler threw while every button was clicked', () => {
     assert.deepStrictEqual(base.window.__errs, [],
       `uncaught in renderer:\n  ${base.window.__errs.join('\n  ')}`);

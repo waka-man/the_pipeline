@@ -70,6 +70,8 @@ const S = {
   logEntries: [],
   logShown: 0,
   logTimer: null,
+  // Review list filter: the whole cohort, or only what needs a human.
+  reviewFilter: 'all',
   // Rows the person has asked to stop, so the button does not offer it twice.
   stoppingRows: new Set(),
   bootstrapping: false,
@@ -908,18 +910,24 @@ function viewReview() {
   const graded = S.submissions.filter((s) => s.score !== null);
   const blocked = graded.filter((s) => (s.flags || []).some((f) => f.severity === 'block')).length;
 
+  // A report flagged for a human is the one that needs a decision, and on a
+  // cohort of 73 buried at an arbitrary alphabetical position it is easy to
+  // reach the end without having opened any of them.
+  const isFlagged = (s) => (s.flags || []).some((f) => f.severity === 'block');
+  const shown = S.reviewFilter === 'flagged' ? graded.filter(isFlagged) : graded;
+
   const list = h('div', { class: 'rows' },
     h('div', { class: 'row row-head' },
       h('span', {}, 'Student'),
       h('span', { style: 'text-align:right' }, 'Score')),
-    graded.map((s) => h('div', {
+    shown.map((s) => h('div', {
       class: 'row', 'data-selected': String(S.current?.rowId === s.row_id),
       onclick: () => openReport(s.row_id),
     },
       h('span', { class: 'row-name', title: s.student }, s.student),
       h('span', { class: 'row-score' },
         fmt(s.score),
-        (s.flags || []).some((f) => f.severity === 'block')
+        isFlagged(s)
           ? h('span', { class: 'dot', style: 'color:var(--flag);margin-left:6px' })
           : null))));
 
@@ -938,7 +946,35 @@ function viewReview() {
       h('div', { class: 'review-list' },
         h('div', { class: 'card-head' },
           h('h2', {}, 'Cohort'),
-          h('span', { class: 'note' }, `${graded.length}`)),
+          h('span', { class: 'note' },
+            `${shown.length} of ${graded.length}`)),
+        // The filter, and a way to walk the flagged ones one at a time without
+        // going back to the list each time.
+        blocked ? h('div', { style: 'display:flex;gap:6px;margin-bottom:10px;flex-wrap:wrap' },
+          h('button', {
+            class: 'btn', 'data-size': 'sm',
+            'data-variant': S.reviewFilter === 'flagged' ? 'primary' : null,
+            onclick: () => {
+              S.reviewFilter = S.reviewFilter === 'flagged' ? 'all' : 'flagged';
+              // The open report may not be in the list any more.
+              if (S.reviewFilter === 'flagged' && S.current
+                  && !isFlagged(S.submissions.find((x) => x.row_id === S.current.rowId) || {})) {
+                const first = graded.find(isFlagged);
+                if (first) { openReport(first.row_id); return; }
+              }
+              render();
+            },
+          }, S.reviewFilter === 'flagged' ? 'Showing flagged' : `Open flagged (${blocked})`),
+          h('button', {
+            class: 'btn', 'data-size': 'sm', 'data-variant': 'ghost',
+            disabled: blocked < 2,
+            onclick: () => {
+              const flaggedRows = graded.filter(isFlagged);
+              const at = flaggedRows.findIndex((x) => x.row_id === S.current?.rowId);
+              const next = flaggedRows[(at + 1) % flaggedRows.length];
+              if (next) { openReport(next.row_id); }
+            },
+          }, 'Next flagged')) : null,
         list),
       h('div', { class: 'review-pane' }, reportPane())));
 }

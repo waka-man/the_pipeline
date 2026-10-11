@@ -68,6 +68,33 @@ Windows on ARM is not built.
 expected for an unsigned build and neither indicates a problem with the software.
 See [Signing](#signing) below.
 
+#### Installing on macOS
+
+Gatekeeper refuses an unsigned app outright, and the wording is alarming: *"is
+damaged and can't be opened"*. Nothing is wrong with the download. It is the one
+thing an unsigned build cannot do.
+
+Open the `.dmg`, drag **Grading Pipeline** into **Applications**, then:
+
+```sh
+xattr -dr com.apple.quarantine "/Applications/Grading Pipeline.app"
+```
+
+That removes the quarantine flag the browser or `curl` attaches to a downloaded
+file, which is the thing Gatekeeper is actually refusing. Launch it normally
+afterwards.
+
+Without a terminal: open **System Settings → Privacy & Security**, scroll to the
+bottom, and press **Open Anyway** under the blocked-app entry. That appears only
+after you have tried to open the app once. Control-clicking the app and choosing
+**Open** works too.
+
+The app then runs with no further prompts. It is not signed or notarized, so
+moving it between machines or re-downloading it means doing this again.
+
+If macOS reports the app as damaged *after* clearing the quarantine flag, the
+download is incomplete — re-download it rather than bypassing further checks.
+
 #### Building the desktop app yourself
 
 ```sh
