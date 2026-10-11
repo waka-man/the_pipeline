@@ -46,6 +46,8 @@ const api = bridge.api;
 // courses had to scroll past all of them to reach the one they wanted.
 const COURSE_PAGE = 5;
 const ASSIGNMENT_PAGE = 8;
+// How many log rows to paint at once. A long run is thousands of lines.
+const LOG_ROWS = 250;
 
 const S = {
   stage: 'setup',
@@ -65,7 +67,8 @@ const S = {
   panel: null,          // null | { kind: 'assign' | 'log', rowId }
   coursesShown: COURSE_PAGE,
   assignmentsShown: ASSIGNMENT_PAGE,
-  logLines: [],
+  logEntries: [],
+  logShown: 0,
   logTimer: null,
   bootstrapping: false,
   editing: false,
@@ -334,7 +337,7 @@ function slideover(title, subtitle, body, foot, wide) {
 function closePanel() {
   if (S.logTimer) { clearInterval(S.logTimer); S.logTimer = null; }
   S.panel = null;
-  S.logLines = [];
+  S.logEntries = [];
   render();
 }
 
@@ -342,12 +345,12 @@ function closePanel() {
  *  only an open panel pays for the polling. */
 function openAgentLog(rowId) {
   S.panel = { kind: 'log', rowId };
-  S.logLines = [];
+  S.logEntries = [];
   render();
   if (S.logTimer) clearInterval(S.logTimer);
   const poll = async () => {
     const got = await api.agentLog(rowId).catch(() => null);
-    if (got && Array.isArray(got.lines)) S.logLines = got.lines;
+    if (got && Array.isArray(got.lines)) S.logEntries = got.lines;
     if (S.panel && S.panel.kind === 'log') renderPanel();
     else if (S.logTimer) { clearInterval(S.logTimer); S.logTimer = null; }
   };
@@ -408,16 +411,102 @@ function renderPanel() {
     mount(el, slideover(
       row ? (row.student || row.student_name || 'Student') : 'Grading agent',
       'Live agent output',
-      S.logLines.length
-        ? h('pre', { class: 'logview' }, S.logLines.map((line) => h('div', {
-            class: line.startsWith('->') ? 'log-tool'
-              : (line === 'turn complete' || line.startsWith('agent started')) ? 'log-done' : '',
-          }, line)))
-        : h('div', { style: 'color:var(--ink-3);font-size:12px' },
-            'Waiting for the agent. Output appears here as it runs.'),
-      null,
-      true));
+      logView(S.logEntries),
+      h('button', {
+        class: 'btn', 'data-size': 'sm', 'data-variant': 'ghost',
+        onclick: closePanel,
+      }, 'Close')));
   }
+}
+
+/** A line in the agent log. */
+function logRow(entry) {
+  const t = new Date((entry.t || 0) * 1000);
+  const clock = `${String(t.getHours()).padStart(2, '0')}:${String(t.getMinutes()).padStart(2, '0')}:${String(t.getSeconds()).padStart(2, '0')}`;
+  const time = h('span', { class: 'log-t' }, clock);
+
+  if (entry.kind === 'error') {
+    return h('div', { class: 'log-row log-bad' },
+      time,
+      h('div', {},
+        h('span', { class: 'log-tag' }, entry.retryable ? 'retrying' : 'stopped'),
+        h('span', { class: 'log-text' }, entry.text),
+        entry.detail ? h('div', { class: 'log-detail' }, entry.detail) : null));
+  }
+  if (entry.kind === 'step') {
+    const t2 = entry.tokens || {};
+    const bits = [];
+    if (t2.input) bits.push(`${t2.input} in`);
+    if (t2.output) bits.push(`${t2.output} out`);
+    if (t2.reasoning) bits.push(`${t2.reasoning} think`);
+    if (entry.cost) bits.push(`$${entry.cost.toFixed(4)}`);
+    return h('div', { class: 'log-row log-step' }, time,
+      h('span', { class: 'log-text' }, bits.join(' · ') || entry.text || 'step'));
+  }
+  if (entry.kind === 'think' || entry.kind === 'think-more') {
+    return h('div', { class: 'log-row log-think' }, time,
+      h('span', { class: 'log-text' }, entry.text));
+  }
+  if (entry.kind === 'tool') {
+    return h('div', { class: `log-row log-tool${entry.error ? ' log-bad' : ''}` }, time,
+      h('span', { class: 'log-tag' }, `-> ${entry.tool}`),
+      h('span', { class: 'log-text' }, entry.text),
+      entry.error && entry.detail
+        ? h('div', { class: 'log-detail' }, entry.detail) : null);
+  }
+  if (entry.kind === 'meta') {
+    return h('div', { class: 'log-row log-meta' }, time,
+      h('span', { class: 'log-text' }, entry.text));
+  }
+  return h('div', { class: 'log-row log-text-only' }, time,
+    h('span', { class: 'log-text' }, entry.text || ''));
+}
+
+/**
+ * The log, with consecutive identical tool calls collapsed.
+ *
+ * A grading run makes the same call dozens of times. Twelve identical lines of
+ * "-> grep" pushes everything else off the screen and hides the reasoning,
+ * which is the part worth reading.
+ */
+function logView(entries) {
+  const list = entries || [];
+  if (!list.length) {
+    return h('div', { style: 'color:var(--ink-3);font-size:12px' },
+      'Waiting for the agent. Output appears here as it runs.');
+  }
+  const rows = [];
+  let i = 0;
+  while (i < list.length) {
+    const e = list[i];
+    const groupable = e.kind === 'tool';
+    let n = 1;
+    if (groupable) {
+      while (i + n < list.length
+        && list[i + n].kind === 'tool'
+        && list[i + n].tool === e.tool
+        && list[i + n].text === e.text
+        && !list[i + n].error) n += 1;
+    }
+    const row = logRow(e);
+    if (n > 1) row.appendChild(h('span', { class: 'log-count' }, `\u00d7${n}`));
+    rows.push(row);
+    i += n;
+  }
+  const cap = LOG_ROWS;
+  const shown = rows.length > cap ? rows.slice(rows.length - cap) : rows;
+  const el = h('div', { class: 'logview' }, shown);
+  // Follow the tail: the newest line is the point.
+  requestAnimationFrame(() => {
+    const body = el.closest('.slideover-body');
+    if (body) body.scrollTop = body.scrollHeight;
+  });
+  return rows.length > cap
+    ? h('div', {},
+        h('div', { class: 'log-trim', style: 'padding:6px 2px 10px' },
+          `${rows.length - cap} earlier line(s) hidden`),
+        el)
+    : el;
 }
 
 function viewSelect() {

@@ -909,25 +909,93 @@ body {
   flex-wrap: wrap;
 }
 
-/* The agent log is a terminal, so it must not collapse whitespace or wrap
-   mid-token the way prose would. */
-.slideover--wide .slideover-body { padding: 12px 16px; }
+/* Agent log. Not a terminal: it is a timeline, and the point is to read the
+   reasoning, so time, kind and call arguments are all shown. Tool calls are
+   collapsed by the renderer rather than here, because collapsing needs the
+   sequence. */
 
 .logview {
-  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
   font-family: var(--mono);
   font-size: 11.5px;
-  line-height: 1.55;
-  white-space: pre-wrap;
-  word-break: break-word;
-  color: var(--ink-2);
+  line-height: 1.5;
 }
 
-.logview .log-tool { color: var(--accent); }
-.logview .log-done { color: var(--ink-1); font-weight: 600; }
+.log-row {
+  display: grid;
+  grid-template-columns: 58px auto 1fr auto;
+  gap: 8px;
+  align-items: baseline;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
 
-/* An indeterminate wait: the shape of the problem in screenshot 2 was a blank
-   "No run" page that looked like a dead end rather than work in progress. */
+.log-t {
+  color: var(--ink-3);
+  opacity: 0.6;
+  font-variant-numeric: tabular-nums;
+}
+
+.log-tag {
+  color: var(--accent);
+  white-space: nowrap;
+}
+
+.log-text {
+  color: var(--ink-1);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.log-detail {
+  grid-column: 3 / -1;
+  color: var(--flag);
+  opacity: 0.85;
+  font-size: 11px;
+  padding-left: 2px;
+}
+
+/* The thought process is the reason this panel exists, so it gets the most
+   room and the quietest colour rather than being buried among the verbs. */
+.log-think { grid-template-columns: 58px 1fr; }
+.log-think .log-text {
+  color: var(--ink-2);
+  font-style: italic;
+  border-left: 2px solid var(--line);
+  padding-left: 9px;
+}
+
+.log-tool { color: var(--ink-2); }
+.log-tool .log-text { color: var(--ink-3); }
+
+.log-meta { grid-template-columns: 58px 1fr; }
+.log-meta .log-text { color: var(--accent); }
+
+.log-step .log-text {
+  color: var(--ink-3);
+  opacity: 0.75;
+  font-size: 10.5px;
+}
+
+/* A failure has to be the thing you notice. */
+.log-bad {
+  background: color-mix(in srgb, var(--flag) 14%, transparent);
+  outline: 1px solid color-mix(in srgb, var(--flag) 40%, transparent);
+}
+.log-bad .log-tag { color: var(--flag); }
+
+.log-count {
+  color: var(--ink-3);
+  background: var(--line);
+  border-radius: 8px;
+  padding: 0 6px;
+  font-size: 10px;
+}
+
+.log-trim { color: var(--ink-3); font-size: 11px; }
+
 .waiting {
   display: flex;
   flex-direction: column;

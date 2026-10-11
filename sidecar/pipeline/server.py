@@ -140,68 +140,132 @@ class AppState:
         self.settings.check_canvas()
         return CanvasClient(self.settings.canvas_base_url, self.settings.canvas_api_token)
 
-    def record_agent_output(self, row_id: int, text: str) -> None:
-        """Keep a bounded tail of one submission's agent output.
+    # ---------------------------------------------------------------- log
 
-        Ring buffer rather than a growing list: a long agent run would otherwise
-        grow this without limit for every submission in a 150-row cohort.
+    def record_agent_output(self, row_id: int, text: str) -> None:
+        """Append a plain line. Kept for pipeline-level messages."""
+        self.record_agent_entry(row_id, {"kind": "meta", "text": text})
+
+    def record_agent_entry(self, row_id: int, entry: dict[str, Any]) -> None:
+        """Append one structured log entry.
+
+        Structured rather than a list of strings because the renderer needs to
+        do things a string cannot: colour an error differently from a tool call,
+        collapse twelve identical greps into one line, and timestamp each entry.
         """
         lines = self.agent_logs.setdefault(row_id, [])
-        lines.extend(text.splitlines())
+        entry.setdefault("t", time.time())
+        lines.append(entry)
         if len(lines) > AGENT_LOG_LINES:
             del lines[: len(lines) - AGENT_LOG_LINES]
 
-    def _format_part(self, part: dict[str, Any]) -> str | None:
-        """One line for a message part, or None if it is not worth showing.
+    def _tool_label(self, part: dict[str, Any]) -> str:
+        """What the agent was actually trying to do.
 
-        Deltas are already gone by the time a part is read, so there is no way
-        to flood this the way a token stream would. Reasoning is included
-        because for a grader it is the most useful thing there is: it is the
-        agent reading the submission, and it arrives live.
+        A bare `-> read` says nothing. `state.title` is opencode's own
+        one-line summary of the call, which for a bash tool is the command and
+        for read is the path, so the log reads as intent rather than a list of
+        verbs.
         """
+        state = part.get("state") or {}
+        title = (state.get("title") or "").strip()
+        if title:
+            return " ".join(title.split())[:140]
+        raw = state.get("input")
+        if isinstance(raw, dict):
+            for key in ("command", "pattern", "path", "filePath", "query", "url"):
+                value = raw.get(key)
+                if isinstance(value, str) and value.strip():
+                    return " ".join(value.split())[:140]
+            return " ".join(json.dumps(raw, sort_keys=True)[:140].split())
+        return ""
+
+    def _agent_entry_for(self, part: dict[str, Any]) -> dict[str, Any] | None:
         kind = part.get("type") or ""
         if kind == "tool":
-            name = part.get("tool") or "tool"
-            err = part.get("error") or {}
-            state = (err.get("name") or "error") if err else ""
-            return f"-> {name}" + (f" [{state}]" if state else "")
+            state = part.get("state") or {}
+            status = state.get("status") or ""
+            entry = {"kind": "tool", "tool": part.get("tool") or "",
+                     "text": self._tool_label(part), "status": status}
+            output = state.get("output") or ""
+            if status == "error" or (state.get("metadata") or {}).get("exit"):
+                exit_code = (state.get("metadata") or {}).get("exit")
+                entry["error"] = bool(status == "error" or (isinstance(exit_code, int) and exit_code))
+                if entry["error"]:
+                    entry["detail"] = " ".join(str(output).split())[:300]
+            return entry
         if kind == "reasoning":
-            text = " ".join((part.get("text") or "").split())
-            return ("thinking: " + text[:200]) if text else None
+            text = (part.get("text") or "").strip()
+            return {"kind": "think", "text": text} if text else None
         if kind == "text":
-            text = " ".join((part.get("text") or "").split())
-            return text[:240] if text else None
+            text = (part.get("text") or "").strip()
+            return {"kind": "text", "text": text} if text else None
+        if kind == "step-finish":
+            tokens = part.get("tokens") or {}
+            entry = {"kind": "step"}
+            if tokens:
+                entry["tokens"] = {k: v for k, v in tokens.items() if isinstance(v, (int, float))}
+            if isinstance(part.get("cost"), (int, float)):
+                entry["cost"] = round(float(part["cost"]), 6)
+            if part.get("reason"):
+                entry["text"] = str(part["reason"])[:120]
+            return entry if len(entry) > 1 else None
+        # step-start and anything unrecognised: nothing worth a line.
         return None
 
     def poll_agent_log(self, srv: OpenCodeServer, stop: threading.Event) -> None:
         """Poll each active session and record parts the log has not seen.
 
-        Polling, not subscribing, and the reason is in OpenCodeServer.parts:
-        opencode's /event stream delivered only its opening frame and
-        heartbeats while a turn was demonstrably running, so the panel sat
-        empty for the entire grading run.
+        Polling, not subscribing: opencode's /event stream was verified to
+        deliver only its opening frame and heartbeats while a turn was running.
+
+        Reasoning is re-read rather than recorded once. A reasoning part keeps
+        its id while the model streams into it, so recording on first sight
+        would show the first sentence and nothing after it. What is appended is
+        the growth, which is what makes the thought process watchable.
         """
         while not stop.is_set():
             for sid, (row_id, directory) in list(self.active_sessions.items()):
-                seen = self.agent_seen.setdefault(sid, set())
+                seen = self.agent_seen.setdefault(sid, {})
                 try:
                     parts = srv.parts(sid, directory or None)
                 except Exception:
                     continue
                 for part in parts:
                     pid = part["id"]
+                    if part.get("type") == "text" and not seen:
+                        # The first text part of a session is the prompt echo:
+                        # the whole task description, thousands of characters,
+                        # written by us and of no interest to someone watching
+                        # the agent work. Everything after the first tool call
+                        # or thought is the agent's own output.
+                        seen[pid] = True
+                        continue
+                    if part.get("type") == "reasoning":
+                        text = part.get("text") or ""
+                        done = seen.get(pid)
+                        if done is None:
+                            seen[pid] = len(text)
+                            if text.strip():
+                                self.record_agent_entry(row_id, {"kind": "think", "text": text})
+                        elif len(text) > done:
+                            # Append only the new tail, indented as a continuation.
+                            tail = text[done:]
+                            seen[pid] = len(text)
+                            if tail.strip():
+                                self.record_agent_entry(
+                                    row_id, {"kind": "think-more", "text": tail})
+                        continue
                     if pid in seen:
                         continue
-                    seen.add(pid)
+                    seen[pid] = True
                     try:
-                        line = self._format_part(part)
+                        entry = self._agent_entry_for(part)
                     except Exception:
                         continue
-                    if not line:
-                        continue
-                    self.record_agent_output(row_id, line)
-                    self.bus.emit("agent.log", {"submission_row_id": row_id, "line": line})
-            stop.wait(1.5)
+                    if entry:
+                        self.record_agent_entry(row_id, entry)
+            stop.wait(1.0)
 
     def start_agent_log(self, srv: OpenCodeServer) -> threading.Event:
         """Follow the agent's output for the duration of a grading job."""
@@ -209,6 +273,24 @@ class AppState:
         threading.Thread(target=self.poll_agent_log, args=(srv, stop),
                          name="agent-log", daemon=True).start()
         return stop
+
+    def record_agent_failure(self, row_id: int, message: str,
+                             retryable: bool) -> None:
+        """Put a failure in the log where the person watching will see it.
+
+        A failed turn used to leave the log showing whatever had happened before
+        it, which reads as the agent still working.
+        """
+        self.record_agent_entry(row_id, {
+            "kind": "error",
+            "text": message.strip()[:600],
+            "retryable": retryable,
+        })
+        self.bus.emit("agent.failed", {
+            "submission_row_id": row_id,
+            "message": message.strip()[:600],
+            "retryable": retryable,
+        })
 
     def opencode_env(self) -> dict[str, str]:
         """Environment for the opencode process, including any configured key."""
@@ -590,7 +672,13 @@ def op_grade(state: AppState, run_id: int, body: dict[str, Any]) -> dict[str, An
                     state.record_agent_output(
                         int(rid), f"agent started ({data.get('model') or model}, "
                                    f"attempt {data.get('attempt')})")
-            elif event in ("agent.done", "agent.error", "agent.retry") and sid:
+            elif event == "agent.error" and rid is not None:
+                # A turn that failed leaves the log showing whatever happened
+                # before it, which reads as the agent still working. Say what
+                # went wrong, and whether anything will be tried.
+                state.record_agent_failure(int(rid), str(data.get("message") or ""),
+                                           bool(data.get("retryable", True)))
+            if event in ("agent.done", "agent.error", "agent.retry") and sid:
                 state.active_sessions.pop(sid, None)
                 state.agent_seen.pop(sid, None)
             bus.emit(event, data)

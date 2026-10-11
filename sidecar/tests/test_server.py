@@ -587,7 +587,11 @@ def test_the_agent_log_endpoint_returns_the_recorded_lines(live):
     assert wait_for(lambda: state.store.progress(1).get("total") == 2)
     state.record_agent_output(1, "agent started")
     got = send(base, "/api/reports/1/agent-log", method="GET")
-    assert "agent started" in got["lines"]
+    # Entries are structured, not plain strings: the renderer needs the kind to
+    # colour an error differently from a tool call and to collapse repeats.
+    assert any(e["kind"] == "meta" and e["text"] == "agent started" for e in got["lines"]), \
+        got["lines"]
+    assert all("t" in e and "kind" in e for e in got["lines"])
     assert got["student"] == "Ada Lovelace"
     assert got["row_id"] == 1
 
@@ -608,28 +612,105 @@ def test_the_agent_log_is_bounded(live):
     assert lines[-1] == f"line {srv.AGENT_LOG_LINES + 249}", "kept the wrong tail"
 
 
-def test_the_agent_log_polls_a_session_and_records_each_part_once(live):
-    """The log is fed by polling, not by opencode's event stream.
+def test_the_agent_log_records_what_the_agent_was_doing(live):
+    """A log of bare verbs is not worth reading.
 
-    The stream delivered only its opening frame and heartbeats while a turn was
-    demonstrably running, verified against both curl and requests against the
-    same server. Polling the session's messages returns the same information and
-    cannot be silently killed by a restarted server or a dropped socket.
+    A tool part carries state.input, state.title, state.output and a status, and
+    step-finish carries tokens and cost. The log uses all of it, because
+    "-> read" twenty times tells you nothing and "-> read rubric.md" tells you
+    everything.
+    """
+    _base, state, _fake, _spec = live
+    tool = {"id": "p1", "type": "tool", "tool": "bash", "text": "", "state": {
+        "status": "completed",
+        "input": {"command": "grep -rn 'APA' material/"},
+        "title": "grep -rn 'APA' material/",
+        "output": "material/refs.md:12: APA 7th",
+        "metadata": {"exit": 0}}}
+    entry = state._agent_entry_for(tool)
+    assert entry["kind"] == "tool"
+    assert entry["tool"] == "bash"
+    assert entry["text"] == "grep -rn 'APA' material/", "the call lost its argument"
+    assert entry["status"] == "completed"
+    assert not entry.get("error")
+
+    step = {"id": "p9", "type": "step-finish", "text": "", "cost": 0.0031,
+            "tokens": {"input": 1200, "output": 340, "reasoning": 90}, "reason": "stop"}
+    entry = state._agent_entry_for(step)
+    assert entry["kind"] == "step" and entry["cost"] == 0.0031
+    assert entry["tokens"]["output"] == 340
+
+    # A failing tool is marked, so the log can colour it.
+    bad = {"id": "p2", "type": "tool", "tool": "bash", "text": "", "state": {
+        "status": "error", "title": "pytest", "output": "assert 1 == 2"}}
+    assert state._agent_entry_for(bad)["error"] is True
+
+    # Noise carries no line: step markers and empty text.
+    assert state._agent_entry_for({"id": "p3", "type": "step-start", "text": ""}) is None
+    assert state._agent_entry_for({"id": "p4", "type": "text", "text": "  "}) is None
+    assert state._agent_entry_for({"id": "p5", "type": "reasoning", "text": ""}) is None
+
+
+def test_the_agent_log_streams_reasoning_as_it_grows(live):
+    """A reasoning part keeps its id while the model writes into it.
+
+    Recording it once, on first sight, would show the opening sentence and then
+    nothing more: exactly the "I cannot see the thought process" complaint. The
+    log appends the growth instead.
     """
     _base, state, _fake, _spec = live
 
-    class FakeServer:
-        """Grows the session over two polls, as a real turn does."""
+    class GrowingServer:
+        """A reasoning part that fills in progressively, as a model streams it."""
 
+        FULL = "The student submitted a draft."
+
+        def __init__(self):
+            self.step = 0
+
+        def parts(self, session_id, directory=None):
+            self.step += 1
+            lengths = [12, 22, len(self.FULL)]
+            text = self.FULL[: lengths[min(self.step - 1, 2)]]
+            return [{"id": "r1", "type": "reasoning", "text": text, "state": {}}]
+
+    server = GrowingServer()
+    state.active_sessions["ses_g"] = (1, "/tmp/ws")
+    stop = state.start_agent_log(server)
+    try:
+        assert wait_for(lambda: len(state.agent_logs.get(1, [])) >= 3, timeout=10), \
+            f"reasoning did not stream: {state.agent_logs.get(1)}"
+    finally:
+        stop.set()
+    lines = state.agent_logs[1]
+    assert lines[0]["kind"] == "think"
+    joined = "".join(x["text"] for x in lines if x["kind"].startswith("think"))
+    assert joined == GrowingServer.FULL, joined
+
+
+def test_a_failed_turn_is_visible_and_says_whether_anything_follows(live):
+    """A turn that failed used to leave the log looking like work in progress."""
+    _base, state, _fake, _spec = live
+    state.record_agent_failure(1, "credit: 402 insufficient credits", retryable=False)
+    entry = state.agent_logs[1][-1]
+    assert entry["kind"] == "error"
+    assert "insufficient credits" in entry["text"]
+    assert entry["retryable"] is False
+
+
+def test_the_agent_log_polls_a_session_and_records_each_part_once(live):
+    _base, state, _fake, _spec = live
+
+    class FakeServer:
         def __init__(self):
             self.polls = 0
 
         def parts(self, session_id, directory=None):
             self.polls += 1
-            out = [{"id": "p1", "type": "tool", "tool": "read", "text": "", "error": {}}]
+            out = [{"id": "p1", "type": "tool", "tool": "read", "text": "",
+                    "state": {"status": "completed", "title": "rubric.md", "output": ""}}]
             if self.polls >= 2:
-                out.append({"id": "p2", "type": "reasoning",
-                            "text": "  checking   the rubric\n", "tool": "", "error": {}})
+                out.append({"id": "p2", "type": "reasoning", "text": "checking", "state": {}})
             return out
 
     server = FakeServer()
@@ -637,32 +718,18 @@ def test_the_agent_log_polls_a_session_and_records_each_part_once(live):
     stop = state.start_agent_log(server)
     try:
         assert wait_for(lambda: server.polls >= 3, timeout=10), "the poller stopped"
-        lines = state.agent_logs.get(1, [])
-        assert lines.count("-> read") == 1, f"part repeated: {lines}"
-        assert any(x.startswith("thinking: checking the rubric") for x in lines), lines
+        entries = state.agent_logs.get(1, [])
+        tools = [e for e in entries if e["kind"] == "tool"]
+        assert len(tools) == 1, f"part repeated: {entries}"
+        assert tools[0]["text"] == "rubric.md"
     finally:
         stop.set()
 
 
-def test_agent_log_formats_parts_and_ignores_the_rest(live):
-    """Shapes taken from a live opencode server, not invented."""
+def test_the_agent_log_is_bounded(live):
     _base, state, _fake, _spec = live
-    fmt = state._format_part
-
-    assert fmt({"type": "tool", "tool": "bash", "error": {}}) == "-> bash"
-    assert fmt({"type": "tool", "tool": "grep", "error": {"name": "NotFound"}}) == "-> grep [NotFound]"
-    assert fmt({"type": "reasoning", "text": "  reading  it \n"}) == "thinking: reading it"
-    assert fmt({"type": "text", "text": "  the answer  is 4 "}) == "the answer is 4"
-
-    for nothing in ({"type": "text", "text": ""}, {"type": "reasoning", "text": "   "},
-                    {"type": "step-start", "text": "x"}, {"type": "", "text": "x"}):
-        assert fmt(nothing) is None, nothing
-
-
-def test_a_finished_session_is_no_longer_polled(live):
-    """Otherwise the poller keeps polling a session for the rest of the job."""
-    _base, state, _fake, _spec = live
-    state.active_sessions["ses_done"] = (1, "/tmp/ws")
-    assert state.active_sessions
-    state.active_sessions.clear()
-    assert state.active_sessions == {}
+    for i in range(srv.AGENT_LOG_LINES + 250):
+        state.record_agent_output(1, f"line {i}")
+    lines = state.agent_logs[1]
+    assert len(lines) == srv.AGENT_LOG_LINES
+    assert lines[-1]["text"] == f"line {srv.AGENT_LOG_LINES + 249}", "kept the wrong tail"

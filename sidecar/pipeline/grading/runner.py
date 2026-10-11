@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import os
 import queue
+import re
 import shutil
 import socket
 import subprocess
@@ -56,6 +57,39 @@ SYSTEM_ENV = {
 
 class RunnerError(RuntimeError):
     pass
+
+
+# Why a turn failed, and whether trying again could possibly help. Order
+# matters: the first match wins, so the more specific patterns come first.
+FAILURE_PATTERNS: tuple[tuple[str, str, bool], ...] = (
+    # Billing is a state, not a hiccup: a second attempt spends the same tokens
+    # and fails the same way. Quota is different and belongs with rate limits.
+    ("credit", r"insufficient[_ ]credits|credit balance|out of credits"
+               r"|payment required|\b402\b|billing", False),
+    ("auth", r"\b401\b|unauthori[sz]ed|invalid api ?key|forbidden|\b403\b", False),
+    ("model", r"model .*not found|no such model|\b404\b|does not exist", False),
+    ("context", r"context length|maximum context|too many tokens|prompt is too long"
+                r"|input length and .* exceed", False),
+    ("output limit", r"max_tokens|finish_reason.{0,10}length|output budget", True),
+    ("rate limit", r"\b429\b|rate ?limit|too many requests|overloaded"
+                   r"|quota exceeded|insufficient_quota", True),
+    ("timeout", r"timed? ?out|timeout|deadline exceeded", True),
+    ("refused", r"provider returned no usable output|empty response", True),
+)
+
+
+def classify_failure(message: str) -> tuple[bool, str]:
+    """(retryable, short reason) for a failed turn.
+
+    The reason is what the person sees, so it names the cause rather than
+    repeating a stack trace: "out of credits" is actionable and
+    "RunnerError: prompt failed: 402 {...}" is not.
+    """
+    text = (message or "").lower()
+    for label, pattern, retryable in FAILURE_PATTERNS:
+        if re.search(pattern, text, re.IGNORECASE):
+            return retryable, f"{label}: {message.strip()[:300]}"
+    return True, message.strip()[:300]
 
 
 def free_port() -> int:
@@ -198,7 +232,13 @@ class OpenCodeServer:
                     "type": part.get("type") or "",
                     "text": part.get("text") or "",
                     "tool": part.get("tool") or "",
-                    "error": (part.get("state") or {}).get("error") or {},
+                    # The whole state, not just its error: the live log renders
+                    # the call's title, its arguments and its output, and a tool
+                    # part without them is just a verb.
+                    "state": part.get("state") or {},
+                    "cost": part.get("cost"),
+                    "tokens": part.get("tokens") or {},
+                    "reason": part.get("reason"),
                 })
         return out
 
@@ -322,6 +362,8 @@ class Grader:
         self.budget = budget
         self.manual_ids = manual_only_criteria(spec) if spec.policy.get(
             "manual_only_criteria") else []
+        # submission row -> opencode session, so terminal events name it.
+        self._session_by_row: dict[int, str] = {}
 
     # ------------------------------------------------------------ helpers
 
@@ -401,6 +443,11 @@ class Grader:
             f"{self.spec.title} — {unit.display_name} (attempt {attempt_no})",
             directory=str(workspace))
         session_id = session.get("id", "")
+        # Recorded per submission so the retry loop can name the session it is
+        # reporting on. It used to keep its own empty local, so every terminal
+        # event carried session_id="" and the live poller never learned that a
+        # session had ended.
+        self._session_by_row[submission_row_id] = session_id
         self.store.finish_attempt(attempt_id, "running", session_id)
         self.emit("agent.start", {
             "submission_row_id": submission_row_id, "student": unit.display_name,
@@ -472,7 +519,6 @@ class Grader:
                                  manual_ids=self.manual_ids, test_results=test_results,
                                  anchors=anchors, budget=self.budget)
 
-        session_id = ""
         last_error: str | None = None
         last_issues: list[str] = []
         for attempt_no in range(1, self.max_attempts + 1):
@@ -488,34 +534,44 @@ class Grader:
                                       attempt_no)
             except Exception as exc:
                 last_error = f"{type(exc).__name__}: {exc}"
-                self.store.finish_attempt(attempt_id, "error", session_id, last_error)
+                sid = self._session_by_row.get(submission_row_id, "")
+                self.store.finish_attempt(attempt_id, "error", sid, last_error)
+                retryable, reason = classify_failure(last_error)
                 self.emit("agent.error", {"submission_row_id": submission_row_id,
-                                          "session_id": session_id,
-                                          "message": last_error})
-                if attempt_no >= self.max_attempts:
-                    self.store.set_submission_status(submission_row_id, "failed", last_error)
-                    return GradeResult(submission_row_id, session_id, attempt_no, "failed",
-                                       error=last_error)
+                                          "session_id": sid,
+                                          "message": reason or last_error,
+                                          "retryable": retryable})
+                # Retrying a failure that cannot succeed on a second attempt just
+                # burns the same tokens again and leaves the log looking busy
+                # while nothing is happening. Out of credit, a bad key or an
+                # over-long context will fail identically every time.
+                if not retryable or attempt_no >= self.max_attempts:
+                    self.store.set_submission_status(
+                        submission_row_id, "failed", reason or last_error)
+                    return GradeResult(submission_row_id, sid, attempt_no, "failed",
+                                       error=reason or last_error)
                 continue
 
             record = self._read_outcome(out_path)
             if record is None:
                 last_error = ("the agent finished without calling submit_scorecard")
-                self.store.finish_attempt(attempt_id, "no_scorecard", session_id, last_error)
+                self.store.finish_attempt(attempt_id, "no_scorecard", self._session_by_row.get(submission_row_id, ""), last_error)
                 self.emit("agent.warn", {"submission_row_id": submission_row_id,
-                                         "session_id": session_id,
+                                         "session_id": self._session_by_row.get(
+                                             submission_row_id, ""),
                                          "message": last_error})
                 if attempt_no >= self.max_attempts:
                     self.store.set_submission_status(
                         submission_row_id, "needs_review", last_error)
-                    return GradeResult(submission_row_id, session_id, attempt_no,
-                                       "needs_review", error=last_error)
+                    return GradeResult(submission_row_id,
+                                       self._session_by_row.get(submission_row_id, ""),
+                                       attempt_no, "needs_review", error=last_error)
                 last_issues = [last_error]
                 continue
 
             scorecard = parse_scorecard(record["payload"], self.spec)
             scorecard.model = self.model
-            scorecard.agent_session_id = session_id
+            scorecard.agent_session_id = self._session_by_row.get(submission_row_id, "")
             scorecard.prompt_version = PROMPT_VERSION
 
             self.store.save_scorecard(
@@ -524,34 +580,34 @@ class Grader:
                 record["earned"], record["possible"], record["issues"])
 
             if record["ok"]:
-                self.store.finish_attempt(attempt_id, "ok", session_id)
+                self.store.finish_attempt(attempt_id, "ok", self._session_by_row.get(submission_row_id, ""))
                 self.store.set_submission_status(submission_row_id, "graded")
                 self.emit("agent.done", {
                     "submission_row_id": submission_row_id,
-                    "session_id": session_id,
+                    "session_id": self._session_by_row.get(submission_row_id, ""),
                     "student": unit.display_name,
                     "earned": record["earned"], "possible": record["possible"],
                     "attempt": attempt_no,
                 })
-                return GradeResult(submission_row_id, session_id, attempt_no, "graded",
+                return GradeResult(submission_row_id, self._session_by_row.get(submission_row_id, ""), attempt_no, "graded",
                                    scorecard=scorecard, earned=record["earned"],
                                    possible=record["possible"])
 
             last_issues = record["issues"]
-            self.store.finish_attempt(attempt_id, "invalid", session_id,
+            self.store.finish_attempt(attempt_id, "invalid", self._session_by_row.get(submission_row_id, ""),
                                       "; ".join(record["issues"]))
             self.emit("agent.retry", {"submission_row_id": submission_row_id,
                                       "issues": record["issues"], "attempt": attempt_no})
             if attempt_no >= self.max_attempts:
                 self.store.set_submission_status(
                     submission_row_id, "needs_review", "; ".join(record["issues"]))
-                return GradeResult(submission_row_id, session_id, attempt_no,
+                return GradeResult(submission_row_id, self._session_by_row.get(submission_row_id, ""), attempt_no,
                                    "needs_review", scorecard=scorecard,
                                    earned=record["earned"], possible=record["possible"],
                                    issues=record["issues"], error="failed validation")
 
         self.store.set_submission_status(submission_row_id, "needs_review", last_error)
-        return GradeResult(submission_row_id, session_id, self.max_attempts,
+        return GradeResult(submission_row_id, self._session_by_row.get(submission_row_id, ""), self.max_attempts,
                            "needs_review", error=last_error)
 
     @staticmethod

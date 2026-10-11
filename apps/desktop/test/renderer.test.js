@@ -105,6 +105,22 @@ const COURSES = Array.from({ length: 11 }, (_, i) => ({
   workflow_state: 'available',
 }));
 
+// Shaped like what the sidecar actually records: structured entries with a
+// timestamp, because the panel colours by kind and collapses repeats.
+let CLOCK = 1791727000;
+const entry = (e) => ({ t: (CLOCK += 1), ...e });
+const AGENT_LOG_ENTRIES = [
+  entry({ kind: 'meta', text: 'agent started (openrouter/test-model, attempt 1)' }),
+  entry({ kind: 'think', text: 'The student submitted a draft with the rubric attached.' }),
+  entry({ kind: 'tool', tool: 'bash', status: 'completed', text: "grep -rn 'APA' material/" }),
+  entry({ kind: 'tool', tool: 'grep', status: 'completed', text: "'APA'" }),
+  entry({ kind: 'tool', tool: 'grep', status: 'completed', text: "'APA'" }),
+  entry({ kind: 'tool', tool: 'grep', status: 'completed', text: "'APA'" }),
+  entry({ kind: 'step', tokens: { input: 1200, output: 340, reasoning: 90 }, cost: 0.0031 }),
+  entry({ kind: 'think', text: 'The references need checking against APA 7th.' }),
+  entry({ kind: 'error', text: 'credit: 402 insufficient credits', retryable: false }),
+];
+
 const ASSIGNMENTS = Array.from({ length: 14 }, (_, i) => ({
   id: 46805 + i,
   name: `Assignment ${i + 1}`,
@@ -141,7 +157,7 @@ function stubApi() {
     publish: rec('publish', { job: 'publish', ok: 3 }),
     control: rec('control', { job: 'collect', action: 'pause', state: { status: 'paused' } }),
     agentLog: rec('agentLog', { row_id: 1, student: 'Ada Lovelace',
-                                 lines: ['agent started (m1, attempt 1)', '-> read', 'turn complete'] }),
+                                 lines: AGENT_LOG_ENTRIES }),
     report: rec('report', {
       markdown: '# Report\n\nA student report.\n',
       scorecard: {
@@ -533,10 +549,8 @@ async function run() {
     const sel = apiCalls.filter((c) => c.startsWith('grade(')).pop();
     assert.ok(sel, 'Grade Selected did not call grade');
     assert.match(sel, /"row_ids":\[[0-9]/, `Grade Selected sent no selection: ${sel}`);
-  });
-
-  await test('the agent log panel opens and shows the sidecar output', async () => {
-    const { window, calls: apiCalls } = await reboot();
+  });  await test('the agent log shows what the agent was doing, not just verbs', async () => {
+    const { window } = await reboot();
     stubState.jobs = { grade: { job: 'grade', status: 'running' } };
     await window.eval(`window.__emit(${JSON.stringify({
       event: 'job.done', data: { job: 'grade', ok: true },
@@ -548,16 +562,41 @@ async function run() {
     await tick(80);
     assert.strictEqual(await window.eval(
       "document.querySelectorAll('.slideover').length"), 1, 'the log panel did not open');
+
+    const text = await window.eval(
+      "document.querySelector('.slideover .logview').textContent");
+
+    // The argument, not the verb alone. A log of bare "-> read" is unreadable.
+    assert.match(text, /grep -rn 'APA' material\//, 'the tool argument is missing');
+    // The thought process, which is the point of the panel.
+    assert.match(text, /rubric attached/, 'the reasoning is missing');
+    assert.match(text, /checking against APA 7th/, 'later reasoning is missing');
+    // Tokens and cost, per step.
+    assert.match(text, /1200 in .*340 out/, 'step tokens are missing');
+    // A failure must be visible and must say whether anything follows.
+    assert.match(text, /insufficient credits/, 'the failure is missing');
+    assert.match(text, /stopped/, 'a non-retryable failure should say so');
+
+    // Timestamps.
+    assert.match(text, /\b\d{2}:\d{2}:\d{2}\b/, 'no timestamp on the log');
+
+    // Three identical greps collapse into one row with a count.
+    assert.strictEqual(await window.eval(
+      "document.querySelectorAll('.slideover .log-tool').length"), 2,
+      'four calls, three of them identical, should paint as two rows');
     assert.match(await window.eval(
-      "document.querySelector('.slideover .logview').textContent"),
-      /agent started/, 'the log body was not rendered');
-    apiCalls.length = 0;
+      "(document.querySelector('.slideover .log-count') || {}).textContent || ''"),
+      /3/, 'the repeat count is missing');
+
+    // Kinds are styled apart so a failure is the thing you notice.
+    assert.ok(await window.eval("document.querySelectorAll('.slideover .log-bad').length > 0"),
+      'the failure is not distinguished');
+
     await window.eval(
       "window.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape' }))");
     await tick(40);
     stubState.jobs = {};
   });
-
   await test('a progress event moves the counters without a reload', async () => {
     // The bug from the report: progress lives on the run object and the event
     // handler only refreshed submissions, so the meters sat still until
