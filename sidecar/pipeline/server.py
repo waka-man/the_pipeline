@@ -135,6 +135,11 @@ class AppState:
     session_rows: dict[str, int] = field(default_factory=dict)
     # session id -> (row id, workspace directory), the sessions being polled.
     active_sessions: dict[str, tuple[int, str]] = field(default_factory=dict)
+    # Sessions that finished since the last drain. Kept so the poller's final
+    # pass still has them: a terminal event removes a session from
+    # active_sessions, which is what stopped the log from recording anything
+    # the agent wrote between its last poll and the end of the turn.
+    recent_sessions: dict[str, tuple[int, str]] = field(default_factory=dict)
     # session id -> part ids already written to the log, so nothing repeats.
     agent_seen: dict[str, set[str]] = field(default_factory=dict)
 
@@ -284,7 +289,8 @@ class AppState:
         # step-start and anything unrecognised: nothing worth a line.
         return None
 
-    def poll_agent_log(self, srv: OpenCodeServer, stop: threading.Event) -> None:
+    def poll_agent_log(self, srv: OpenCodeServer, stop: threading.Event,
+                       drain: bool = False) -> None:
         """Poll each active session and record parts the log has not seen.
 
         Polling, not subscribing: opencode's /event stream was verified to
@@ -295,8 +301,16 @@ class AppState:
         would show the first sentence and nothing after it. What is appended is
         the growth, which is what makes the thought process watchable.
         """
-        while not stop.is_set():
-            for sid, (row_id, directory) in list(self.active_sessions.items()):
+        while True:
+            # Recent sessions are polled too, not just the running ones. A
+            # terminal event drops a session from active_sessions, so without
+            # this the final pass has nothing left to read and the last few
+            # seconds of the agent's output are never recorded.
+            live = list(self.active_sessions.items())
+            watched = live + [(sid, self.recent_sessions[sid])
+                               for sid in self.recent_sessions
+                               if sid not in self.active_sessions]
+            for sid, (row_id, directory) in watched:
                 seen = self.agent_seen.setdefault(sid, {})
                 try:
                     parts = srv.parts(sid, directory or None)
@@ -336,14 +350,58 @@ class AppState:
                         continue
                     if entry:
                         self.record_agent_entry(row_id, entry)
-            stop.wait(1.0)
+            if drain:
+                # Drained once. Anything still open keeps its place in
+                # active_sessions for the next job; the rest is discarded so a
+                # long run does not accumulate every session it ever opened.
+                self.recent_sessions.clear()
+                return
+            if stop.wait(1.0):
+                self.recent_sessions.clear()
+                return
 
     def start_agent_log(self, srv: OpenCodeServer) -> threading.Event:
-        """Follow the agent's output for the duration of a grading job."""
+        """Follow the agent's output for the duration of a grading job.
+
+        Returns a callable rather than an event. Calling it stops the poller but
+        first takes one last pass over the sessions still open: a turn finishes,
+        the job returns and stops the poller, and everything the agent wrote in
+        its last few seconds was only ever going to be picked up by the next
+        poll. With a one-second interval that is most of the reasoning and all
+        of the final call, and the panel sat frozen mid-sentence until someone
+        closed it and opened it again.
+        """
         stop = threading.Event()
-        threading.Thread(target=self.poll_agent_log, args=(srv, stop),
-                         name="agent-log", daemon=True).start()
-        return stop
+        thread = threading.Thread(target=self.poll_agent_log, args=(srv, stop),
+                                  name="agent-log", daemon=True)
+        thread.start()
+
+        def finish() -> None:
+            # Drain first, stop second: the last poll is the only chance to
+            # record what the agent wrote after the final regular one.
+            try:
+                self.poll_agent_log(srv, stop, drain=True)
+            except Exception:
+                pass
+            stop.set()
+            thread.join(timeout=2.0)
+
+        class _LogStop:
+            """Stopping the poller, by draining it or by cutting it off.
+
+            Both are used. The grading job calls it, and wants the drain. A
+            caller that is shutting the server down calls .set() and does not
+            care, and is not holding a server handle to drain from.
+            """
+
+            def __call__(self) -> None:
+                finish()
+
+            def set(self) -> None:
+                stop.set()
+                thread.join(timeout=2.0)
+
+        return _LogStop()
 
     def record_agent_failure(self, row_id: int, message: str,
                              retryable: bool) -> None:
@@ -773,6 +831,14 @@ def op_grade(state: AppState, run_id: int, body: dict[str, Any]) -> dict[str, An
                     state.record_agent_output(
                         int(rid), f"agent started ({data.get('model') or model}, "
                                    f"attempt {data.get('attempt')})")
+            elif event == "agent.warn" and rid is not None:
+                # An attempt that ended without a scorecard is the failure a
+                # person actually needs to see, and it was going only to the
+                # activity list. The agent log panel showed nothing but
+                # "agent started" for a submission that was quietly failing
+                # twice and landing in needs_review.
+                state.record_agent_failure(
+                    int(rid), str(data.get("message") or ""), False)
             elif event == "agent.error" and rid is not None:
                 # A turn that failed leaves the log showing whatever happened
                 # before it, which reads as the agent still working. Say what
@@ -780,8 +846,17 @@ def op_grade(state: AppState, run_id: int, body: dict[str, Any]) -> dict[str, An
                 state.record_agent_failure(int(rid), str(data.get("message") or ""),
                                            bool(data.get("retryable", True)))
             if event in ("agent.done", "agent.error", "agent.retry") and sid:
-                state.active_sessions.pop(sid, None)
-                state.agent_seen.pop(sid, None)
+                # Moved rather than dropped: the drain at the end of the job
+                # still needs to read whatever the agent wrote before it
+                # finished, and by now this session is no longer in
+                # active_sessions.
+                moved = state.active_sessions.pop(sid, None)
+                if moved:
+                    state.recent_sessions[sid] = moved
+                # agent_seen is kept for those sessions: the drain compares
+                # against it to append only what the agent wrote since the last
+                # poll. Clearing it here would make the drain re-record the
+                # whole session from the top.
             bus.emit(event, data)
 
         log_stop = state.start_agent_log(srv)

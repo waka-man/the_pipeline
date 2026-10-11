@@ -701,12 +701,24 @@ def test_runner_retries_a_rejected_scorecard_then_gives_up(tmp_path, store, spec
 def test_runner_flags_a_silent_agent_that_never_calls_the_tool(tmp_path, store, spec):
     store.replace_submissions(store.upsert_run(spec), [unit()])
     grader, server = _grader(tmp_path, store, spec, mode="silent", attempts=2)
-    result = grader.grade(1, unit(), [])
+
+    # Collected because the failure is shown to a person watching a run, and
+    # both places it appears name the student: the activity line read
+    # "undefined: the agent finished without calling submit_scorecard" because
+    # `student` was not on the event.
+    events = []
+    grader.emit = lambda event, data: events.append((event, data))
+    result = grader.grade(1, unit(student_name="Ada Lovelace"), [])
 
     assert result.status == "needs_review"
     assert "submit_scorecard" in (result.error or "")
     assert store.submission_row(1)["status"] == "needs_review"
     assert store.best_scorecard(1) is None
+
+    warns = [d for e, d in events if e == "agent.warn"]
+    assert warns, f"nothing was reported for a silent agent: {events}"
+    assert warns[0]["student"] == "Ada Lovelace", warns[0]
+    assert "submit_scorecard" in warns[0]["message"], warns[0]
 
 
 def test_runner_marks_a_transport_failure_as_failed(tmp_path, store, spec):

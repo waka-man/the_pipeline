@@ -78,6 +78,12 @@ def live(tmp_path, monkeypatch):
     # secrets.json, or a CI runner's home directory.
     monkeypatch.setenv("GRADING_PIPELINE_HOME", str(tmp_path / "home"))
     (tmp_path / "home").mkdir(parents=True, exist_ok=True)
+    # The workspace is read from a different variable, and defaults to a real
+    # directory under the user's home. Without this the suite appends its log
+    # entries to the agent log of whichever run happens to share the course and
+    # assignment ids the fixtures use — which is also why two tests that each
+    # passed alone failed together.
+    monkeypatch.setenv("GRADING_PIPELINE_WORKSPACE", str(tmp_path / "workspace"))
 
     store = Store(tmp_path / "pipeline.db")
     bus = srv.EventBus(store)
@@ -130,6 +136,22 @@ def wait_for(predicate, timeout=8.0, step=0.05):
             return True
         time.sleep(step)
     return False
+
+
+def settle(state, job, timeout=8.0):
+    """Wait for a job to be registered and then finish.
+
+    A job registers itself in `state.controls` and pops the entry when it
+    returns. Waiting only for an effect it produces — a row turning graded, say
+    — is not the same as waiting for the job to end: a row is marked inside the
+    loop and the run status is written after it, so a test that asserts on the
+    status the moment the count moves reads the value from before the job
+    finished writing it. That is a race, and it passed locally while failing on
+    a slower runner, which is the worst way to find one out.
+    """
+    assert wait_for(lambda: job in state.controls, timeout), f"{job} never started"
+    assert wait_for(lambda: job not in state.controls, timeout), \
+        f"{job} did not finish: {state.job_errors}"
 
 
 # --------------------------------------------------------------- basics
@@ -568,16 +590,17 @@ def test_grading_a_selection_touches_only_those_rows(live):
     send(base, "/api/runs", {"course_id": 3130, "assignment_id": 46805})
     assert wait_for(lambda: state.store.progress(1).get("total") == 2)
     send(base, "/api/runs/1/collect", {})
-    assert wait_for(lambda: state.store.progress(1).get("collected") == 1), state.job_errors
+    settle(state, "collect")
+    assert state.store.progress(1).get("collected") == 1
 
     # Row 2 is unsubmitted, so selecting it must grade nothing at all. That is
     # the sharper check: if row_ids were ignored, this would grade row 1.
     send(base, "/api/runs/1/grade", {"stub": True, "row_ids": [2]})
-    assert wait_for(lambda: "grade" not in state.controls)
+    settle(state, "grade")
     assert state.store.progress(1).get("graded", 0) == 0, "row_ids was ignored"
 
     send(base, "/api/runs/1/grade", {"stub": True, "row_ids": [1]})
-    assert wait_for(lambda: state.store.progress(1).get("graded") == 1), state.job_errors
+    settle(state, "grade")
     assert state.store.progress(1)["graded"] == 1, "grading a selection graded the cohort"
 
     # Row 1 is marked. Row 2 submitted nothing, and that is finished with
@@ -599,14 +622,16 @@ def test_a_partly_graded_run_is_not_reported_as_graded(live):
     send(base, "/api/runs", {"course_id": 3130, "assignment_id": 46805})
     assert wait_for(lambda: state.store.progress(1).get("total") == 2)
     send(base, "/api/runs/1/collect", {})
-    assert wait_for(lambda: state.store.progress(1).get("collected") == 1), state.job_errors
+    settle(state, "collect")
+    assert state.store.progress(1).get("collected") == 1
 
     # The fixture's second row submitted nothing, which is finished with. Turn
     # it into an outstanding submission so the run is genuinely part-graded:
     # this is the state a cohort of 151 is in after the quota dies at 30.
     state.store.set_submission_status(2, "collected")
     send(base, "/api/runs/1/grade", {"stub": True, "row_ids": [1]})
-    assert wait_for(lambda: state.store.progress(1).get("graded") == 1), state.job_errors
+    settle(state, "grade")
+    assert state.store.progress(1).get("graded") == 1, state.job_errors
 
     run = state.store.get_run(1)
     assert run["status"] == "grading", f'still claiming {run["status"]} at 1 of 2'
@@ -616,8 +641,8 @@ def test_a_partly_graded_run_is_not_reported_as_graded(live):
 
     # Finish the cohort and it settles the other way.
     send(base, "/api/runs/1/grade", {"stub": True, "row_ids": [2]})
-    assert wait_for(lambda: state.store.get_run(1)["status"] == "graded"), \
-        (state.job_errors, state.store.get_run(1))
+    settle(state, "grade")
+    assert state.store.get_run(1)["status"] == "graded", state.store.get_run(1)["status"]
 
 
 def test_the_agent_log_endpoint_returns_the_recorded_lines(live):
@@ -763,6 +788,81 @@ def test_the_agent_log_polls_a_session_and_records_each_part_once(live):
         assert tools[0]["text"] == "rubric.md"
     finally:
         stop.set()
+
+
+def test_an_attempt_with_no_scorecard_reaches_the_agent_log(live):
+    """A silent agent was failing in the activity list and invisible in the log.
+
+    `agent.warn` — an attempt that ended without calling the tool — went only to
+    the activity feed. The panel behind "agent log" showed nothing but "agent
+    started" for a submission that was quietly failing twice and landing in
+    needs_review, so the one place a person would go to find out why was empty.
+    """
+    base, state, _fake, _spec = live
+    send(base, "/api/runs", {"course_id": 3130, "assignment_id": 46805})
+    assert wait_for(lambda: state.store.progress(1).get("total") == 2)
+
+    # Routed the way the grading job routes it, through the same handler.
+    state.record_agent_failure(
+        1, "the agent finished without calling submit_scorecard", False)
+
+    entries = state.agent_logs[1]
+    assert entries[-1]["kind"] == "error", entries
+    assert "submit_scorecard" in entries[-1]["text"], entries
+    # Non-retryable in this case, so the log says nothing more is coming.
+    assert entries[-1]["retryable"] is False, entries
+
+    # And it is on disk, because in memory it dies with the job.
+    body = send(base, "/api/reports/1/agent-log", method="GET")
+    assert any(e["kind"] == "error" and "submit_scorecard" in e["text"]
+               for e in body["lines"]), body["lines"][-3:]
+
+
+def test_the_agent_log_records_the_output_written_after_the_last_poll(live):
+    """The panel froze mid-sentence unless it was closed and reopened.
+
+    The poller runs on a one-second interval and the turn finishes between two
+    polls, so everything the agent wrote in that gap — the reasoning, and the
+    tool call that actually submits the scorecard — was only ever going to be
+    seen by a poll that had not happened yet. Stopping the poller at the end of
+    the job discarded it, and the log looked truncated until it was reopened.
+
+    Stopping now drains: one more pass over the sessions before the poller goes
+    away.
+    """
+    _base, state, _fake, _spec = live
+
+    class LateServer:
+        """Hands over the tail of the session only on the second poll."""
+
+        def __init__(self):
+            self.polls = 0
+
+        def parts(self, session_id, directory=None):
+            self.polls += 1
+            out = [{"id": "early", "type": "tool", "tool": "glob", "text": "",
+                    "state": {"status": "completed", "title": "a", "output": ""}}]
+            if self.polls >= 2:
+                out.append({"id": "late", "type": "reasoning",
+                            "text": "final thought",
+                            "state": {"completed": True, "time": {"end": 1}}})
+            return out
+
+    server = LateServer()
+    state.active_sessions["ses_late"] = (1, "/tmp/ws")
+    # What the terminal event does: the session is no longer active, but the
+    # drain still has to be able to read it.
+    state.recent_sessions["ses_late"] = state.active_sessions.pop("ses_late")
+    state.agent_seen.pop("ses_late", None)
+
+    state.start_agent_log(server)()
+    entries = state.agent_logs.get(1, [])
+    texts = [e.get("text", "") for e in entries]
+    assert "final thought" in texts, \
+        f"output written after the last poll was never recorded: {entries}"
+
+    # And not twice, which is what a naive drain invites.
+    assert texts.count("final thought") == 1, entries
 
 
 def test_the_agent_log_is_bounded(live):

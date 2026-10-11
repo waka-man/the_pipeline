@@ -559,6 +559,14 @@ class Grader:
                 self.emit("agent.warn", {"submission_row_id": submission_row_id,
                                          "session_id": self._session_by_row.get(
                                              submission_row_id, ""),
+                                         # The activity line and the agent log
+                                         # both name the student. Without it the
+                                         # line reads "undefined: the agent
+                                         # finished without calling
+                                         # submit_scorecard" and, since a retry
+                                         # follows, it looks like it belongs to
+                                         # whichever row happened to be running.
+                                         "student": unit.display_name,
                                          "message": last_error})
                 if attempt_no >= self.max_attempts:
                     self.store.set_submission_status(
