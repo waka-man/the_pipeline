@@ -1036,3 +1036,86 @@ body {
 
 .spinner-list { display: flex; flex-direction: column; gap: 10px; }
 .spinner-row { height: 44px; border-radius: 6px; background: var(--line); opacity: 0.45; }
+
+
+/* ---------------------------------------------------------- checkboxes
+   The platform default is a 1997 widget, and it does not match the rest of
+   the surface or read at all in the dark theme. Drawn by hand so checked,
+   unchecked and half-checked all look like they belong. */
+
+input[type="checkbox"] {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 15px;
+  height: 15px;
+  margin: 0;
+  flex: 0 0 auto;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: transparent;
+  cursor: pointer;
+  position: relative;
+  transition: background-color 90ms ease, border-color 90ms ease;
+}
+
+input[type="checkbox"]:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+
+input[type="checkbox"]:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+input[type="checkbox"]:checked,
+input[type="checkbox"]:indeterminate {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+/* The tick, drawn with a rotated border rather than a glyph, so it scales and
+   needs no icon font or SVG asset. */
+input[type="checkbox"]:checked::after {
+  content: "";
+  position: absolute;
+  left: 4px;
+  top: 1px;
+  width: 4px;
+  height: 8px;
+  border: solid var(--accent-ink);
+  border-width: 0 2px 2px 0;
+  transform: rotate(43deg);
+}
+
+/* Half-checked: a dash, for "some but not all". */
+input[type="checkbox"]:indeterminate::after {
+  content: "";
+  position: absolute;
+  left: 3px;
+  top: 6px;
+  width: 7px;
+  height: 2px;
+  background: var(--accent-ink);
+  border-radius: 1px;
+}
+
+input[type="checkbox"]:indeterminate:checked::after {
+  display: none;
+}
+
+input[type="checkbox"]:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.row-head input.pick-all {
+  margin-left: 2px;
+}
+
+.row[data-selected="true"] {
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+
+.row input[type="checkbox"]:checked ~ .row-name {
+  color: var(--ink-1);
+}

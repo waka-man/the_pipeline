@@ -355,8 +355,10 @@ function openAgentLog(rowId) {
   if (S.logTimer) clearInterval(S.logTimer);
   const poll = async () => {
     const got = await api.agentLog(rowId).catch(() => null);
-    if (got && Array.isArray(got.lines)) S.logEntries = got.lines;
-    if (S.panel && S.panel.kind === 'log') renderPanel();
+    if (got && Array.isArray(got.lines) && got.lines.length !== S.logEntries.length) {
+      S.logEntries = got.lines;
+      if (S.panel && S.panel.kind === 'log') renderPanel();
+    }
     else if (S.logTimer) { clearInterval(S.logTimer); S.logTimer = null; }
   };
   poll();
@@ -368,6 +370,16 @@ function renderPanel() {
   if (!el) return;
   const panel = S.panel;
   if (!panel) { mount(el); return; }
+
+  // Remember whether the reader was following the tail, and where they were.
+  // The panel is re-mounted on every poll, so without this the position resets
+  // and then snaps to the end: reading the agent's reasoning by scrolling up
+  // becomes impossible, which is the opposite of what a live log is for.
+  const prev = el.querySelector('.slideover-body');
+  const stick = prev
+    ? (prev.scrollHeight - prev.scrollTop - prev.clientHeight) < 48
+    : true;
+  const kept = stick ? null : prev.scrollTop;
 
   if (panel.kind === 'assign') {
     const course = S.course;
@@ -498,7 +510,17 @@ function renderPanel() {
         class: 'btn', 'data-size': 'sm', 'data-variant': 'ghost',
         onclick: closePanel,
       }, 'Close')));
+    restoreLogScroll(el, stick, kept);
   }
+}
+
+function restoreLogScroll(root, stick, kept) {
+  const body = root.querySelector('.slideover-body');
+  if (!body) return;
+  requestAnimationFrame(() => {
+    if (stick) body.scrollTop = body.scrollHeight;
+    else if (kept !== null) body.scrollTop = kept;
+  });
 }
 
 /** A line in the agent log. */
@@ -578,11 +600,6 @@ function logView(entries) {
   const cap = LOG_ROWS;
   const shown = rows.length > cap ? rows.slice(rows.length - cap) : rows;
   const el = h('div', { class: 'logview' }, shown);
-  // Follow the tail: the newest line is the point.
-  requestAnimationFrame(() => {
-    const body = el.closest('.slideover-body');
-    if (body) body.scrollTop = body.scrollHeight;
-  });
   return rows.length > cap
     ? h('div', {},
         h('div', { class: 'log-trim', style: 'padding:6px 2px 10px' },
@@ -691,8 +708,9 @@ function viewCollect() {
     return empty('No run', 'Choose an assignment first.');
   }
   const progress = run.progress || {};
-  const collecting = (S.status?.jobs?.collect?.status || 'idle') !== 'idle';
-  const paused = S.status?.jobs?.collect?.status === 'paused';
+  const collectJob = S.status?.jobs?.collect?.status;
+  const collecting = ['running', 'paused'].includes(collectJob);
+  const paused = collectJob === 'paused';
   const total = progress.total || 0;
   const done = total - (progress.pending || 0) - (progress.collecting || 0);
   const pct = total ? Math.round((done / total) * 100) : 0;
@@ -749,7 +767,9 @@ function viewGrade() {
   const graded = S.submissions.filter((s) => s.score !== null).length;
   const flagged = S.submissions.filter((s) => (s.flags || []).some((f) => f.severity === 'block')).length;
   const gradeable = S.submissions.filter((s) => s.score === null);
-  const grading = (S.status?.jobs?.grade?.status || 'idle') !== 'idle';
+  const jobRunning = (name) => ['running', 'paused']
+    .includes(S.status?.jobs?.[name]?.status);
+  const grading = jobRunning('grade');
 
   return h('div', {},
     h('div', { class: 'head' },
@@ -777,24 +797,6 @@ function viewGrade() {
       h('div', { class: 'hint', style: 'margin-top:8px' },
         'Free models first, so a stronger one here is a deliberate cost. '
         + 'Applies to the next run and leaves your saved default alone.')),
-
-    card('Select submissions',
-      `${gradeable.length} awaiting, ${S.selected.size} selected`,
-      h('div', { style: 'display:flex;gap:8px;flex-wrap:wrap;align-items:center' },
-        h('button', {
-          class: 'btn', 'data-size': 'sm', disabled: !gradeable.length,
-          onclick: () => {
-            const all = gradeable.every((s) => S.selected.has(s.row_id));
-            gradeable.forEach((s) => (all ? S.selected.delete(s.row_id) : S.selected.add(s.row_id)));
-            render();
-          },
-        }, gradeable.length && gradeable.every((s) => S.selected.has(s.row_id))
-            ? `Clear selection (${gradeable.length})`
-            : `Select all ${gradeable.length ? `(${gradeable.length})` : ''}`.trim()),
-        h('button', {
-          class: 'btn', 'data-size': 'sm', 'data-variant': 'ghost', disabled: !S.selected.size,
-          onclick: () => { S.selected.clear(); render(); },
-        }, 'Clear'))),
 
     card('Run grading', S.model?.selected ? `model ${S.model.selected}` : null,
       h('div', { class: 'stats', style: 'margin-bottom:16px' },
@@ -1040,12 +1042,18 @@ function showPublishPlan(plan) {
 /* -------------------------------------------------------------- fragments */
 
 function submissionTable(compact) {
+  // Gradeable rows are the ones still awaiting a score; already-graded ones are
+  // not offered, because selecting them to regrade is a different action.
+  const gradeable = S.submissions.filter((s) => s.score === null);
+  const allSelected = gradeable.length > 0
+    && gradeable.every((s) => S.selected.has(s.row_id));
   const rows = S.submissions.map((s) => h('div', {
     class: 'row', 'data-selected': String(S.selected.has(s.row_id)),
   },
-    compact ? h('span', { style: 'color:var(--ink-3)' }, '')
+    compact || s.score !== null ? h('span', { style: 'color:var(--ink-3)' }, '')
       : h('input', {
           type: 'checkbox',
+          title: s.student || s.student_name || '',
           checked: S.selected.has(s.row_id),
           onchange: (e) => {
             e.target.checked ? S.selected.add(s.row_id) : S.selected.delete(s.row_id);
@@ -1072,7 +1080,28 @@ function submissionTable(compact) {
     h('div', { class: 'card-head' }, h('h2', {}, 'Submissions'), h('span', { class: 'note' }, `${S.submissions.length}`)),
     h('div', { class: 'rows' },
       h('div', { class: 'row row-head' },
-        h('span', {}), h('span', {}, 'Student'), h('span', { style: 'text-align:right' }, 'Score'),
+        h('span', {},
+          !compact && gradeable.length
+            ? h('input', {
+                type: 'checkbox',
+                class: 'pick-all',
+                title: allSelected ? 'Clear selection' : 'Select all',
+                checked: allSelected,
+                // A half-ticked box is the honest state when some are chosen.
+                indeterminate: S.selected.size > 0 && !allSelected,
+                onchange: () => {
+                  // Driven by what is selected, not by the new tick state.
+                  // A half-ticked box reports `checked` after a click rather
+                  // than `unchecked`, so reading it would re-select everything
+                  // when the obvious intent is to clear.
+                  const any = gradeable.some((x) => S.selected.has(x.row_id));
+                  gradeable.forEach((x) => (any
+                    ? S.selected.delete(x.row_id) : S.selected.add(x.row_id)));
+                  render();
+                },
+              })
+            : null),
+        h('span', {}, 'Student'), h('span', { style: 'text-align:right' }, 'Score'),
         h('span', {}, 'Status'), h('span', {})),
       rows));
 }
@@ -1210,6 +1239,10 @@ async function loadStatus() {
 
 async function refreshStatus() {
   S.status = await api.status().catch(() => null);
+  // Repaint. Without this the new status only reached the DOM the next time
+  // something else happened to render, which is why a finished job left its
+  // button saying "Grading…" until an unrelated event came along.
+  render();
 }
 
 async function loadModels() {

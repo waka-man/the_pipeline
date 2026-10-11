@@ -799,6 +799,104 @@ async function run() {
       'waiting state stuck after run.ready');
   });
 
+  await test('scrolling up in the log survives a poll', async () => {
+    const { window } = await reboot();
+    stubState.jobs = { grade: { job: 'grade', status: 'running' } };
+    await window.eval(`window.__emit(${JSON.stringify({
+      event: 'job.done', data: { job: 'grade', ok: true },
+    })})`);
+    await tick(80);
+    await gotoOn(window, 'Grade');
+    assert.strictEqual(await clickIn(window, '#main button', 'agent log'), 'clicked');
+    await tick(120);
+
+    // Scroll to the top, the way someone reading the agent's reasoning does.
+    await window.eval(`(() => {
+      const b = document.querySelector('.slideover-body');
+      b.scrollTop = 0;
+    })()`);
+    const before = await window.eval(
+      "document.querySelector('.slideover-body').scrollTop");
+
+    // A poll that brings nothing new must not move the reader.
+    await window.eval(`window.__emit(${JSON.stringify({
+      event: 'job.done', data: { job: 'grade', ok: true },
+    })})`);
+    await tick(120);
+    assert.strictEqual(await window.eval(
+      "document.querySelector('.slideover-body').scrollTop"), before,
+      'the log snapped away from where the reader was');
+
+    // New output arriving should still not yank them to the end.
+    await window.eval(`(() => {
+      window.pipeline.api.agentLog = () => Promise.resolve({
+        row_id: 1, student: 'Ada Lovelace',
+        lines: Array.from({ length: 400 }, (_, i) => ({
+          t: 1791727000 + i, kind: 'think', text: 'line ' + i,
+        })),
+      });
+    })()`);
+    await tick(1500);
+    assert.strictEqual(await window.eval(
+      "document.querySelector('.slideover-body').scrollTop"), before,
+      'new output snapped the view to the end');
+    stubState.jobs = {};
+  });
+
+  await test('select all lives in the table header, not its own card', async () => {
+    const { window } = await reboot();
+    await gotoOn(window, 'Grade');
+
+    assert.strictEqual(await window.eval(
+      "[...document.querySelectorAll('#main .card-head h2')]"
+      + ".some((h) => h.textContent === 'Select submissions')"), false,
+      'the Select submissions card is still there');
+    assert.strictEqual(await window.eval(
+      "document.querySelectorAll('.row-head .pick-all').length"), 1,
+      'no select-all in the table header');
+
+    // It works, and reports a half-ticked state when part of the cohort is chosen.
+    await window.eval("document.querySelector('.row-head .pick-all').click()");
+    await tick(60);
+    assert.strictEqual(await window.eval(
+      "document.querySelectorAll('#main input[type=checkbox]:checked').length"), 3,
+      'select all did not tick the gradeable rows');
+
+    await window.eval("document.querySelector('.row-head .pick-all').click()");
+    await tick(60);
+    assert.strictEqual(await window.eval(
+      "document.querySelectorAll('#main input[type=checkbox]:checked').length"), 0,
+      'clearing left rows ticked');
+  });
+
+  await test('the grade button stops saying Grading once the job is done', async () => {
+    const { window } = await reboot();
+    stubState.jobs = { grade: { job: 'grade', status: 'running' } };
+    await window.eval(`window.__emit(${JSON.stringify({
+      event: 'job.done', data: { job: 'grade', ok: true },
+    })})`);
+    await tick(80);
+    await gotoOn(window, 'Grade');
+    let texts = await window.eval(
+      "JSON.stringify([...document.querySelectorAll('#main button')].map((b) => b.textContent.trim()))");
+    assert.ok(JSON.parse(texts).includes('Grading\u2026'), `expected a running state: ${texts}`);
+
+    // job_state reports "done" for a finished job, which is not "idle": reading
+    // it as "not idle" left the button claiming to grade for the rest of time.
+    stubState.jobs = { grade: { job: 'grade', status: 'done' } };
+    await window.eval(`window.__emit(${JSON.stringify({
+      event: 'job.done', data: { job: 'grade', ok: true },
+    })})`);
+    await tick(80);
+    texts = await window.eval(
+      "JSON.stringify([...document.querySelectorAll('#main button')].map((b) => b.textContent.trim()))");
+    assert.ok(!JSON.parse(texts).includes('Grading\u2026'),
+      `the button still says it is grading: ${texts}`);
+    assert.ok(JSON.parse(texts).some((t) => t.startsWith('Grade All')),
+      'and the button to grade again is missing');
+    stubState.jobs = {};
+  });
+
   await test('no handler threw while every button was clicked', () => {
     assert.deepStrictEqual(base.window.__errs, [],
       `uncaught in renderer:\n  ${base.window.__errs.join('\n  ')}`);
