@@ -143,7 +143,14 @@ function stubApi() {
     status: rec('status', () => ({ canvas_configured: true, model_key_configured: false,
                                    jobs: stubState.jobs, model: { selected: 'm1' } })),
     saveSettings: rec('saveSettings', { ok: true }),
-    models: rec('models', { selected: 'm1', candidates: [{ id: 'm1', name: 'test-model' }] }),
+    models: rec('models', {
+      selected: 'm1',
+      // Two candidates, so "pick a different model for this run" is testable.
+      candidates: [
+        { id: 'm1', name: 'cheap', provider: 'openrouter', tier: 'free' },
+        { id: 'm2', name: 'strong', provider: 'openrouter', tier: 'paid' },
+      ],
+    }),
     selectModel: rec('selectModel', { selected: 'm1' }),
     courses: rec('courses', { courses: COURSES }),
     assignments: rec('assignments', { assignments: ASSIGNMENTS }),
@@ -521,6 +528,37 @@ async function run() {
     assert.ok(apiCalls.some((c) => c.startsWith('control(')
       && c.includes('"action":"stop"')), `Stop did not call control: ${apiCalls.join(', ')}`);
     stubState.jobs = {};
+  });
+
+  await test('a run can pick its own model without changing the saved default', async () => {
+    const { window, calls: c } = await reboot();
+    await gotoOn(window, 'Grade');
+
+    // The picker lists the catalogue rather than sending you to setup.
+    const picks = await window.eval(
+      "JSON.stringify([...document.querySelectorAll('#main .pick')]"
+      + ".map((p) => p.querySelector('.pick-title').textContent))");
+    assert.ok(JSON.parse(picks).length > 0, 'the grade stage offers no models');
+
+    c.length = 0;
+    assert.strictEqual(await clickIn(window, '#main .pick', 'm2'), 'clicked', 'no model to pick');
+    await tick(60);
+
+    await clickIn(window, '#main button', 'Grade All');
+    await tick(80);
+    const all = c.filter((x) => x.startsWith('grade(')).pop();
+    assert.match(all, /"model":"m2"/, `the chosen model was not sent: ${all}`);
+
+    // And it can be handed back to the saved default.
+    await gotoOn(window, 'Grade');
+    const cleared = await clickIn(window, '#main button', 'Use the saved default');
+    assert.strictEqual(cleared, 'clicked', 'no way back to the saved default');
+    await tick(60);
+    c.length = 0;
+    await clickIn(window, '#main button', 'Grade All');
+    await tick(80);
+    const back = c.filter((x) => x.startsWith('grade(')).pop();
+    assert.ok(!/"model":/.test(back), `the override was still sent: ${back}`);
   });
 
   await test('Grade All and Grade Selected send different payloads', async () => {

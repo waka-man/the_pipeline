@@ -463,6 +463,27 @@ def op_models(state: AppState) -> dict[str, Any]:
     }
 
 
+def resolve_model(state: AppState, model_id: str | None) -> tuple[Any, str, int]:
+    """(choice, model id, output budget) for a requested model.
+
+    Shared by the settings page and by a per-run override on the grade stage, so
+    picking a model there resolves exactly the way it does on setup rather than
+    through a second, subtly different path.
+    """
+    catalogue = state.catalogue or state.ensure_opencode().catalogue()
+    state.catalogue = catalogue
+    prefer = model_id != "no-prefer-free"
+    wanted = None if model_id == "no-prefer-free" else (model_id or None)
+    try:
+        choice = config.pick_model(catalogue, wanted, prefer_free=prefer)
+    except RuntimeError as exc:
+        raise ApiError(str(exc), 400) from exc
+    if choice is None:
+        raise ApiError("opencode reports no usable models. Add a key, then retry.", 400)
+    choice.max_output_tokens = config.DEFAULT_OUTPUT_BUDGET
+    return choice, str(choice), choice.max_output_tokens
+
+
 def op_select_model(state: AppState, body: dict[str, Any]) -> dict[str, Any]:
     catalogue = state.catalogue or state.ensure_opencode().catalogue()
     state.catalogue = catalogue
@@ -658,10 +679,19 @@ def op_grade(state: AppState, run_id: int, body: dict[str, Any]) -> dict[str, An
             return
 
         srv = state.ensure_opencode()
-        model = str(state.choice) if state.choice else run.get("model")
+        # A model chosen on the grade stage applies to this run and leaves the
+        # saved default alone. The model on the setup page is a starting point,
+        # not a lock: switching between a free model and a stronger one between
+        # runs is a normal thing to want.
+        override = body.get("model")
+        if override:
+            _choice, model, budget = resolve_model(state, str(override))
+        else:
+            model = str(state.choice) if state.choice else run.get("model")
+            budget = (state.choice.max_output_tokens if state.choice
+                      else config.DEFAULT_OUTPUT_BUDGET)
         if not model:
             raise ApiError("No model selected.", 409)
-        budget = state.choice.max_output_tokens if state.choice else config.DEFAULT_OUTPUT_BUDGET
         def emit_agent(event: str, data: dict[str, Any]) -> None:
             sid = str(data.get("session_id") or "")
             rid = data.get("submission_row_id")

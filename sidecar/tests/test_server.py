@@ -733,3 +733,33 @@ def test_the_agent_log_is_bounded(live):
     lines = state.agent_logs[1]
     assert len(lines) == srv.AGENT_LOG_LINES
     assert lines[-1]["text"] == f"line {srv.AGENT_LOG_LINES + 249}", "kept the wrong tail"
+
+
+def test_a_run_can_choose_its_own_model_without_changing_the_default(live):
+    """The model on the setup page is a starting point, not a lock.
+
+    Switching between a free model and a stronger one between runs is a normal
+    thing to want, and it should not mean going back to setup and changing the
+    default for everything afterwards.
+    """
+    _base, state, _fake, _spec = live
+    state.catalogue = {
+        "openrouter": ["vendor/cheap-small", "vendor/expensive-large"],
+    }
+    original = config.pick_model(state.catalogue, None, prefer_free=True)
+
+    choice, model, budget = srv.resolve_model(state, "openrouter/vendor/expensive-large")
+    assert model == "openrouter/vendor/expensive-large"
+    assert choice.max_output_tokens == budget
+
+    # The saved default is untouched.
+    assert str(state.choice) != "openrouter/vendor/expensive-large" or state.choice is None
+
+
+def test_a_run_model_that_does_not_exist_is_a_clear_error(live):
+    _base, state, _fake, _spec = live
+    state.catalogue = {"openrouter": ["vendor/cheap-small"]}
+    with pytest.raises(srv.ApiError) as e:
+        srv.resolve_model(state, "openrouter/nope/missing")
+    assert e.value.status == 400
+    assert "not available" in str(e.value.message) or "not available" in str(e.value)

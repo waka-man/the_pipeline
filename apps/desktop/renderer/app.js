@@ -71,6 +71,8 @@ const S = {
   logShown: 0,
   logTimer: null,
   bootstrapping: false,
+  // Model for the next run only. Empty means 'use the saved default'.
+  runModel: '',
   editing: false,
   events: [],
   toast: null,
@@ -669,6 +671,41 @@ function viewGrade() {
                + 'can influence another\'s. Scores arrive as structured data and are rendered '
                + 'into a report — the agent never formats the page itself.')),
 
+    card('Model for this run',
+      S.runModel || S.model?.selected || 'saved default',
+      h('div', { style: 'display:flex;gap:8px;flex-wrap:wrap;align-items:center' },
+        S.model?.selected
+          ? h('span', { class: 'chip', dataset: { tone: 'accent' } }, S.model.selected) : null,
+        S.runModel && S.runModel !== S.model?.selected
+          ? h('button', {
+              class: 'btn', 'data-size': 'sm', 'data-variant': 'ghost',
+              onclick: () => { S.runModel = ''; render(); },
+            }, 'Use the saved default')
+          : null),
+      S.model?.candidates?.length
+        ? h('div', { class: 'picklist', style: 'margin-top:12px' },
+            S.model.candidates.slice(0, 10).map((c) => h('button', {
+              class: 'pick',
+              'aria-selected': String(c.id === (S.runModel || S.model.selected)),
+              onclick: () => {
+                S.runModel = c.id;
+                render();
+                toast(`Next run grades with ${c.id}.`);
+              },
+            },
+              h('div', {},
+                h('div', { class: 'pick-title' }, c.id),
+                h('div', { class: 'pick-sub' }, h('span', {}, c.provider))),
+              h('div', { class: 'pick-meta' },
+                chip(c.tier, c.tier === 'free' ? 'accent' : null)))))
+        : h('button', {
+            class: 'btn', style: 'margin-top:10px',
+            onclick: () => guard(loadModels, 'Could not read models'),
+          }, 'Load models'),
+      h('div', { class: 'hint', style: 'margin-top:10px' },
+        'Applies to the next run and leaves your saved default alone. Free models '
+        + 'first, so a stronger model here is a deliberate cost.')),
+
     card('Select submissions',
       `${gradeable.length} awaiting, ${S.selected.size} selected`,
       h('div', { style: 'display:flex;gap:8px;flex-wrap:wrap;align-items:center' },
@@ -700,15 +737,18 @@ function viewGrade() {
           class: 'btn', 'data-variant': 'primary',
           disabled: grading || !gradeable.length,
           onclick: () => guard(async () => {
-            await api.grade(run.run_id, {});
-            toast(`Grading ${gradeable.length} submissions.`);
+            await api.grade(run.run_id, S.runModel ? { model: S.runModel } : {});
+            toast(`Grading ${gradeable.length} submissions${S.runModel ? ` with ${S.runModel}` : ''}.`);
           }, 'Could not start grading'),
         }, grading ? 'Grading…' : `Grade All (${gradeable.length})`),
         h('button', {
           class: 'btn', disabled: grading || !S.selected.size,
           onclick: () => guard(async () => {
-            await api.grade(run.run_id, { row_ids: [...S.selected] });
-            toast(`Grading ${S.selected.size} selected.`);
+            await api.grade(run.run_id, {
+              row_ids: [...S.selected],
+              ...(S.runModel ? { model: S.runModel } : {}),
+            });
+            toast(`Grading ${S.selected.size} selected${S.runModel ? ` with ${S.runModel}` : ''}.`);
           }, 'Could not start grading'),
         }, `Grade Selected (${S.selected.size})`),
         h('button', {
