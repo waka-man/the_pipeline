@@ -140,6 +140,10 @@ class AppState:
     # active_sessions, which is what stopped the log from recording anything
     # the agent wrote between its last poll and the end of the turn.
     recent_sessions: dict[str, tuple[int, str]] = field(default_factory=dict)
+    # Submission rows the person has asked to stop, which the grading loop checks
+    # before starting the next attempt for that row. Not a job-wide stop: the
+    # rest of the cohort carries on.
+    stopped_rows: set[int] = field(default_factory=set)
     # session id -> part ids already written to the log, so nothing repeats.
     agent_seen: dict[str, set[str]] = field(default_factory=dict)
 
@@ -868,6 +872,9 @@ def op_grade(state: AppState, run_id: int, body: dict[str, Any]) -> dict[str, An
             run_id, ("collected", "failed", "needs_review", "grading"))
         if body.get("only_pending"):
             rows = [r for r in rows if r["status"] == "collected"]
+        # Drop rows stopped since the job was started, so "stop this one" is not
+        # undone by the loop picking it up again.
+        rows = [r for r in rows if int(r["id"]) not in state.stopped_rows]
         # Grade Selected. An explicit selection is honoured exactly, so grading
         # "these five" cannot quietly turn into grading the rest of the cohort.
         wanted = body.get("row_ids")
@@ -883,6 +890,8 @@ def op_grade(state: AppState, run_id: int, body: dict[str, Any]) -> dict[str, An
             futures = {}
             for row in rows:
                 unit = _unit_from_row(row)
+                if int(row["id"]) in state.stopped_rows:
+                    continue
                 # wait_if_paused before submitting: pausing must stop new work
                 # starting rather than only stopping completions.
                 if not control.wait_if_paused():
@@ -906,6 +915,10 @@ def op_grade(state: AppState, run_id: int, body: dict[str, Any]) -> dict[str, An
                 except Exception as exc:
                     bus.emit("grade.error", {"student": unit.display_name,
                                              "message": str(exc)[:200]})
+                finally:
+                    # Clear the stop flag once the row has been dealt with, or
+                    # the row can never be graded again in this session.
+                    state.stopped_rows.discard(int(row["id"]))
         # Only claim the run is graded if it is. The job can return early on
         # quota, a dead key, or a deliberate "grade these five", and a run that
         # says `graded` while 121 rows are ungraded will be believed.
@@ -1064,6 +1077,43 @@ def op_job_control(state: AppState, run_id: int, body: dict[str, Any]) -> dict[s
         control.request_stop()
     state.bus.emit("job.control", {"job": job, "action": action})
     return {"job": job, "action": action, "state": job_state(state, job)}
+
+
+def op_stop_submission(state: AppState, row_id: int) -> dict[str, Any]:
+    """Stop grading one submission without stopping the run.
+
+    A single turn can sit for a long time — a model reasoning through a long
+    essay, a provider streaming slowly — and the only controls on offer were
+    pause and stop for the whole job, neither of which helps when it is one
+    student you want to move on from. The turn is aborted at the provider and
+    the row is left ungraded so it can be picked up again.
+
+    Records the request rather than only acting on it: the grading loop is
+    already inside the attempt by the time this arrives, and without the flag
+    it would retry the same row straight away.
+    """
+    row_id = int(row_id)
+    try:
+        state.store.submission_row(row_id)
+    except Exception:
+        raise ApiError("no such submission", 404)
+
+    state.stopped_rows.add(row_id)
+    # Abort the live session if one is open, so the provider stops being billed
+    # for tokens nobody is going to read.
+    sid = next((s for s, rid in state.session_rows.items() if rid == row_id), "")
+    aborted = False
+    if sid and state.server is not None:
+        try:
+            state.server.abort(sid)
+            aborted = True
+        except Exception:
+            aborted = False
+    state.bus.emit("grade.stopped", {
+        "submission_row_id": row_id, "student": state.store.submission_row(row_id)["student_name"],
+        "aborted": aborted,
+    })
+    return {"row_id": row_id, "aborted": aborted}
 
 
 def op_agent_log(state: AppState, row_id: int) -> dict[str, Any]:
@@ -1305,6 +1355,7 @@ ROUTES: list[Route_] = [
     Route_("POST", r"^/api/runs/(?P<run_id>\d+)/render$", _start_render),
     Route_("POST", r"^/api/runs/(?P<run_id>\d+)/publish$", _start_publish),
     Route_("POST", r"^/api/runs/(?P<run_id>\d+)/control$", _start_control),
+    Route_("POST", r"^/api/submissions/(?P<row_id>\d+)/stop$", op_stop_submission),
     Route_("GET", r"^/api/reports/(?P<row_id>\d+)/agent-log$", _get_agent_log),
     Route_("GET", r"^/api/reports/(?P<row_id>\d+)$", _get_report),
     Route_("PUT", r"^/api/reports/(?P<row_id>\d+)$", _put_report),

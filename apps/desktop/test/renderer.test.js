@@ -633,8 +633,14 @@ async function run() {
     assert.strictEqual(await window.eval(
       "document.querySelectorAll('#main .pick').length"), 0,
       'the model list is still filling the page');
-    assert.strictEqual(await clickIn(window, '#main button', 'Change'), 'clicked',
-      'no way to choose a model from the grade stage');
+    // The model name on the Run grading card is the control: it says which
+    // model will be used, and opens the picker. It used to be a whole card of
+    // its own whose name disagreed with the one on Run grading.
+    const shown = await window.eval(
+      "(document.querySelector('#main .model-pick') || {}).textContent || ''");
+    assert.match(shown, /m1/, `the model name is not on the Run grading card: ${shown}`);
+    assert.strictEqual(await clickIn(window, '#main .model-pick', ''), 'clicked',
+      'the model name is not clickable');
     await tick(80);
     assert.strictEqual(await window.eval(
       "document.querySelectorAll('.slideover .pick').length"), 2,
@@ -650,10 +656,15 @@ async function run() {
     const all = c.filter((x) => x.startsWith('grade(')).pop();
     assert.match(all, /"model":"m2"/, `the chosen model was not sent: ${all}`);
 
-    // And it can be handed back to the saved default.
+    // And it can be handed back to the saved default, by picking it.
     await gotoOn(window, 'Grade');
-    const cleared = await clickIn(window, '#main button', 'Use the saved default');
-    assert.strictEqual(cleared, 'clicked', 'no way back to the saved default');
+    assert.match(await window.eval(
+      "(document.querySelector('#main .model-pick') || {}).textContent || ''"),
+      /this run/, 'the override is not marked as being for this run only');
+    await clickIn(window, '#main .model-pick', '');
+    await tick(80);
+    assert.strictEqual(await clickIn(window, '.slideover .pick', 'm1'), 'clicked',
+      'no way back to the saved default');
     await tick(60);
     c.length = 0;
     await clickIn(window, '#main button', 'Grade All');
@@ -1059,7 +1070,88 @@ async function run() {
     assert.match(rule[0], /position:\s*sticky/, rule[0]);
   });
 
-  await test('no handler threw while every button was clicked', () => {
+  await test('the log keeps updating through a quiet stretch', async () => {
+    const { window } = await reboot();
+    await gotoOn(window, 'Grade');
+
+    // The poller used to stop on the first poll that brought nothing new, on the
+    // assumption that a quiet log means a finished one. A model reasoning
+    // through a long submission goes quiet for much longer than the interval,
+    // so the panel updated for the first few entries and then froze until it was
+    // closed and reopened.
+    await window.eval(`(() => {
+      let calls = 0;
+      window.__logCalls = () => calls;
+      window.pipeline.api.agentLog = () => {
+        calls += 1;
+        // Quiet for the first three polls, then more output.
+        if (calls <= 3) return Promise.resolve({ row_id: 1, student: 'Ada Lovelace',
+          lines: [{ t: 1, kind: 'think', text: 'only line' }] });
+        return Promise.resolve({ row_id: 1, student: 'Ada Lovelace',
+          lines: [{ t: 1, kind: 'think', text: 'only line' },
+                  { t: 2, kind: 'think', text: 'much later' }] });
+      };
+    })()`);
+
+    await window.eval(`(() => {
+      const rows = [...document.querySelectorAll('.rows .row:not(.row-head)')];
+      rows.find((r) => r.querySelector('button')).querySelector('button').click();
+    })()`);
+    // Long enough for several poll intervals at 1200ms.
+    await tick(4200);
+
+    const calls = await window.eval('window.__logCalls()');
+    assert.ok(calls >= 4, `polling stopped after ${calls} call(s): a quiet log is not a finished one`);
+    const text = await window.eval(
+      "(document.querySelector('.slideover-body') || {}).textContent || ''");
+    assert.match(text, /much later/,
+      'the panel never picked up the output that arrived after a quiet stretch');
+});
+
+await test('the log panel offers Stop while a submission is being graded', async () => {
+    const { window } = await reboot();
+    await gotoOn(window, 'Grade');
+
+    // Open the log of the row that is mid-grade. The fixture has one in the
+    // `grading` state, which is the only state where stopping means anything.
+    await window.eval(`(() => {
+      const rows = [...document.querySelectorAll('.rows .row:not(.row-head)')];
+      const row = rows.find((r) => r.textContent.includes('Alan Turing'));
+      [...row.querySelectorAll('button')].find((b) => b.textContent.trim() === 'agent log').click();
+    })()`);
+    await tick(80);
+
+    assert.ok(await window.eval(
+      "[...document.querySelectorAll('.slideover-foot button, .slideover button')]"
+      + ".some((b) => b.textContent.trim() === 'Stop')"),
+      'no Stop button on a submission that is being graded');
+
+    // Clicking it reaches the API.
+    await window.eval(`(() => {
+      window.__stops = 0;
+      window.pipeline.api.stopSubmission = () => { window.__stops += 1; return Promise.resolve({}); };
+      [...document.querySelectorAll('button')].find((b) => b.textContent.trim() === 'Stop').click();
+    })()`);
+    await tick(80);
+    assert.strictEqual(await window.eval('window.__stops'), 1, 'Stop did not reach the API');
+
+    // And a row that is not being graded does not offer it.
+    await window.eval(`(() => {
+      [...document.querySelectorAll('button')].find((b) => b.textContent.trim() === 'Close').click();
+    })()`);
+    await tick(60);
+    await window.eval(`(() => {
+      const rows = [...document.querySelectorAll('.rows .row:not(.row-head)')];
+      const row = rows.find((r) => r.textContent.includes('Ada Lovelace'));
+      [...row.querySelectorAll('button')].find((b) => b.textContent.trim() === 'agent log').click();
+    })()`);
+    await tick(80);
+    assert.ok(!await window.eval(
+      "[...document.querySelectorAll('button')].some((b) => b.textContent.trim() === 'Stop')"),
+    'Stop is offered on a row that has already finished');
+});
+
+await test('no handler threw while every button was clicked', () => {
     assert.deepStrictEqual(base.window.__errs, [],
       `uncaught in renderer:\n  ${base.window.__errs.join('\n  ')}`);
   });

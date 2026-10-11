@@ -938,6 +938,58 @@ def test_naming_a_run_that_does_not_exist_is_a_404(live):
     assert e.value.code == 404
 
 
+def test_stopping_one_submission_does_not_stop_the_run(live):
+    """The only controls on offer were pause and stop for the whole job.
+
+    Neither helps when it is one student you have watched reason for five
+    minutes and want to move on from. The rest of the cohort must carry on.
+    """
+    base, state, _fake, _spec = live
+    send(base, "/api/runs", {"course_id": 3130, "assignment_id": 46805})
+    assert wait_for(lambda: state.store.progress(1).get("total") == 2)
+    send(base, "/api/runs/1/collect", {})
+    settle(state, "collect")
+
+    body = send(base, "/api/submissions/1/stop")
+    assert body["row_id"] == 1, body
+    assert 1 in state.stopped_rows
+
+    # Cleared once the row is dealt with, or it can never be graded again.
+    state.stopped_rows.discard(1)
+    assert not state.stopped_rows
+
+    # An unknown row is a clean 404 rather than a 500 from the store.
+    try:
+        send(base, "/api/submissions/9999/stop")
+        raise AssertionError("stopping a submission that does not exist should fail")
+    except urllib.error.HTTPError as exc:
+        assert exc.code == 404, exc.code
+
+
+def test_a_stopped_row_is_not_graded_by_the_loop(live):
+    """The flag has to be honoured when the loop reaches that row.
+
+    Stopping mid-turn does not stop the job: the loop is already inside the
+    attempt. Without the flag it would come round to the same row and start it
+    again, which is the opposite of what was asked for.
+    """
+    _base, state, _fake, _spec = live
+    send(_base, "/api/runs", {"course_id": 3130, "assignment_id": 46805})
+    assert wait_for(lambda: state.store.progress(1).get("total") == 2)
+    send(_base, "/api/runs/1/collect", {})
+    settle(state, "collect")
+
+    # Row 1 submitted and is waiting; row 2 did not, so it is not in the set.
+    statuses = ("collected", "failed", "needs_review", "grading")
+    before = [int(r["id"]) for r in state.store.submissions_with_status(1, statuses)]
+    assert before == [1], before
+
+    state.stopped_rows.add(1)
+    remaining = [int(r["id"]) for r in state.store.submissions_with_status(1, statuses)
+                 if int(r["id"]) not in state.stopped_rows]
+    assert remaining == [], remaining
+
+
 def test_the_agent_log_survives_the_job_and_a_restart(live):
     """In memory alone the log is gone the moment grading stops.
 

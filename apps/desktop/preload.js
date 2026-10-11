@@ -55,6 +55,8 @@ contextBridge.exposeInMainWorld('pipeline', {
     // Pause, resume or stop a long-running job.
     control: (id, b) => req('POST', `/api/runs/${id}/control`, b),
     agentLog: (row) => req('GET', `/api/reports/${row}/agent-log`),
+    // Stop grading one submission. The job carries on with the rest.
+    stopSubmission: (row) => req('POST', `/api/submissions/${row}/stop`),
     report: (row) => req('GET', `/api/reports/${row}`),
     saveReport: (row, markdown) => req('PUT', `/api/reports/${row}`, { markdown }),
   },

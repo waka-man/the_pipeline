@@ -70,6 +70,8 @@ const S = {
   logEntries: [],
   logShown: 0,
   logTimer: null,
+  // Rows the person has asked to stop, so the button does not offer it twice.
+  stoppingRows: new Set(),
   bootstrapping: false,
   // Model for the next run only. Empty means 'use the saved default'.
   runModel: '',
@@ -215,6 +217,37 @@ async function refreshSubmissions() {
 function earnedOf(scorecard) {
   if (!scorecard || !Array.isArray(scorecard.criterion_scores)) return null;
   return scorecard.criterion_scores.reduce((sum, c) => sum + (c.points_earned || 0), 0);
+}
+
+/**
+ * The model this run grades with, shown as the note on the Run grading card.
+ *
+ * One control that both says which model will be used and opens the picker.
+ * This used to be a whole card of its own, whose name disagreed with the one on
+ * Run grading -- it showed the run's model and that one showed the saved
+ * default, so the two sat a few lines apart naming different models for the
+ * same job.
+ *
+ * Kept as the run's model, falling back to the saved default, because that is
+ * what the next press of Grade All will actually use.
+ */
+function modelNote() {
+  const chosen = S.runModel || S.model?.selected || null;
+  const label = chosen || 'no model selected';
+  const differs = !!S.runModel && S.runModel !== S.model?.selected;
+  return h('button', {
+    class: 'model-pick',
+    title: 'Choose the model this run grades with',
+    onclick: () => guard(async () => {
+      await loadModels();
+      S.panel = { kind: 'model', rowId: null };
+      render();
+    }, 'Could not read models'),
+  },
+    h('span', { class: 'model-pick-label' }, label),
+    differs ? h('span', { class: 'chip', dataset: { tone: 'accent' } }, 'this run') : null,
+    differs ? h('span', { class: 'model-pick-hint' }, '· saved default is '
+      + S.model.selected) : null);
 }
 
 /* ------------------------------------------------------------------ views */
@@ -364,13 +397,33 @@ function openAgentLog(rowId) {
   S.logEntries = [];
   render();
   if (S.logTimer) clearInterval(S.logTimer);
+  // Polling runs for as long as the panel is open, and no longer. It used to
+  // stop on the first poll that brought nothing new, on the assumption that a
+  // quiet log means a finished one — but a model reasoning through a long
+  // submission goes quiet for far longer than the interval between two polls.
+  // The panel updated for the first few entries and then froze, and the only
+  // way to see the rest was to close it and open it again.
+  //
+  // Compared on the tail rather than the length: the sidecar trims the log to a
+  // fixed size, so a long turn holds the same length while the contents move.
+  const newest = (lines) => {
+    const last = lines && lines[lines.length - 1];
+    return last ? `${last.t}:${(last.text || '').length}` : '';
+  };
   const poll = async () => {
-    const got = await api.agentLog(rowId).catch(() => null);
-    if (got && Array.isArray(got.lines) && got.lines.length !== S.logEntries.length) {
-      S.logEntries = got.lines;
-      if (S.panel && S.panel.kind === 'log') renderPanel();
+    // A panel closed between ticks leaves the timer cleared; stop here too
+    // rather than polling a row nobody is looking at.
+    if (!S.panel || S.panel.kind !== 'log' || S.panel.rowId !== rowId) {
+      clearInterval(S.logTimer);
+      S.logTimer = null;
+      return;
     }
-    else if (S.logTimer) { clearInterval(S.logTimer); S.logTimer = null; }
+    const got = await api.agentLog(rowId).catch(() => null);
+    if (!got || !Array.isArray(got.lines)) return;
+    if (got.lines.length === S.logEntries.length
+        && newest(got.lines) === newest(S.logEntries)) return;
+    S.logEntries = got.lines;
+    renderPanel();
   };
   poll();
   S.logTimer = setInterval(poll, 1200);
@@ -444,9 +497,15 @@ function renderPanel() {
             class: 'pick',
             'aria-selected': String(c.id === (S.runModel || S.model?.selected)),
             onclick: () => {
-              S.runModel = c.id;
+              // Picking the saved default clears the override instead of
+              // setting one, which is what the "Use the saved default" button
+              // did before the note became the only control.
+              const isDefault = c.id === S.model?.selected;
+              S.runModel = isDefault ? '' : c.id;
               closePanel();
-              toast(`Next run grades with ${c.id}.`);
+              toast(isDefault
+                ? `Using the saved default for the next run.`
+                : `Next run grades with ${c.id}.`);
             },
           },
             h('div', {},
@@ -513,14 +572,31 @@ function renderPanel() {
 
   if (panel.kind === 'log') {
     const row = S.submissions.find((x) => x.row_id === panel.rowId);
+    // Stop sits here rather than on the grade stage because that is where you
+    // are when you decide: watching a turn that is going nowhere, with the
+    // student named at the top of the panel. The grade-stage controls are a
+    // screen away, behind a list of 150 other rows.
+    const running = row && row.status === 'grading';
+    const stopping = S.stoppingRows.has(panel.rowId);
     mount(el, slideover(
       row ? (row.student || row.student_name || 'Student') : 'Grading agent',
       'Live agent output',
       logView(S.logEntries),
-      h('button', {
-        class: 'btn', 'data-size': 'sm', 'data-variant': 'ghost',
-        onclick: closePanel,
-      }, 'Close')));
+      h('div', { style: 'display:flex;gap:8px;align-items:center' },
+        running && !stopping ? h('button', {
+          class: 'btn', 'data-size': 'sm', 'data-variant': 'danger',
+          onclick: () => guard(async () => {
+            S.stoppingRows.add(panel.rowId);
+            renderPanel();
+            await api.stopSubmission(panel.rowId);
+            toast('Stopped. This one can be graded again.');
+          }, 'Could not stop this submission'),
+        }, 'Stop') : null,
+        stopping ? h('span', { class: 'chip', dataset: { tone: 'flag' } }, 'stopping…') : null,
+        h('button', {
+          class: 'btn', 'data-size': 'sm', 'data-variant': 'ghost',
+          onclick: closePanel,
+        }, 'Close'))));
     restoreLogScroll(el, stick, kept);
   }
 }
@@ -789,29 +865,9 @@ function viewGrade() {
                + 'can influence another\'s. Scores arrive as structured data and are rendered '
                + 'into a report — the agent never formats the page itself.')),
 
-    card('Model for this run',
-      S.runModel || S.model?.selected || 'saved default',
-      h('div', { style: 'display:flex;gap:8px;flex-wrap:wrap;align-items:center' },
-        h('button', {
-          class: 'btn', 'data-size': 'sm',
-          onclick: () => guard(async () => { await loadModels(); S.panel = { kind: 'model', rowId: null }; render(); },
-            'Could not read models'),
-        }, 'Change'),
-        S.runModel && S.runModel !== S.model?.selected
-          ? h('span', { class: 'chip', dataset: { tone: 'accent' } }, 'this run only') : null,
-        S.runModel && S.runModel !== S.model?.selected
-          ? h('button', {
-              class: 'btn', 'data-size': 'sm', 'data-variant': 'ghost',
-              onclick: () => { S.runModel = ''; render(); },
-            }, 'Use the saved default')
-          : null),
-      h('div', { class: 'hint', style: 'margin-top:8px' },
-        'Free models first, so a stronger one here is a deliberate cost. '
-        + 'Applies to the next run and leaves your saved default alone.')),
-
     // Sticky, so the controls stay reachable from the bottom of a long list.
     h('div', { class: 'sticky-acts' },
-    card('Run grading', S.model?.selected ? `model ${S.model.selected}` : null,
+    card('Run grading', modelNote(),
       h('div', { class: 'stats', style: 'margin-bottom:16px' },
         h('div', { class: 'stat' }, h('div', { class: 'stat-v' }, graded), h('div', { class: 'stat-k' }, 'graded')),
         h('div', { class: 'stat' }, h('div', { class: 'stat-v' }, S.submissions.length), h('div', { class: 'stat-k' }, 'collected')),
@@ -1409,6 +1465,12 @@ bridge.events(
       render();
     }
     if (msg.event === 'job.done') { refreshStatus(); render(); }
+    if (msg.event === 'grade.stopped' && msg.data && msg.data.submission_row_id) {
+      // The row is on its way back to ungraded; drop the flag so the button
+      // comes back if the person starts it again.
+      S.stoppingRows.delete(msg.data.submission_row_id);
+      render();
+    }
     if (msg.event === 'collect.stopped') {
       toast(msg.data.remaining
         ? `Collection stopped with ${msg.data.remaining} remaining.`
