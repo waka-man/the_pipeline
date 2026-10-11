@@ -725,7 +725,9 @@ async function run() {
     assert.match(text, /1200 in .*340 out/, 'step tokens are missing');
     // A failure must be visible and must say whether anything follows.
     assert.match(text, /insufficient credits/, 'the failure is missing');
-    assert.match(text, /stopped/, 'a non-retryable failure should say so');
+    // "failed", not "stopped": stopped means a person pressed Stop, and a
+    // non-retryable failure that nobody pressed anything for is not that.
+    assert.match(text, /failed/, 'a non-retryable failure should say so');
 
     // Timestamps.
     assert.match(text, /\b\d{2}:\d{2}:\d{2}\b/, 'no timestamp on the log');
@@ -1223,6 +1225,39 @@ await test('reports flagged for review can be listed and walked', async () => {
     assert.match(first, /Ada Lovelace|Alan Turing/, `not on a flagged report: ${first}`);
     assert.match(second, /Ada Lovelace|Alan Turing/, `not on a flagged report: ${second}`);
     assert.notStrictEqual(first, second, `Next flagged stayed on the same report: ${first}`);
+});
+
+await test('a failure line shows its tag, its message and its detail apart', async () => {
+    const { window } = await reboot();
+    await gotoOn(window, 'Grade');
+
+    // These three were wrapped in a single div, so they laid out as inline
+    // spans with no gap and the line read
+    // "stoppedthe agent finished without calling submit_scorecard".
+    await window.eval(`(() => {
+      window.pipeline.api.agentLog = () => Promise.resolve({ row_id: 1, student: 'Ada Lovelace',
+        lines: [{ t: 1757510000, kind: 'error', retryable: false,
+                  text: 'The model read 2 file(s) and then stopped without submitting a scorecard.',
+                  detail: 'tools used: read · 5401 in, 2795 out' }] });
+      const rows = [...document.querySelectorAll('.rows .row:not(.row-head)')];
+      rows.find((r) => r.querySelector('button')).querySelector('button').click();
+    })()`);
+    await tick(80);
+
+    const parts = await window.eval(`(() => {
+      const row = document.querySelector('.log-row.log-bad');
+      if (!row) return null;
+      return {
+        tag: (row.querySelector('.log-tag') || {}).textContent || '',
+        text: (row.querySelector('.log-text') || {}).textContent || '',
+        detail: (row.querySelector('.log-detail') || {}).textContent || '',
+      };
+    })()`);
+    assert.ok(parts, 'no failure line rendered');
+    assert.strictEqual(parts.tag, 'failed', `the tag reads: ${JSON.stringify(parts)}`);
+    assert.match(parts.text, /^The model read 2 file\(s\)/,
+      `the message runs into the tag: ${JSON.stringify(parts)}`);
+    assert.match(parts.detail, /tools used: read/, JSON.stringify(parts));
 });
 
 await test('no handler threw while every button was clicked', () => {

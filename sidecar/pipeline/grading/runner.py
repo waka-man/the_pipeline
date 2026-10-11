@@ -347,7 +347,8 @@ class Grader:
                  run_id: int, run_dir: Path, code_root: Path,
                  python_exe: str | None = None, emit: Emitter | None = None,
                  max_attempts: int = 2, agent_name: str = "grader",
-                 model: str = "", budget: int = 8192):
+                 model: str = "", budget: int = 8192,
+                 should_stop: Callable[[int], bool] | None = None):
         self.server = server
         self.store = store
         self.spec = spec
@@ -364,6 +365,11 @@ class Grader:
             "manual_only_criteria") else []
         # submission row -> opencode session, so terminal events name it.
         self._session_by_row: dict[int, str] = {}
+        # Asked whether a row has been abandoned. Checked before every attempt,
+        # not just between rows: Stop arrives while a turn is running, so by the
+        # time it lands the loop is inside an attempt and would otherwise go
+        # straight on to the retry.
+        self.should_stop = should_stop or (lambda _row_id: False)
 
     # ------------------------------------------------------------ helpers
 
@@ -522,6 +528,15 @@ class Grader:
         last_error: str | None = None
         last_issues: list[str] = []
         for attempt_no in range(1, self.max_attempts + 1):
+            if self.should_stop(submission_row_id):
+                self.store.set_submission_status(submission_row_id, "collected")
+                self.emit("grade.stopped", {
+                    "submission_row_id": submission_row_id,
+                    "student": unit.display_name,
+                    "attempt": attempt_no,
+                })
+                return GradeResult(submission_row_id, self._session_by_row.get(
+                    submission_row_id, ""), attempt_no, "stopped")
             attempt_id = self.store.start_attempt(submission_row_id, self.model or None)
             message = task if attempt_no == 1 else retry_prompt(last_issues)
             try:
@@ -554,7 +569,12 @@ class Grader:
 
             record = self._read_outcome(out_path)
             if record is None:
-                last_error = ("the agent finished without calling submit_scorecard")
+                # "The agent finished without calling submit_scorecard" says
+                # what did not happen and nothing about why, which is the only
+                # question. Read the session back and say what it did instead.
+                last_error, detail = self._why_no_scorecard(
+                    response, self._session_by_row.get(submission_row_id, ""),
+                    str(workspace))
                 self.store.finish_attempt(attempt_id, "no_scorecard", self._session_by_row.get(submission_row_id, ""), last_error)
                 self.emit("agent.warn", {"submission_row_id": submission_row_id,
                                          "session_id": self._session_by_row.get(
@@ -567,7 +587,8 @@ class Grader:
                                          # follows, it looks like it belongs to
                                          # whichever row happened to be running.
                                          "student": unit.display_name,
-                                         "message": last_error})
+                                         "message": last_error,
+                                         "detail": detail})
                 if attempt_no >= self.max_attempts:
                     self.store.set_submission_status(
                         submission_row_id, "needs_review", last_error)
@@ -617,6 +638,50 @@ class Grader:
         self.store.set_submission_status(submission_row_id, "needs_review", last_error)
         return GradeResult(submission_row_id, self._session_by_row.get(submission_row_id, ""), self.max_attempts,
                            "needs_review", error=last_error)
+
+    def _why_no_scorecard(self, response: dict[str, Any] | None, session_id: str,
+                          directory: str) -> tuple[str, str]:
+        """Why a turn ended without a scorecard, in terms of what it did do.
+
+        The bare "finished without calling the tool" is true of every failure
+        here and actionable for none: it does not distinguish a model that
+        never wrote a word, one that read the submission and then stopped, and
+        one that ran out of output budget mid-thought. Those need different
+        responses from whoever is watching.
+
+        Returns the message and a detail line, both short enough for the log.
+        """
+        parts = self.server.parts(session_id, directory) if session_id else []
+        tools = [x for x in parts if x.get("type") == "tool"]
+        texts = [x for x in parts if x.get("type") == "text" and (x.get("text") or "").strip()]
+        # The first text part is the prompt echo we wrote, so it says nothing
+        # about what the model did.
+        said = (texts[-1]["text"].strip() if len(texts) > 1 else "")
+        calls = [x.get("tool", "") for x in tools]
+        tokens_in = 0
+        tokens_out = 0
+        for x in parts:
+            tok = x.get("tokens") or {}
+            tokens_in += int(tok.get("input") or 0)
+            tokens_out += int(tok.get("output") or 0)
+
+        if tools and any(c.endswith("submit_scorecard") for c in calls):
+            return ("The model called the scoring tool but it wrote no scorecard. "
+                    "The tool call is above in the log.",
+                    "The turn may have been cut off partway through writing it.")
+        if not tools:
+            return ("The model ended the turn without using any tool. It never "
+                    "opened the submission.",
+                    f"{tokens_out} tokens out, no tool calls recorded.")
+        if said:
+            return (f"The model read {len(tools)} file(s) and then stopped without "
+                    f"submitting a scorecard. Its last words were: \u201c{said[-220:]}\u201d",
+                    f"tools used: {', '.join(dict.fromkeys(calls)) or 'none'}"
+                    f" · {tokens_in} in, {tokens_out} out")
+        return (f"The model made {len(tools)} tool call(s) and ended the turn without "
+                f"submitting a scorecard.",
+                f"tools used: {', '.join(dict.fromkeys(calls)) or 'none'}"
+                f" · {tokens_in} in, {tokens_out} out")
 
     @staticmethod
     def _read_outcome(out_path: Path) -> dict[str, Any] | None:

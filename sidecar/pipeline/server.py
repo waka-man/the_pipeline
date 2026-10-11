@@ -408,17 +408,16 @@ class AppState:
         return _LogStop()
 
     def record_agent_failure(self, row_id: int, message: str,
-                             retryable: bool) -> None:
+                             retryable: bool, detail: str = "") -> None:
         """Put a failure in the log where the person watching will see it.
 
         A failed turn used to leave the log showing whatever had happened before
         it, which reads as the agent still working.
         """
-        self.record_agent_entry(row_id, {
-            "kind": "error",
-            "text": message.strip()[:600],
-            "retryable": retryable,
-        })
+        entry = {"kind": "error", "text": message.strip()[:600], "retryable": retryable}
+        if detail.strip():
+            entry["detail"] = detail.strip()[:300]
+        self.record_agent_entry(row_id, entry)
         self.bus.emit("agent.failed", {
             "submission_row_id": row_id,
             "message": message.strip()[:600],
@@ -835,6 +834,14 @@ def op_grade(state: AppState, run_id: int, body: dict[str, Any]) -> dict[str, An
                     state.record_agent_output(
                         int(rid), f"agent started ({data.get('model') or model}, "
                                    f"attempt {data.get('attempt')})")
+            elif event == "grade.stopped" and rid is not None:
+                # Not a failure: nobody needs the red styling for a button they
+                # pressed. The point is to say the row is untouched and can be
+                # graded again.
+                state.record_agent_output(
+                    int(rid),
+                    f"stopped on attempt {data.get('attempt')}, nothing submitted; "
+                    "this submission is ungraded again")
             elif event == "agent.warn" and rid is not None:
                 # An attempt that ended without a scorecard is the failure a
                 # person actually needs to see, and it was going only to the
@@ -842,7 +849,8 @@ def op_grade(state: AppState, run_id: int, body: dict[str, Any]) -> dict[str, An
                 # "agent started" for a submission that was quietly failing
                 # twice and landing in needs_review.
                 state.record_agent_failure(
-                    int(rid), str(data.get("message") or ""), False)
+                    int(rid), str(data.get("message") or ""), False,
+                    detail=str(data.get("detail") or ""))
             elif event == "agent.error" and rid is not None:
                 # A turn that failed leaves the log showing whatever happened
                 # before it, which reads as the agent still working. Say what
@@ -867,7 +875,10 @@ def op_grade(state: AppState, run_id: int, body: dict[str, Any]) -> dict[str, An
         grader = Grader(srv, store, spec, run_id,
                         state.settings.run_dir(spec.course_id, spec.assignment_id),
                         CODE_ROOT, python_exe=_python_exe(),
-                        emit=emit_agent, model=model, budget=budget)
+                        emit=emit_agent, model=model, budget=budget,
+                        # Checked before every attempt, so Stop lands even when
+                        # it arrives while a turn is already running.
+                        should_stop=lambda rid: rid in state.stopped_rows)
         rows = store.submissions_with_status(
             run_id, ("collected", "failed", "needs_review", "grading"))
         if body.get("only_pending"):

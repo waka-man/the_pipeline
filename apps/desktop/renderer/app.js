@@ -619,12 +619,14 @@ function logRow(entry) {
   const time = h('span', { class: 'log-t' }, clock);
 
   if (entry.kind === 'error') {
+    // Tag, text and detail as siblings of the clock, matching the other rows.
+    // Wrapped in one div they became inline spans with no gap between them and
+    // the line read "stoppedthe agent finished without calling ...".
     return h('div', { class: 'log-row log-bad' },
       time,
-      h('div', {},
-        h('span', { class: 'log-tag' }, entry.retryable ? 'retrying' : 'stopped'),
-        h('span', { class: 'log-text' }, entry.text),
-        entry.detail ? h('div', { class: 'log-detail' }, entry.detail) : null));
+      h('span', { class: 'log-tag' }, entry.retryable ? 'retrying' : 'failed'),
+      h('span', { class: 'log-text' }, entry.text),
+      entry.detail ? h('div', { class: 'log-detail' }, entry.detail) : null);
   }
   if (entry.kind === 'step') {
     const t2 = entry.tokens || {};

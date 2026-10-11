@@ -576,6 +576,9 @@ class FakeServer:
         self.max_output_tokens = 4096
         self.started = 0
         self.stopped = 0
+        # Session parts the diagnosis reads back when a turn ends without a
+        # scorecard. Set per test to describe what the model actually did.
+        self.session_parts: list[dict] = []
 
     def start(self, *a, **k):
         self.started += 1
@@ -586,6 +589,9 @@ class FakeServer:
     def create_session(self, title, directory):
         self.turns.append({"title": title, "directory": directory, "system": None, "text": None})
         return {"id": f"ses_{len(self.turns)}"}
+
+    def parts(self, session_id, directory=None):
+        return list(self.session_parts)
 
     def prompt(self, session_id, text, system=None, agent=None, model=None,
                directory=None, timeout=1800):
@@ -711,14 +717,81 @@ def test_runner_flags_a_silent_agent_that_never_calls_the_tool(tmp_path, store, 
     result = grader.grade(1, unit(student_name="Ada Lovelace"), [])
 
     assert result.status == "needs_review"
-    assert "submit_scorecard" in (result.error or "")
+    # The message says what the model did, not just what it did not do: it made
+    # no tool calls at all, which is a different problem from one that read the
+    # submission and then stopped, and needs a different response.
+    assert "without using any tool" in (result.error or ""), result.error
     assert store.submission_row(1)["status"] == "needs_review"
     assert store.best_scorecard(1) is None
 
     warns = [d for e, d in events if e == "agent.warn"]
     assert warns, f"nothing was reported for a silent agent: {events}"
     assert warns[0]["student"] == "Ada Lovelace", warns[0]
-    assert "submit_scorecard" in warns[0]["message"], warns[0]
+    assert warns[0]["message"] == result.error, warns[0]
+
+
+def test_stop_stops_the_retry_not_just_the_next_row(tmp_path, store, spec):
+    """Stop used to arrive while a turn was running and be ignored.
+
+    The flag was checked when the grading loop picked rows to submit, so it
+    worked for rows not yet started and did nothing for the one in flight. The
+    attempt finished, the loop saw it was out of retries to be spent and started
+    attempt 2 immediately — the one thing pressing Stop was meant to prevent.
+    """
+    store.replace_submissions(store.upsert_run(spec), [unit()])
+    # mode=reject so attempt 1 ends unusable and the loop reaches its retry,
+    # which is where Stop has to be caught.
+    grader, server = _grader(tmp_path, store, spec, mode="reject", attempts=2)
+    stopped = [False]
+
+    def emit(event, data):
+        # Stop pressed as attempt 1 finishes and before the retry begins.
+        if event == "agent.retry":
+            stopped[0] = True
+
+    grader.emit = emit
+    grader.should_stop = lambda row_id: stopped[0]
+
+    result = grader.grade(1, unit(), [])
+
+    assert result.status == "stopped", result
+    assert len(server.turns) == 1, f"it started another attempt anyway: {len(server.turns)}"
+    assert store.submission_row(1)["status"] == "collected", \
+        "a stopped submission must be gradeable again, not left needs_review"
+    assert store.best_scorecard(1) is None
+
+
+def test_the_failure_says_what_the_model_actually_did(tmp_path, store, spec):
+    """"The agent finished without calling submit_scorecard" is true of every
+    failure here and actionable for none.
+
+    Reading the session back distinguishes a model that never used a tool, one
+    that read the submission and then stopped, and one that called the scoring
+    tool and had the result lost.
+    """
+    store.replace_submissions(store.upsert_run(spec), [unit()])
+    grader, server = _grader(tmp_path, store, spec, mode="silent", attempts=1)
+    events = []
+    grader.emit = lambda event, data: events.append((event, data))
+    grader._captured_events = events
+    server.session_parts = [
+        {"id": "p0", "type": "text", "text": "the task prompt we wrote", "state": {}},
+        {"id": "t1", "type": "tool", "tool": "read", "text": "essay.md", "state": {}},
+        {"id": "t2", "type": "tool", "tool": "read", "text": "rubric.json", "state": {}},
+        {"id": "x1", "type": "text", "text": "I have read both files and will now "
+                                                "write up my assessment.", "state": {}},
+    ]
+    grader.grade(1, unit(), [])
+    warns = [d for e, d in grader_events(grader) if e == "agent.warn"]
+    assert warns, "nothing reported"
+    msg, detail = warns[0]["message"], warns[0].get("detail", "")
+    assert "read 2 file(s)" in msg, msg
+    assert "I have read both files" in msg, f"the model's last words are missing: {msg}"
+    assert "read" in detail, detail
+
+
+def grader_events(grader):
+    return getattr(grader, "_captured_events", [])
 
 
 def test_runner_marks_a_transport_failure_as_failed(tmp_path, store, spec):
