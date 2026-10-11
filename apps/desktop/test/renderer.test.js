@@ -121,6 +121,16 @@ const AGENT_LOG_ENTRIES = [
   entry({ kind: 'error', text: 'credit: 402 insufficient credits', retryable: false }),
 ];
 
+// Saved runs: what "pick up where you left off" has to show.
+const SAVED_RUNS = [
+  { id: 1, course_id: 3130, assignment_id: 46805, title: 'Argumentative Essay',
+    label: 'Essay marking, week 3', status: 'collected', model: 'openrouter/m2',
+    total: 151, graded: 22, published: 0, updated_at: '2026-01-01T00:00:00Z' },
+  { id: 2, course_id: 3130, assignment_id: 46806, title: 'Lab report', label: null,
+    status: 'created', model: null, total: 30, graded: 0, published: 0,
+    updated_at: '2025-12-01T00:00:00Z' },
+];
+
 const ASSIGNMENTS = Array.from({ length: 14 }, (_, i) => ({
   id: 46805 + i,
   name: `Assignment ${i + 1}`,
@@ -155,6 +165,8 @@ function stubApi() {
     courses: rec('courses', { courses: COURSES }),
     assignments: rec('assignments', { assignments: ASSIGNMENTS }),
     createRun: rec('createRun', RUN),
+    runs: rec('runs', () => ({ runs: SAVED_RUNS })),
+    labelRun: rec('labelRun', { run_id: 1, label: 'renamed' }),
     run: rec('run', () => ({ ...RUN, progress: stubState.progress })),
     submissions: rec('submissions',
       () => (stubState.noRunYet ? { submissions: [] } : { submissions: SUBMISSIONS })),
@@ -528,6 +540,43 @@ async function run() {
     assert.ok(apiCalls.some((c) => c.startsWith('control(')
       && c.includes('"action":"stop"')), `Stop did not call control: ${apiCalls.join(', ')}`);
     stubState.jobs = {};
+  });
+
+  await test('saved sessions list what exists and can be resumed', async () => {
+    const { window, calls: c } = await reboot();
+    await gotoOn(window, 'Select');
+    await clickIn(window, '#main button', 'Load courses');
+    await tick(60);
+
+    assert.strictEqual(await clickIn(window, '#main button', 'Saved sessions'), 'clicked',
+      'no way into saved sessions');
+    await tick(80);
+    assert.strictEqual(await window.eval(
+      "document.querySelectorAll('.slideover').length"), 1, 'the panel did not open');
+
+    const text = await window.eval("document.querySelector('.slideover').textContent");
+    // Where each one got to, which is the question this exists to answer.
+    assert.match(text, /Essay marking, week 3/, 'a named session is missing');
+    assert.match(text, /22\/151 graded/, 'progress is missing');
+    assert.match(text, /Lab report/, 'an unnamed session should fall back to its title');
+
+    // Resume switches to that run.
+    c.length = 0;
+    assert.strictEqual(await clickIn(window, '.slideover button', 'Resume'), 'clicked');
+    await tick(120);
+    assert.ok(c.some((x) => x.startsWith('run(1)')), `Resume did not open the run: ${c.join(', ')}`);
+    assert.strictEqual(await window.eval(
+      "document.querySelectorAll('.slideover').length"), 0, 'the panel stayed open');
+
+    // Naming one is possible, because a bare assignment title is not enough
+    // to tell three marking sessions apart.
+    await gotoOn(window, 'Select');
+    await clickIn(window, '#main button', 'Saved sessions');
+    await tick(80);
+    await window.eval("window.prompt = () => 'Essay marking, week 4'");
+    assert.strictEqual(await clickIn(window, '.slideover button', 'Rename'), 'clicked');
+    await tick(60);
+    assert.ok(c.some((x) => x.startsWith('labelRun(')), `Rename did not save: ${c.join(', ')}`);
   });
 
   await test('a run can pick its own model without changing the saved default', async () => {

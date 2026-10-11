@@ -860,6 +860,24 @@ def render_one(state: AppState, row_id: int) -> tuple[str, str]:
 CONTROLLABLE = ("collect", "grade")
 
 
+def op_list_runs(state: AppState) -> dict[str, Any]:
+    """Saved runs, so grading can be picked up where it was left."""
+    return {"runs": state.store.list_runs()}
+
+
+def op_label_run(state: AppState, run_id: int, body: dict[str, Any]) -> dict[str, Any]:
+    """Name a saved run. An empty name clears it."""
+    raw = body.get("label")
+    # An empty or whitespace-only name means "clear it", and the response says
+    # so rather than echoing back the blank string that was sent.
+    label = (str(raw).strip() or None) if raw is not None else None
+    try:
+        state.store.set_label(run_id, label)
+    except KeyError as exc:
+        raise ApiError(str(exc), 404) from exc
+    return {"run_id": run_id, "label": label}
+
+
 def op_job_control(state: AppState, run_id: int, body: dict[str, Any]) -> dict[str, Any]:
     """Pause, resume or stop a long-running job.
 
@@ -1088,6 +1106,10 @@ def _start_publish(state: AppState, run_id: int, body: dict[str, Any]) -> dict[s
     return op_publish(state, int(run_id), body)
 
 
+def _label_run(state: AppState, run_id: int, body: dict[str, Any]) -> dict[str, Any]:
+    return op_label_run(state, int(run_id), body)
+
+
 def _start_control(state: AppState, run_id: int, body: dict[str, Any]) -> dict[str, Any]:
     return op_job_control(state, run_id, body)
 
@@ -1112,7 +1134,9 @@ ROUTES: list[Route_] = [
     Route_("POST", r"^/api/models/select$", op_select_model),
     Route_("GET", r"^/api/courses$", op_courses),
     Route_("GET", r"^/api/courses/(?P<course_id>\d+)/assignments$", _course_assignments),
+    Route_("GET", r"^/api/runs$", op_list_runs),
     Route_("POST", r"^/api/runs$", op_bootstrap),
+    Route_("PUT", r"^/api/runs/(?P<run_id>\d+)$", _label_run),
     Route_("GET", r"^/api/runs/(?P<run_id>\d+)$", _get_run),
     Route_("GET", r"^/api/runs/(?P<run_id>\d+)/submissions$", _get_submissions),
     Route_("POST", r"^/api/runs/(?P<run_id>\d+)/collect$", _start_collect),

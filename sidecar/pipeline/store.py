@@ -29,6 +29,7 @@ CREATE TABLE IF NOT EXISTS runs (
     updated_at TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'created',
     model TEXT,
+    label TEXT,
     spec_json TEXT,
     UNIQUE (canvas_base_url, course_id, assignment_id)
 );
@@ -137,6 +138,22 @@ class Store:
     def _init(self) -> None:
         with self.connect() as db:
             db.executescript(SCHEMA)
+            self._ensure_columns(db)
+
+    # Columns added after the first release. There was no migration story and
+    # the database is created by CREATE TABLE IF NOT EXISTS, which cannot add a
+    # column to a table that already exists. ALTER TABLE ADD COLUMN is not
+    # idempotent, so each is guarded by the table it belongs to.
+    ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
+        ("runs", "label", "ALTER TABLE runs ADD COLUMN label TEXT"),
+    )
+
+    @classmethod
+    def _ensure_columns(cls, db: sqlite3.Connection) -> None:
+        for table, column, statement in cls.ADDED_COLUMNS:
+            existing = {r[1] for r in db.execute(f"PRAGMA table_info({table})")}
+            if column not in existing:
+                db.execute(statement)
 
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:
@@ -184,6 +201,41 @@ class Store:
         d = dict(row)
         d["spec"] = AssignmentSpec.model_validate_json(d.pop("spec_json"))
         return d
+
+    def list_runs(self) -> list[dict[str, Any]]:
+        """Every saved run, newest first, with enough to resume one.
+
+        Counts come along because "where did I get to" is the question this
+        answers, and a list of titles without them is not worth opening.
+        """
+        with self.connect() as db:
+            rows = db.execute(
+                """
+                SELECT r.id, r.course_id, r.assignment_id, r.title, r.label,
+                       r.status, r.model, r.updated_at,
+                       COUNT(s.id) AS total,
+                       SUM(CASE WHEN s.status IN ('graded', 'needs_review')
+                                THEN 1 ELSE 0 END) AS graded,
+                       SUM(CASE WHEN EXISTS (
+                               SELECT 1 FROM publications pb
+                               WHERE pb.submission_row_id = s.id)
+                            THEN 1 ELSE 0 END) AS published
+                FROM runs r
+                LEFT JOIN submissions s ON s.run_id = r.id
+                GROUP BY r.id
+                ORDER BY r.updated_at DESC, r.id DESC
+                """
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def set_label(self, run_id: int, label: str | None) -> None:
+        with self.connect() as db:
+            cur = db.execute(
+                "UPDATE runs SET label=?, updated_at=? WHERE id=?",
+                (label or None, utcnow(), run_id),
+            )
+            if cur.rowcount == 0:
+                raise KeyError(f"no run {run_id}")
 
     def find_run(self, course_id: int, assignment_id: int) -> int | None:
         with self.connect() as db:

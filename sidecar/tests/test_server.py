@@ -763,3 +763,37 @@ def test_a_run_model_that_does_not_exist_is_a_clear_error(live):
         srv.resolve_model(state, "openrouter/nope/missing")
     assert e.value.status == 400
     assert "not available" in str(e.value.message) or "not available" in str(e.value)
+
+
+# ------------------------------------------------------------ saved sessions
+
+def test_saved_runs_are_listed_with_progress_and_can_be_named(live):
+    """Grading is long and interrupted. Picking up where you left off needs a
+    list of what exists and where each one got to."""
+    base, state, _fake, _spec = live
+    send(base, "/api/runs", {"course_id": 3130, "assignment_id": 46805})
+    assert wait_for(lambda: state.store.progress(1).get("total") == 2)
+    send(base, "/api/runs/1/collect", {})
+    assert wait_for(lambda: state.store.progress(1).get("collected") == 1), state.job_errors
+
+    listed = send(base, "/api/runs", method="GET")
+    assert len(listed["runs"]) == 1
+    run = listed["runs"][0]
+    assert run["id"] == 1
+    assert run["total"] == 2
+    assert run["label"] is None
+
+    named = send(base, "/api/runs/1", {"label": "  Essay marking, week 3  "}, method="PUT")
+    assert named["label"] == "Essay marking, week 3"
+    again = send(base, "/api/runs", method="GET")
+    assert again["runs"][0]["label"] == "Essay marking, week 3"
+
+    # An empty name clears it rather than storing blanks.
+    assert send(base, "/api/runs/1", {"label": ""}, method="PUT")["label"] is None
+
+
+def test_naming_a_run_that_does_not_exist_is_a_404(live):
+    base, _state, _fake, _spec = live
+    with pytest.raises(urllib.error.HTTPError) as e:
+        send(base, "/api/runs/999", {"label": "nope"}, method="PUT")
+    assert e.value.code == 404

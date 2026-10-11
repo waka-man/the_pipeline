@@ -73,6 +73,7 @@ const S = {
   bootstrapping: false,
   // Model for the next run only. Empty means 'use the saved default'.
   runModel: '',
+  savedRuns: [],
   editing: false,
   events: [],
   toast: null,
@@ -408,6 +409,58 @@ function renderPanel() {
     return;
   }
 
+  if (panel.kind === 'runs') {
+    const runs = S.savedRuns;
+    mount(el, slideover(
+      'Saved sessions',
+      runs.length ? `${runs.length} resumable` : null,
+      runs.length
+        ? h('div', {}, runs.map((r) => h('div', {
+            class: 'pick', style: 'cursor:default',
+          },
+            h('div', {},
+              h('div', { class: 'pick-title' }, r.label || r.title),
+              h('div', { class: 'pick-sub' },
+                h('span', {}, `course ${r.course_id} · assignment ${r.assignment_id}`),
+                h('span', {}, `${r.graded || 0}/${r.total || 0} graded`),
+                h('span', {}, r.published ? `${r.published} published` : null),
+                h('span', {}, statusChip(r.status)),
+                r.model ? h('span', {}, r.model) : null)),
+            h('div', { class: 'pick-meta', style: 'display:flex;gap:6px;align-items:center' },
+              h('button', {
+                class: 'btn', 'data-size': 'sm', 'data-variant': 'primary',
+                onclick: () => { closePanel(); resumeRun(r); },
+              }, 'Resume'),
+              h('button', {
+                class: 'btn', 'data-size': 'sm', 'data-variant': 'ghost',
+                onclick: async () => {
+                  const next = window.prompt('Name this session', r.label || r.title || '');
+                  if (next === null) return;
+                  await guard(async () => {
+                    await api.labelRun(r.id, next);
+                    await loadRuns();
+                    renderPanel();
+                  }, 'Could not rename');
+                },
+              }, r.label ? 'Rename' : 'Name'),
+              r.label ? h('button', {
+                class: 'btn', 'data-size': 'sm', 'data-variant': 'ghost',
+                onclick: () => guard(async () => {
+                  await api.labelRun(r.id, '');
+                  await loadRuns();
+                  renderPanel();
+                }, 'Could not clear the name'),
+              }, 'Clear') : null))))
+        : h('div', { style: 'color:var(--ink-3);font-size:12px;padding:10px 0' },
+            'Nothing saved yet. A session appears here once you start one, and '
+            + 'you can come back to it later from any machine.'),
+      h('button', {
+        class: 'btn', 'data-size': 'sm',
+        onclick: () => guard(async () => { await loadRuns(); renderPanel(); }, 'Could not refresh'),
+      }, 'Refresh')));
+    return;
+  }
+
   if (panel.kind === 'log') {
     const row = S.submissions.find((x) => x.row_id === panel.rowId);
     mount(el, slideover(
@@ -562,6 +615,13 @@ function viewSelect() {
       h('p', {}, 'Pick a course, then choose an assignment from the panel. The rubric and '
                + 'instructions come straight from Canvas — the pipeline derives its criteria, '
                + 'point values and report structure from it.')),
+
+    h('div', { style: 'margin-bottom:16px' },
+      h('button', {
+        class: 'btn', 'data-variant': 'ghost',
+        onclick: () => guard(async () => { await loadRuns(); S.panel = { kind: 'runs', rowId: null }; render(); },
+          'Could not load saved sessions'),
+      }, `Saved sessions${S.savedRuns.length ? ` (${S.savedRuns.length})` : ''}`)),
 
     card('Courses', `${shown.length} of ${ordered.length}`,
       h('div', { class: 'picklist' }, rows),
@@ -1135,6 +1195,21 @@ async function loadModels() {
       if (r) S.model = { ...S.model, ...r };
     }
   }
+}
+
+async function loadRuns() {
+  const data = await api.runs().catch(() => null);
+  if (data) S.savedRuns = data.runs || [];
+}
+
+async function resumeRun(run) {
+  await guard(async () => {
+    S.run = await api.run(run.id);
+    await refreshSubmissions();
+    S.runModel = run.model || '';
+    go('collect');
+    toast(`Resumed ${run.label || run.title}.`);
+  }, 'Could not open that run');
 }
 
 async function loadCourses() {

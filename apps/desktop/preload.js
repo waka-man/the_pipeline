@@ -44,6 +44,8 @@ contextBridge.exposeInMainWorld('pipeline', {
     courses: () => req('GET', '/api/courses'),
     assignments: (id) => req('GET', `/api/courses/${id}/assignments`),
     createRun: (b) => req('POST', '/api/runs', b),
+    runs: () => req('GET', '/api/runs'),
+    labelRun: (id, label) => req('PUT', `/api/runs/${id}`, { label }),
     run: (id) => req('GET', `/api/runs/${id}`),
     submissions: (id) => req('GET', `/api/runs/${id}/submissions`),
     collect: (id, b) => req('POST', `/api/runs/${id}/collect`, b || {}),
