@@ -35,6 +35,8 @@ from .config import NEWLINE as _NL
 
 # How much agent output to keep per submission for the live log panel.
 AGENT_LOG_LINES = 400
+# A log file is trimmed once it passes this, to keep the tail readable.
+AGENT_LOG_BYTES = 512_000
 
 CODE_ROOT = Path(__file__).resolve().parents[1]
 
@@ -146,18 +148,87 @@ class AppState:
         """Append a plain line. Kept for pipeline-level messages."""
         self.record_agent_entry(row_id, {"kind": "meta", "text": text})
 
+    def log_path(self, row_id: int) -> Path | None:
+        """Where a submission's agent log is kept on disk.
+
+        Beside the run's other artefacts, under the workspace that already
+        exists, so the log travels with the run rather than with the process.
+        """
+        try:
+            row = self.store.submission_row(row_id)
+            run = self.store.get_run(int(row["run_id"]))
+            spec = run["spec"]
+        except Exception:
+            return None
+        out = self.settings.run_dir(spec.course_id, spec.assignment_id) / "agent-log"
+        return out / f"{int(row_id)}.jsonl"
+
     def record_agent_entry(self, row_id: int, entry: dict[str, Any]) -> None:
-        """Append one structured log entry.
+        """Append one structured log entry, and write it out.
 
         Structured rather than a list of strings because the renderer needs to
         do things a string cannot: colour an error differently from a tool call,
         collapse twelve identical greps into one line, and timestamp each entry.
+
+        Written to disk as it goes. In memory alone the log is gone the moment
+        the grading job finishes or the app is closed, which is exactly when
+        someone wants to read why a student scored what they did.
         """
         lines = self.agent_logs.setdefault(row_id, [])
         entry.setdefault("t", time.time())
         lines.append(entry)
         if len(lines) > AGENT_LOG_LINES:
             del lines[: len(lines) - AGENT_LOG_LINES]
+
+        path = self.log_path(row_id)
+        if path is None:
+            return
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with path.open("a", encoding="utf-8", newline=_NL) as fh:
+                fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
+            # Only the tail is worth reading back; the file is an append log for
+            # a 150 submission cohort, not an archive.
+            self._trim_log_file(path)
+        except OSError:
+            # A log that cannot be written must not take grading down with it.
+            pass
+
+    @staticmethod
+    def _trim_log_file(path: Path) -> None:
+        try:
+            if path.stat().st_size < AGENT_LOG_BYTES:
+                return
+            lines = path.read_text(encoding="utf-8", errors="ignore").splitlines()
+            tail = lines[-AGENT_LOG_LINES:]
+            tmp = path.with_suffix(".tmp")
+            tmp.write_text("\n".join(tail) + "\n", encoding="utf-8", newline=_NL)
+            tmp.replace(path)
+        except OSError:
+            pass
+
+    def read_agent_log(self, row_id: int) -> list[dict[str, Any]]:
+        """The log for a submission, from memory if it is there and disk if not."""
+        lines = self.agent_logs.get(row_id)
+        if lines:
+            return lines
+        path = self.log_path(row_id)
+        if path is None or not path.exists():
+            return []
+        out: list[dict[str, Any]] = []
+        try:
+            with path.open(encoding="utf-8") as fh:
+                for raw in fh:
+                    raw = raw.strip()
+                    if not raw:
+                        continue
+                    try:
+                        out.append(json.loads(raw))
+                    except json.JSONDecodeError:
+                        continue
+        except OSError:
+            return []
+        return out[-AGENT_LOG_LINES:]
 
     def _tool_label(self, part: dict[str, Any]) -> str:
         """What the agent was actually trying to do.
@@ -918,8 +989,7 @@ def op_agent_log(state: AppState, row_id: int) -> dict[str, Any]:
         student = state.store.submission_row(row_id)["student_name"]
     except KeyError:
         student = ""
-    return {"row_id": row_id, "student": student,
-            "lines": state.agent_logs.get(row_id, [])}
+    return {"row_id": row_id, "student": student, "lines": state.read_agent_log(row_id)}
 
 
 def op_report(state: AppState, row_id: int) -> dict[str, Any]:

@@ -74,6 +74,8 @@ const S = {
   // Model for the next run only. Empty means 'use the saved default'.
   runModel: '',
   savedRuns: [],
+  // The launcher shows until a session is chosen.
+  launching: true,
   editing: false,
   events: [],
   toast: null,
@@ -409,6 +411,31 @@ function renderPanel() {
     return;
   }
 
+  if (panel.kind === 'model') {
+    const cands = S.model?.candidates || [];
+    mount(el, slideover(
+      'Model for the next run',
+      cands.length ? `${cands.length} available` : null,
+      cands.length
+        ? h('div', { class: 'picklist' }, cands.slice(0, 40).map((c) => h('button', {
+            class: 'pick',
+            'aria-selected': String(c.id === (S.runModel || S.model?.selected)),
+            onclick: () => {
+              S.runModel = c.id;
+              closePanel();
+              toast(`Next run grades with ${c.id}.`);
+            },
+          },
+            h('div', {},
+              h('div', { class: 'pick-title' }, c.id),
+              h('div', { class: 'pick-sub' }, h('span', {}, c.provider))),
+            h('div', { class: 'pick-meta' },
+              chip(c.tier, c.tier === 'free' ? 'accent' : null)))))
+        : h('div', { style: 'color:var(--ink-3);font-size:12px' },
+            'No models available. Add an OpenRouter key on the setup step.')));
+    return;
+  }
+
   if (panel.kind === 'runs') {
     const runs = S.savedRuns;
     mount(el, slideover(
@@ -734,37 +761,22 @@ function viewGrade() {
     card('Model for this run',
       S.runModel || S.model?.selected || 'saved default',
       h('div', { style: 'display:flex;gap:8px;flex-wrap:wrap;align-items:center' },
-        S.model?.selected
-          ? h('span', { class: 'chip', dataset: { tone: 'accent' } }, S.model.selected) : null,
+        h('button', {
+          class: 'btn', 'data-size': 'sm',
+          onclick: () => guard(async () => { await loadModels(); S.panel = { kind: 'model', rowId: null }; render(); },
+            'Could not read models'),
+        }, 'Change'),
+        S.runModel && S.runModel !== S.model?.selected
+          ? h('span', { class: 'chip', dataset: { tone: 'accent' } }, 'this run only') : null,
         S.runModel && S.runModel !== S.model?.selected
           ? h('button', {
               class: 'btn', 'data-size': 'sm', 'data-variant': 'ghost',
               onclick: () => { S.runModel = ''; render(); },
             }, 'Use the saved default')
           : null),
-      S.model?.candidates?.length
-        ? h('div', { class: 'picklist', style: 'margin-top:12px' },
-            S.model.candidates.slice(0, 10).map((c) => h('button', {
-              class: 'pick',
-              'aria-selected': String(c.id === (S.runModel || S.model.selected)),
-              onclick: () => {
-                S.runModel = c.id;
-                render();
-                toast(`Next run grades with ${c.id}.`);
-              },
-            },
-              h('div', {},
-                h('div', { class: 'pick-title' }, c.id),
-                h('div', { class: 'pick-sub' }, h('span', {}, c.provider))),
-              h('div', { class: 'pick-meta' },
-                chip(c.tier, c.tier === 'free' ? 'accent' : null)))))
-        : h('button', {
-            class: 'btn', style: 'margin-top:10px',
-            onclick: () => guard(loadModels, 'Could not read models'),
-          }, 'Load models'),
-      h('div', { class: 'hint', style: 'margin-top:10px' },
-        'Applies to the next run and leaves your saved default alone. Free models '
-        + 'first, so a stronger model here is a deliberate cost.')),
+      h('div', { class: 'hint', style: 'margin-top:8px' },
+        'Free models first, so a stronger one here is a deliberate cost. '
+        + 'Applies to the next run and leaves your saved default alone.')),
 
     card('Select submissions',
       `${gradeable.length} awaiting, ${S.selected.size} selected`,
@@ -1046,7 +1058,7 @@ function submissionTable(compact) {
     h('span', { class: 'row-act', style: 'display:flex;gap:6px;justify-content:flex-end' },
       // While a row is being graded the agent output is the only way to see
       // what it is doing, so that row gets a way in.
-      ['grading', 'collected'].includes(s.status) && s.score === null
+      (s.score !== null || ['grading', 'collected'].includes(s.status))
         ? h('button', {
             class: 'btn', 'data-size': 'sm', 'data-variant': 'ghost',
             onclick: () => openAgentLog(s.row_id),
@@ -1095,6 +1107,13 @@ async function startRun() {
 /* -------------------------------------------------------------- rendering */
 
 function renderSpine() {
+  // Nothing to navigate between until a session is chosen, and a rail that
+  // lights up a stage the user has not entered is a lie.
+  if (S.launching) {
+    mount(els.stages);
+    els.spineMeta.textContent = '';
+    return;
+  }
   mount(els.stages, STAGES.map((s) => {
     const enabled = stageEnabled(s.id);
     const st = stageState(s.id);
@@ -1116,6 +1135,13 @@ function renderSpine() {
 }
 
 function renderTopbar() {
+  if (S.launching) {
+    clear(els.topRun);
+    els.runLabel.textContent = 'sessions';
+    mount(els.modelChip, S.model?.selected
+      ? chip(S.model.selected, S.model.tier === 'free' ? 'accent' : null) : h('span'));
+    return;
+  }
   if (S.run) {
     mount(els.topRun, h('span', { class: 'name' }, S.run.title),
       h('span', {}, `${S.run.criteria.length} criteria · ${fmt(S.run.points_possible)} pts`));
@@ -1163,7 +1189,7 @@ function render() {
     setup: viewSetup, select: viewSelect, collect: viewCollect,
     grade: viewGrade, review: viewReview, publish: viewPublish,
   };
-  const node = (views[S.stage] || viewSetup)();
+  const node = S.launching ? viewLauncher() : (views[S.stage] || viewSetup)();
   const banner = S.toast
     ? h('div', { style: 'margin-bottom:14px' }, notice(S.toast.message, S.toast.tone))
     : null;
@@ -1202,12 +1228,68 @@ async function loadRuns() {
   if (data) S.savedRuns = data.runs || [];
 }
 
+/** Where the run had got to, so resuming lands somewhere sensible. */
+function resumeStage(run) {
+  if (run.total && run.graded >= run.total) return 'publish';
+  if (run.graded) return 'review';
+  if (run.status === 'collected') return 'grade';
+  return 'collect';
+}
+
+/** The launcher: recent gradings, pick one. */
+function viewLauncher() {
+  const runs = S.savedRuns;
+  const recent = runs.slice(0, 8);
+  return h('div', {},
+    h('div', { class: 'head' },
+      h('h1', {}, 'Grading Pipeline'),
+      h('p', {}, 'Pick up where you left off, or start something new.')),
+    runs.length
+      ? card('Recent sessions', `${runs.length} saved`,
+          h('div', { class: 'picklist' }, recent.map((r) => h('button', {
+            class: 'pick',
+            onclick: () => { S.launching = false; resumeRun(r); },
+          },
+            h('div', {},
+              h('div', { class: 'pick-title' }, r.label || r.title),
+              h('div', { class: 'pick-sub' },
+                h('span', {}, `course ${r.course_id} · assignment ${r.assignment_id}`),
+                h('span', {}, `${r.graded || 0}/${r.total || 0} graded`),
+                h('span', {}, statusChip(r.status)),
+                r.label ? null : h('span', {}, 'rename it on the select step'))),
+            h('div', { class: 'pick-meta' }, `Resume at ${resumeStage(r)}`)))),
+          runs.length > recent.length
+            ? h('button', {
+                class: 'btn', style: 'margin-top:12px',
+                onclick: () => { S.launching = false; S.panel = { kind: 'runs', rowId: null }; render(); },
+              }, `All ${runs.length} sessions`)
+            : null,
+          h('div', { style: 'display:flex;gap:8px;margin-top:16px' },
+            h('button', {
+              class: 'btn', 'data-variant': 'primary',
+              onclick: () => { S.launching = false; render(); },
+            }, 'Start something new'),
+            h('button', {
+              class: 'btn',
+              onclick: () => guard(loadRuns, 'Could not refresh sessions'),
+            }, 'Refresh')))
+      : card('No saved sessions yet', null,
+          h('p', { class: 'hint' }, 'Sessions appear here automatically once you '
+            + 'start one. There is nothing to save.'),
+          h('div', { style: 'margin-top:14px' },
+            h('button', {
+              class: 'btn', 'data-variant': 'primary',
+              onclick: () => { S.launching = false; render(); },
+            }, 'Start something new'))));
+}
+
 async function resumeRun(run) {
   await guard(async () => {
     S.run = await api.run(run.id);
     await refreshSubmissions();
     S.runModel = run.model || '';
-    go('collect');
+    S.launching = false;
+    go(resumeStage(run));
     toast(`Resumed ${run.label || run.title}.`);
   }, 'Could not open that run');
 }
@@ -1349,8 +1431,11 @@ window.addEventListener('unhandledrejection', (e) => fatal(e.reason, 'loading'))
     loadFirstReport();
   }
 
-  render();
+  // Saved sessions first: the launcher is the first thing seen, so it has to be
+  // populated before the first paint rather than after it.
+  await loadRuns().catch(() => {});
   if (!S.status?.canvas_configured) await loadCourses();
+  render();
  } catch (err) {
    fatal(err, 'setting up');
  }

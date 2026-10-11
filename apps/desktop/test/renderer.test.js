@@ -276,6 +276,14 @@ async function boot() {
 const tick = (ms = 25) => new Promise((r) => setTimeout(r, ms));
 
 async function gotoIn(win, stage) {
+  // The launcher fronts the app at start, so getting to any stage means
+  // dismissing it first, exactly as a person would.
+  await win.eval(`(() => {
+    const b = [...document.querySelectorAll('#main button')]
+      .find((x) => x.textContent.trim() === 'Start something new');
+    if (b) b.click();
+  })()`);
+  await tick(20);
   await win.eval(`(() => {
     const b = [...document.querySelectorAll('.stage-btn')]
       .find((x) => x.textContent.trim().startsWith(${JSON.stringify(stage)}));
@@ -325,6 +333,13 @@ async function run() {
   // The regression: every stage, every button. A handler that throws a
   // ReferenceError records it in __errs and this fails.
   const clicked = {};
+  // The launcher fronts the app; get past it before walking the stages.
+  await base.window.eval(`(() => {
+    const b = [...document.querySelectorAll('#main button')]
+      .find((x) => x.textContent.trim() === 'Start something new');
+    if (b) b.click();
+  })()`);
+  await tick(60);
   for (const label of STAGES) {
     const state = await base.window.eval(`(() => {
       const btn = [...document.querySelectorAll('.stage-btn')]
@@ -542,6 +557,36 @@ async function run() {
     stubState.jobs = {};
   });
 
+  await test('the app opens on the workspace picker, not a stage', async () => {
+    const { window, calls: c } = await reboot();
+    await tick(120);   // saved runs load at boot
+
+    // First thing seen: recent gradings, with where each one got to.
+    const head = await window.eval("document.getElementById('main').textContent");
+    assert.match(head, /Grading Pipeline/, 'no launcher heading');
+    assert.match(head, /Essay marking, week 3/, 'a recent session is missing');
+    assert.match(head, /22\/151 graded/, 'progress is missing');
+    assert.match(head, /Resume at review/, 'it does not say where it would resume');
+    assert.strictEqual(await window.eval(
+      "document.querySelectorAll('.stage-btn').length"), 0,
+      'the stage rail should not be in front of the launcher');
+
+    // Resuming lands on the stage that run had reached, not always on collect.
+    c.length = 0;
+    assert.strictEqual(await clickIn(window, '#main .pick', 'Essay marking'), 'clicked');
+    await tick(150);
+    assert.ok(c.some((x) => x.startsWith('run(1)')), `did not open the run: ${c.join(', ')}`);
+    assert.match(await window.eval("document.getElementById('main').textContent"),
+      /Review reports/, 'did not resume where the run left off');
+
+    // And a fresh start is one click away.
+    const { window: w2 } = await reboot();
+    assert.strictEqual(await clickIn(w2, '#main button', 'Start something new'), 'clicked');
+    await tick(60);
+    assert.strictEqual(await w2.eval("document.querySelectorAll('.stage-btn').length"), 6,
+      'dismissing the launcher should reveal the pipeline');
+  });
+
   await test('saved sessions list what exists and can be resumed', async () => {
     const { window, calls: c } = await reboot();
     await gotoOn(window, 'Select');
@@ -583,14 +628,21 @@ async function run() {
     const { window, calls: c } = await reboot();
     await gotoOn(window, 'Grade');
 
-    // The picker lists the catalogue rather than sending you to setup.
-    const picks = await window.eval(
-      "JSON.stringify([...document.querySelectorAll('#main .pick')]"
-      + ".map((p) => p.querySelector('.pick-title').textContent))");
-    assert.ok(JSON.parse(picks).length > 0, 'the grade stage offers no models');
+    // The catalogue is behind one control, not ten full-width rows: the list
+    // is a panel, so the page keeps its shape.
+    assert.strictEqual(await window.eval(
+      "document.querySelectorAll('#main .pick').length"), 0,
+      'the model list is still filling the page');
+    assert.strictEqual(await clickIn(window, '#main button', 'Change'), 'clicked',
+      'no way to choose a model from the grade stage');
+    await tick(80);
+    assert.strictEqual(await window.eval(
+      "document.querySelectorAll('.slideover .pick').length"), 2,
+      'the panel should offer every candidate');
 
     c.length = 0;
-    assert.strictEqual(await clickIn(window, '#main .pick', 'm2'), 'clicked', 'no model to pick');
+    assert.strictEqual(await clickIn(window, '.slideover .pick', 'm2'), 'clicked',
+      'no model to pick');
     await tick(60);
 
     await clickIn(window, '#main button', 'Grade All');

@@ -797,3 +797,55 @@ def test_naming_a_run_that_does_not_exist_is_a_404(live):
     with pytest.raises(urllib.error.HTTPError) as e:
         send(base, "/api/runs/999", {"label": "nope"}, method="PUT")
     assert e.value.code == 404
+
+
+def test_the_agent_log_survives_the_job_and_a_restart(live):
+    """In memory alone the log is gone the moment grading stops.
+
+    That is exactly when someone wants to read why a student scored what they
+    did, so it is written beside the run's other artefacts as it goes.
+    """
+    base, state, _fake, _spec = live
+    send(base, "/api/runs", {"course_id": 3130, "assignment_id": 46805})
+    assert wait_for(lambda: state.store.progress(1).get("total") == 2)
+
+    state.record_agent_entry(1, {"kind": "think", "text": "weighing the rubric"})
+    state.record_agent_entry(1, {"kind": "error", "text": "credit: 402", "retryable": False})
+
+    path = state.log_path(1)
+    assert path is not None and path.exists(), "the log was not written to disk"
+    assert path.suffix == ".jsonl"
+    # Beside the run's other artefacts, so it travels with the run.
+    assert path.parent.name == "agent-log"
+    assert path.parent.parent.name == f"{state.settings.run_dir(3130, 46805).name}"
+
+    # Simulate the job finishing and the app restarting: drop the in-memory
+    # copy, exactly as a fresh sidecar would have none.
+    state.agent_logs.clear()
+    after = send(base, "/api/reports/1/agent-log", method="GET")["lines"]
+    texts = [e.get("text") for e in after]
+    assert "weighing the rubric" in texts, texts
+    failure = next(e for e in after if e.get("kind") == "error")
+    assert failure["text"] == "credit: 402"
+    assert failure["retryable"] is False
+    # Timestamps survive the round trip, or the log cannot be read as a timeline.
+    assert all(isinstance(e.get("t"), (int, float)) for e in after)
+
+
+def test_the_agent_log_file_is_trimmed(live):
+    """An append log for a 150 submission cohort is not an archive."""
+    base, state, _fake, _spec = live
+    send(base, "/api/runs", {"course_id": 3130, "assignment_id": 46805})
+    assert wait_for(lambda: state.store.progress(1).get("total") == 2)
+    path = state.log_path(1)
+    assert path is not None
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("".join(
+        json.dumps({"kind": "meta", "text": f"n{i}", "t": float(i)}) + "\n"
+        for i in range(20000)))
+    assert path.stat().st_size > srv.AGENT_LOG_BYTES
+    state._trim_log_file(path)
+    assert path.stat().st_size <= srv.AGENT_LOG_BYTES
+    tail = path.read_text().splitlines()
+    assert len(tail) <= srv.AGENT_LOG_LINES
+    assert json.loads(tail[-1])["text"] == "n19999", "kept the wrong end"
