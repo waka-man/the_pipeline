@@ -201,6 +201,18 @@ function stubApi() {
       },
     }),
     saveReport: rec('saveReport', { ok: true }),
+    // The bundled agent runtime. The sidecar probes it at startup; the stub
+    // answers as if a newer version were waiting, so the card's states get
+    // exercised rather than skipped.
+    runtime: rec('runtime', { checked: true, active_version: '1.18.35',
+                              bundled_version: '1.18.35', latest_version: '1.19.0',
+                              update_available: true, active_source: 'bundled',
+                              pending_version: null, downloading: false }),
+    checkRuntime: rec('checkRuntime', { checked: true, active_version: '1.18.35',
+                                        bundled_version: '1.18.35', latest_version: '1.19.0',
+                                        update_available: true, active_source: 'bundled',
+                                        pending_version: null, downloading: false }),
+    updateRuntime: rec('updateRuntime', { staging: '1.19.0' }),
   };
 }
 
@@ -1258,6 +1270,93 @@ await test('a failure line shows its tag, its message and its detail apart', asy
     assert.match(parts.text, /^The model read 2 file\(s\)/,
       `the message runs into the tag: ${JSON.stringify(parts)}`);
     assert.match(parts.detail, /tools used: read/, JSON.stringify(parts));
+});
+
+await test('loading courses says so instead of sitting inert', async () => {
+    const { window } = await reboot();
+    await gotoOn(window, 'Select');
+
+    // Canvas is asked for every course, all pages of them. On an account with
+    // a hundred of them that is a multi-second wait, and a button that does
+    // nothing through it reads as broken and invites clicking it again.
+    assert.ok(!await window.eval(
+      "[...document.querySelectorAll('#main button')].some((b) => b.textContent.trim() === 'Loading courses…')"),
+    'the button starts in a loading state');
+
+    await window.eval(`(() => {
+      let release;
+      window.__releaseCourses = () => release();
+      window.pipeline.api.courses = () => new Promise((res) => { release = () => res({
+        courses: [{ id: 1, name: 'Example Regex', term: 'm2026', workflow_state: 'available' }] }); });
+      [...document.querySelectorAll('#main button')]
+        .find((b) => b.textContent.trim() === 'Load courses').click();
+    })()`);
+    await tick(60);
+
+    const busy = await window.eval(`(() => {
+      const b = [...document.querySelectorAll('#main button')]
+        .find((x) => x.textContent.includes('Loading courses'));
+      if (!b) return null;
+      return { text: b.textContent.trim(), disabled: b.disabled,
+               spinner: !!b.querySelector('.spinner') };
+    })()`);
+    assert.ok(busy, 'the button gave no sign that anything was happening');
+    assert.match(busy.text, /Loading courses…/, JSON.stringify(busy));
+    assert.strictEqual(busy.disabled, true, JSON.stringify(busy));
+    assert.strictEqual(busy.spinner, true, 'no busy indicator on the button');
+
+    // And it comes back when the request lands.
+    await window.eval('window.__releaseCourses()');
+    await tick(80);
+    assert.ok(!await window.eval(
+      "[...document.querySelectorAll('#main button')].some((b) => b.textContent.includes('Loading courses'))"),
+    'the button stayed in its loading state after the courses arrived');
+});
+
+await test('a stuck course request does not leave the button loading for ever', async () => {
+    const { window } = await reboot();
+    await gotoOn(window, 'Select');
+
+    // The fetch failing is the case that matters: the flag is cleared in a
+    // finally, so a rejected request must not leave the button spinning and
+    // the page permanently unusable.
+    await window.eval(`(() => {
+      window.pipeline.api.courses = () => Promise.reject(new Error('canvas is down'));
+      [...document.querySelectorAll('#main button')]
+        .find((b) => b.textContent.trim() === 'Load courses').click();
+    })()`);
+    await tick(120);
+    const texts = await buttonTexts(window);
+    assert.ok(texts.some((t) => t === 'Load courses'),
+      `the button never came back: ${texts.join(' | ')}`);
+});
+
+await test('the setup page reports the runtime version and offers the update', async () => {
+    const { window } = await reboot();
+    await gotoOn(window, 'Setup');
+
+    // The harness produces the grades, so which build is in use is worth
+    // knowing, and a newer one is offered rather than installed behind anyone's
+    // back.
+    assert.match(await window.eval(
+      "((document.querySelector('#main .card-head') || {}).textContent || '') + "
+      + "[...document.querySelectorAll('#main .card')].map((c) => c.textContent).join('|')"),
+      /Agent runtime/,
+      'nothing on the setup page reports the runtime');
+
+    const texts = await buttonTexts(window);
+    assert.ok(texts.some((t) => t.startsWith('Install v')),
+      `no way to install the newer runtime: ${texts.join(' | ')}`);
+    assert.ok(texts.some((t) => t === 'Check now'),
+      'no way to re-check for a new version');
+
+    // Installing asks the sidecar to stage it; it does not swap anything live.
+    await clickIn(window, '#main button', 'Install v');
+    await tick(80);
+    const pending = await window.eval(
+      "[...document.querySelectorAll('#main .chip')].map((c) => c.textContent).join('|')");
+    assert.match(pending, /1\.19\.0 will be used next launch/,
+      `the staged update was not reported: ${pending}`);
 });
 
 await test('no handler threw while every button was clicked', () => {

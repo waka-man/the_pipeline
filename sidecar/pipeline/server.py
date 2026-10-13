@@ -144,6 +144,10 @@ class AppState:
     # before starting the next attempt for that row. Not a job-wide stop: the
     # rest of the cohort carries on.
     stopped_rows: set[int] = field(default_factory=set)
+    # The bundled agent runtime: what is installed, what npm has, and staging a
+    # newer one. None until serve() builds it, so the test suite never reaches
+    # for the network on its own.
+    runtime: Any = None
     # session id -> part ids already written to the log, so nothing repeats.
     agent_seen: dict[str, set[str]] = field(default_factory=dict)
 
@@ -1090,6 +1094,50 @@ def op_job_control(state: AppState, run_id: int, body: dict[str, Any]) -> dict[s
     return {"job": job, "action": action, "state": job_state(state, job)}
 
 
+def op_runtime_status(state: AppState) -> dict[str, Any]:
+    """What version of the agent runtime is in use, and whether there is a newer one.
+
+    Reads what the startup probe found rather than probing again: this is called
+    on page load, and a page load should not wait on the network.
+    """
+    mgr = state.runtime
+    if mgr is None:
+        return {"checked": False, "update_available": False}
+    return mgr.status.as_dict()
+
+
+def op_runtime_check(state: AppState) -> dict[str, Any]:
+    """Ask npm again. Explicit, from the button, so it may block."""
+    mgr = state.runtime
+    if mgr is None:
+        raise ApiError("runtime checking is not available here", 409)
+    try:
+        mgr.probe()
+    except Exception as exc:
+        raise ApiError(f"Could not check for updates: {exc}", 502)
+    return mgr.status.as_dict()
+
+
+def op_runtime_update(state: AppState) -> dict[str, Any]:
+    """Stage a newer runtime. Takes effect on the next launch, never mid-run.
+
+    Downloading and swapping the harness that produces the grades is not a thing
+    to do while somebody is grading, and not a thing to do without asking. So
+    this fetches the binary and marks it pending; startup promotes it, which is
+    the only moment nothing is in flight.
+    """
+    mgr = state.runtime
+    if mgr is None:
+        raise ApiError("runtime updates are not available here", 409)
+    target = str(mgr.status.latest_version or "")
+    if not target:
+        raise ApiError("No update has been found to install.", 409)
+    if mgr.status.downloading:
+        raise ApiError("That update is already downloading.", 409)
+    mgr.stage_async(target)
+    return {"staging": target, "note": "restart the app to use it"}
+
+
 def op_stop_submission(state: AppState, row_id: int) -> dict[str, Any]:
     """Stop grading one submission without stopping the run.
 
@@ -1367,6 +1415,9 @@ ROUTES: list[Route_] = [
     Route_("POST", r"^/api/runs/(?P<run_id>\d+)/publish$", _start_publish),
     Route_("POST", r"^/api/runs/(?P<run_id>\d+)/control$", _start_control),
     Route_("POST", r"^/api/submissions/(?P<row_id>\d+)/stop$", op_stop_submission),
+    Route_("GET", r"^/api/runtime$", op_runtime_status),
+    Route_("POST", r"^/api/runtime/check$", op_runtime_check),
+    Route_("POST", r"^/api/runtime/update$", op_runtime_update),
     Route_("GET", r"^/api/reports/(?P<row_id>\d+)/agent-log$", _get_agent_log),
     Route_("GET", r"^/api/reports/(?P<row_id>\d+)$", _get_report),
     Route_("PUT", r"^/api/reports/(?P<row_id>\d+)$", _put_report),
@@ -1493,8 +1544,24 @@ def serve_test(state: AppState, host: str = "127.0.0.1") -> tuple[ThreadingHTTPS
 
 
 def serve(port: int = 0, host: str = "127.0.0.1") -> tuple[ThreadingHTTPServer, int]:
-    store = Store(config.Settings.load().db_path)
+    settings = config.Settings.load()
+    store = Store(settings.db_path)
     state = AppState(store=store, bus=EventBus(store))
+
+    # Promote a staged runtime before anything can launch opencode. This is the
+    # only moment the version is allowed to change: nothing is mid-submission,
+    # so two students of the same cohort cannot be graded by different builds.
+    from .runtime import RuntimeManager
+    state.runtime = RuntimeManager(settings.data,
+                                   os.environ.get("GRADING_PIPELINE_OPENCODE", "").strip())
+    try:
+        state.runtime.promote()
+    except Exception:
+        pass
+    # Off the critical path: the app is serving before this answers, and on a
+    # machine with no network it simply finishes in its timeout.
+    state.runtime.probe_async()
+
     httpd = ThreadingHTTPServer((host, port), make_handler(state))
     httpd.daemon_threads = True
     bound = httpd.server_address[1]

@@ -66,6 +66,11 @@ const S = {
   // student's agent output live.
   panel: null,          // null | { kind: 'assign' | 'log', rowId }
   coursesShown: COURSE_PAGE,
+  // True while the course list is being fetched, so the button can say so
+  // instead of sitting inert through a slow request.
+  loadingCourses: false,
+  // The bundled agent runtime's version, filled in by the startup probe.
+  runtime: null,
   assignmentsShown: ASSIGNMENT_PAGE,
   logEntries: [],
   logShown: 0,
@@ -254,6 +259,52 @@ function modelNote() {
 
 /* ------------------------------------------------------------------ views */
 
+/** What version of the agent runtime is installed, and whether one is newer. */
+function runtimeCard() {
+  const rt = S.runtime;
+  const downloading = rt && rt.downloading;
+  const active = rt?.active_version;
+  const latest = rt?.latest_version;
+  const staged = rt?.pending_version;
+  const updatable = !!(rt?.update_available && latest) && !downloading && !staged;
+
+  return card('Agent runtime', rt?.checked ? `v${active || 'unknown'}` : 'checking…',
+    h('div', { class: 'hint' },
+      'The grading harness this app ships with. Everything the agent does to '
+      + 'decide a score goes through it, so it is worth knowing which build you are on.'),
+    h('div', { style: 'display:flex;gap:8px;margin-top:12px;align-items:center;flex-wrap:wrap' },
+      staged
+        ? h('span', { class: 'chip', dataset: { tone: 'flag' } }, `v${staged} will be used next launch`)
+        : rt?.update_available && latest
+          ? h('span', { class: 'chip', dataset: { tone: 'flag' } }, `v${latest} available`)
+          : rt?.checked
+            ? h('span', { class: 'chip', dataset: { tone: 'ok' } }, 'up to date')
+            : null,
+      downloading ? h('span', {}, 'Downloading…') : null,
+      updatable ? h('button', {
+        class: 'btn', 'data-size': 'sm',
+        onclick: () => guard(async () => {
+          const r = await api.updateRuntime();
+          if (r) {
+            S.runtime = { ...S.runtime, pending_version: r.staging, downloading: true };
+            toast('Downloading. Restart the app to start using it.');
+          }
+        }, 'Could not start the update'),
+      }, `Install v${latest}`) : null,
+      h('button', {
+        class: 'btn', 'data-size': 'sm', 'data-variant': 'ghost', disabled: downloading,
+        onclick: () => guard(async () => {
+          const r = await api.checkRuntime();
+          if (r) S.runtime = r;
+        }, 'Could not check for updates'),
+      }, 'Check now')),
+    rt?.active_source === 'managed'
+      ? h('div', { class: 'hint', style: 'margin-top:10px' },
+          `Running an updated runtime (v${active}) rather than the one this app `
+          + 'was built with. Restart the app after installing an update to pick it up.')
+      : null);
+}
+
 function viewSetup() {
   const st = S.status || {};
   const connected = st.canvas_configured;
@@ -354,6 +405,8 @@ function viewSetup() {
                 h('div', { class: 'pick-sub' }, h('span', {}, c.provider))),
               h('div', { class: 'pick-meta' }, chip(c.tier, c.tier === 'free' ? 'accent' : null)))))
         : null),
+
+    runtimeCard(),
 
     h('div', { style: 'margin-top:16px;display:flex;justify-content:flex-end' },
       h('button', {
@@ -705,9 +758,11 @@ function viewSelect() {
     return h('div', {},
       h('div', { class: 'head' }, h('h1', {}, 'Choose an assignment')),
       card('Courses', null,
-        h('button', { class: 'btn', onclick: () => guard(loadCourses, 'Could not load courses') },
-          'Load courses')),
-      empty('No courses loaded yet', 'Load your Canvas courses to begin.'));
+        loadingCoursesButton('Load courses')),
+      S.loadingCourses
+        ? notice('Reading every course on your Canvas account. With a hundred '
+                 + 'or so this can take a moment.', null)
+        : empty('No courses loaded yet', 'Load your Canvas courses to begin.'));
   }
 
   // Most recently active first, so the courses a lecturer actually teaches this
@@ -1362,6 +1417,9 @@ function closeModal() { clear(els.modal); }
 
 async function loadStatus() {
   S.status = await api.status().catch(() => null);
+  // Fills in what the sidecar's startup probe found. It ran in the background
+  // and may not be finished, which is why the card shows "checking…".
+  api.runtime().then((r) => { if (r) { S.runtime = r; render(); } }).catch(() => {});
 }
 
 async function refreshStatus() {
@@ -1454,12 +1512,34 @@ async function resumeRun(run) {
   }, 'Could not open that run');
 }
 
+/** The Load courses button, with its busy state built in. */
+function loadingCoursesButton(label) {
+  const busy = S.loadingCourses;
+  return h('button', {
+    class: 'btn',
+    disabled: busy,
+    onclick: () => guard(loadCourses, 'Could not load courses'),
+  },
+    busy ? h('span', { class: 'spinner', 'aria-hidden': 'true' }) : null,
+    busy ? `${label.replace(/^Load/, 'Loading')}…` : label);
+}
+
 async function loadCourses() {
-  const data = await api.courses().catch(() => null);
-  if (data) S.courses = data.courses;
-  // Without this the button appears to do nothing: the state changed but
-  // nothing was repainted.
+  // Canvas is asked for every course, all pages of them, so on an account with
+  // a hundred of them this is a multi-second wait. The button used to sit there
+  // unchanged through the whole of it, which reads as broken rather than busy
+  // and invites clicking it again.
+  S.loadingCourses = true;
   render();
+  try {
+    const data = await api.courses().catch(() => null);
+    if (data) S.courses = data.courses;
+  } finally {
+    S.loadingCourses = false;
+    // Without this the button appears to do nothing: the state changed but
+    // nothing was repainted.
+    render();
+  }
 }
 
 /* ------------------------------------------------------------------- init */

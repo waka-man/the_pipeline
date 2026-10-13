@@ -210,6 +210,35 @@ reappears.
 python scripts/redact_fixtures.py --check
 ```
 
+## The bundled agent runtime
+
+Every grading decision goes through opencode, so the app ships its own copy
+rather than asking anyone to install one. That means it also ships a *pinned*
+one, and a pin that only ever moves at release time leaves a machine quietly on
+last year's harness for a whole cohort.
+
+So the sidecar probes npm for the current `opencode-ai` at startup and reports
+what it found on the **Setup → Agent runtime** card. From there a newer version
+can be installed.
+
+Three rules, each because of how this can go wrong:
+
+- **Nothing happens silently.** A newer opencode can change output for reasons
+  that have nothing to do with the student in front of you. The update is
+  offered, never pushed.
+- **Nothing happens mid-run.** A binary that changes between two submissions
+  of one cohort is worse than an old one. An installed update is staged and
+  promoted at the next launch, which is the only moment nothing is in flight.
+- **Nothing blocks.** The probe is a background thread with a six-second
+  timeout. Offline means "could not check", never a failure.
+
+The downloaded binary goes under the app's own data directory, never inside the
+app bundle. Rewriting a code-signed bundle would invalidate its signature the
+first time somebody installed certificates.
+
+Self-update stops at the harness. The app itself still updates by installing a
+new release.
+
 ## Signing
 
 Unsigned builds work but draw security warnings. To sign:

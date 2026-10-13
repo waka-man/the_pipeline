@@ -368,3 +368,36 @@ def test_recorded_submissions_carry_pseudonymous_names():
         parts = submission["user"]["name"].split()
         assert len(parts) == 2, submission["user"]["name"]
         assert parts[0] in allowed_given and parts[1] in allowed_family, parts
+
+
+def test_the_bundled_runtime_pin_is_the_same_everywhere_it_is_written():
+    """One runtime per release, or two builds that disagree about what grades.
+
+    The pin lives in the build job and was written out a second time, inline,
+    in the notarize job. Nothing compared them, so a release could ship a
+    signed build of a different opencode than the installer beside it.
+    """
+    import re
+    workflow = (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
+    pins = re.findall(r'OPENCODE_VERSION:\s*"([^"]+)"', workflow)
+    assert pins, "the release workflow no longer pins a runtime version"
+    assert len(set(pins)) == 1, f"the release jobs pin different runtimes: {pins}"
+
+    pkg = (ROOT / "apps/desktop/package.json").read_text(encoding="utf-8")
+    # Anchored to a version and nothing else: the script continues with shell,
+    # and a looser pattern swallows the rest of the command.
+    dev = re.search(r"opencode-ai@(\d+\.\d+\.\d+)", pkg)
+    assert dev, "the dev fetch script no longer pins a version"
+    assert dev.group(1) == pins[0], (
+        f"the dev fetch script builds {dev.group(1)} but a release ships {pins[0]}")
+
+
+def test_the_runtime_probe_never_reaches_the_network_during_tests():
+    """The unit suite must not depend on npm being up.
+
+    Nothing here should call the registry for real; the runtime tests inject
+    both the version read and the fetch. Asserted rather than assumed, because
+    a single unmocked request turns the suite red on a train.
+    """
+    from pipeline import runtime as rt
+    assert rt.PROBE_TIMEOUT <= 10, "the probe timeout is long enough to be felt"

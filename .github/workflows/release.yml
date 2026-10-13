@@ -201,6 +201,10 @@ jobs:
           python-version: "3.12"
       - name: Build the signed and notarized dmg
         env:
+          # Must match the build job. A notarized release built against a
+          # different runtime than the installer it accompanies is exactly the
+          # kind of drift nobody notices until a grade does not reproduce.
+          OPENCODE_VERSION: "1.18.35"
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
@@ -209,7 +213,10 @@ jobs:
           npm --prefix apps/desktop ci
           python scripts/build_sidecar.py
           mkdir -p apps/desktop/resources/opencode
-          npm install --prefix "$RUNNER_TEMP/oc" --no-audit --no-fund opencode-ai@1.18.35
+          # The same pin the build job used. It was written out inline here and
+          # nothing kept the two in step, so one release could ship a different
+          # runtime than the installer next to it.
+          npm install --prefix "$RUNNER_TEMP/oc" --no-audit --no-fund "opencode-ai@${OPENCODE_VERSION}"
           cp "$RUNNER_TEMP/oc/node_modules/opencode-ai/bin/"* \
              apps/desktop/resources/opencode/opencode
           chmod +x apps/desktop/resources/opencode/opencode

@@ -119,8 +119,19 @@ class OpenCodeServer:
         # environment, so a user is not required to install one. A developer's
         # own opencode is used when nothing is specified.
         override = os.environ.get("GRADING_PIPELINE_OPENCODE", "").strip()
-        if override:
-            self.binary = override
+        # A runtime we downloaded ourselves wins over the one inside the app.
+        # That is what makes a staged update take effect on the next launch
+        # rather than a moment sooner, and it keeps anything code-signed from
+        # ever being rewritten on disk.
+        try:
+            from ..runtime import RuntimeLayout, resolve_binary
+            layout = RuntimeLayout(Path(
+                os.environ.get("GRADING_PIPELINE_HOME", Path.home())))
+            chosen, _source = resolve_binary(layout, override)
+            self.binary = chosen
+        except Exception:
+            if override:
+                self.binary = override
         self._base = f"http://{self.hostname}:{self.port}"
 
     def start(self, extra_env: dict[str, str] | None = None) -> None:

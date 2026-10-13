@@ -436,6 +436,24 @@ body {
 /* The model note on the Run grading card: says which model will be used, and
    opens the picker. Styled as text with a hover affordance rather than a
    button, because it reads as a label until you reach for it. */
+/* Busy state for a button whose work is slow. Spins, and is held still when
+   the system asks for less motion rather than disappearing, because the label
+   change is the part that actually communicates. */
+.spinner {
+  width: 11px;
+  height: 11px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  border: 1.5px solid currentColor;
+  border-top-color: transparent;
+  opacity: 0.85;
+  animation: spinner-turn 0.7s linear infinite;
+}
+@keyframes spinner-turn { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) {
+  .spinner { animation-duration: 2.4s; }
+}
+
 .model-pick {
   display: inline-flex;
   align-items: center;

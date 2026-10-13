@@ -938,6 +938,74 @@ def test_naming_a_run_that_does_not_exist_is_a_404(live):
     assert e.value.code == 404
 
 
+def test_the_runtime_endpoints_answer_without_being_configured(live):
+    """The probe is built in serve(), so serve_test() leaves it absent.
+
+    Every route must then say "not checked" rather than raising, because the
+    renderer asks on page load and a 500 there would take the setup page with
+    it.
+    """
+    base, state, _fake, _spec = live
+    assert state.runtime is None
+    body = get(base, "/api/runtime")
+    assert body == {"checked": False, "update_available": False}, body
+
+    for path in ("/api/runtime/check", "/api/runtime/update"):
+        try:
+            send(base, path, {})
+            raise AssertionError(f"{path} should refuse without a runtime manager")
+        except urllib.error.HTTPError as exc:
+            assert exc.code == 409, (path, exc.code)
+
+
+def test_the_runtime_is_reported_and_updates_are_staged_not_swapped(live, monkeypatch):
+    base, state, _fake, _spec = live
+    from pipeline import runtime as rt_mod
+    staged = []
+
+    class Manager:
+        def __init__(self):
+            self.status = rt_mod.RuntimeStatus(
+                active_version="1.18.35", bundled_version="1.18.35",
+                latest_version="1.19.0", checked=True, update_available=True)
+
+        def stage_async(self, version):
+            # Recorded, not executed: the point is that the route does not swap
+            # a binary while a run may be in flight.
+            staged.append(version)
+            self.status.pending_version = version
+
+    state.runtime = Manager()
+
+    body = get(base, "/api/runtime")
+    assert body["active_version"] == "1.18.35"
+    assert body["latest_version"] == "1.19.0"
+    assert body["update_available"] is True
+
+    out = send(base, "/api/runtime/update", {})
+    assert staged == ["1.19.0"], staged
+    assert "restart" in out["note"].lower(), out
+
+
+def test_updating_with_nothing_found_is_refused(live):
+    base, state, _fake, _spec = live
+    from pipeline import runtime as rt_mod
+
+    class Manager:
+        def __init__(self):
+            self.status = rt_mod.RuntimeStatus(checked=True, latest_version=None)
+
+        def stage_async(self, version):
+            raise AssertionError("must not download when nothing was found")
+
+    state.runtime = Manager()
+    try:
+        send(base, "/api/runtime/update", {})
+        raise AssertionError("should not install an unknown version")
+    except urllib.error.HTTPError as exc:
+        assert exc.code == 409, exc.code
+
+
 def test_stopping_one_submission_does_not_stop_the_run(live):
     """The only controls on offer were pause and stop for the whole job.
 
