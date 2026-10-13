@@ -401,3 +401,27 @@ def test_the_runtime_probe_never_reaches_the_network_during_tests():
     """
     from pipeline import runtime as rt
     assert rt.PROBE_TIMEOUT <= 10, "the probe timeout is long enough to be felt"
+
+
+def test_the_app_version_is_the_same_in_every_file_that_states_it():
+    """Two versions, two release artefacts, and nobody notices until later.
+
+    pyproject.toml had drifted a whole minor behind package.json: `pip install
+    .` reported 0.1.6 while the installer next to it was 0.1.7. Nothing read
+    both, so the drift was invisible.
+    """
+    import json
+    import re
+
+    pkg = json.loads((ROOT / "apps/desktop/package.json").read_text(encoding="utf-8"))
+    lock = json.loads((ROOT / "apps/desktop/package-lock.json").read_text(encoding="utf-8"))
+    pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    declared = re.search(r'^version = "([^"]+)"', pyproject, re.M)
+    assert declared, "pyproject.toml no longer declares a version"
+
+    assert pkg["version"] == declared.group(1), (
+        f"the installer says {pkg['version']} and pip says {declared.group(1)}")
+    assert lock["version"] == pkg["version"], (
+        f"package-lock says {lock['version']} and package.json says {pkg['version']}")
+    assert lock["packages"][""]["version"] == pkg["version"], (
+        "package-lock's own package entry disagrees with its top level")
