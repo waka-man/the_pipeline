@@ -138,7 +138,7 @@ def wait_for(predicate, timeout=8.0, step=0.05):
     return False
 
 
-def settle(state, job, timeout=8.0):
+def settle(state, job, timeout=30.0):
     """Wait for a job to be registered and then finish.
 
     A job registers itself in `state.controls` and pops the entry when it
@@ -150,8 +150,13 @@ def settle(state, job, timeout=8.0):
     a slower runner, which is the worst way to find one out.
     """
     assert wait_for(lambda: job in state.controls, timeout), f"{job} never started"
-    assert wait_for(lambda: job not in state.controls, timeout), \
-        f"{job} did not finish: {state.job_errors}"
+    if not wait_for(lambda: job not in state.controls, timeout):
+        # Say what it was actually doing. "did not finish: {}" on a loaded
+        # runner tells nobody anything, and the point of waiting for the job to
+        # end rather than for its effect is to survive a slow machine.
+        raise AssertionError(
+            f"the {job} job did not finish within {timeout}s; "
+            f"job_errors={state.job_errors} progress={state.store.progress(1)}")
 
 
 # --------------------------------------------------------------- basics

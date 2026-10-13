@@ -7,6 +7,7 @@ whole risk of this module, so both are injected rather than reached for.
 from __future__ import annotations
 
 import io
+import os
 import tarfile
 from pathlib import Path
 
@@ -183,6 +184,12 @@ def test_a_staged_version_is_reported_as_pending(layout, monkeypatch):
 
 # ------------------------------------------------------------------ staging
 
+def _tar_member() -> str:
+    """Where the binary lives inside a platform tarball, which is not the same
+    name on every platform -- the npm payload is always opencode.exe."""
+    return "package/bin/opencode.exe" if os.name == "nt" else "package/bin/opencode"
+
+
 def _tarball(path: Path, member: str, payload: bytes) -> Path:
     with tarfile.open(path, "w:gz") as tf:
         info = tarfile.TarInfo(member)
@@ -194,7 +201,9 @@ def _tarball(path: Path, member: str, payload: bytes) -> Path:
 def test_staging_a_verified_runtime_marks_it_pending(layout, monkeypatch):
     # Downloading is exercised by pointing the fetch at a tarball built here, so
     # no network and no 30MB.
-    monkeypatch.setattr(rt, "_fetch_tarball", lambda name, version, dest: _tarball(dest, "package/bin/opencode", b"#!/bin/sh\n"))
+    member = _tar_member()
+    monkeypatch.setattr(rt, "_fetch_tarball",
+                        lambda name, version, dest: _tarball(dest, member, b"binary"))
     monkeypatch.setattr(rt, "_package_version", lambda name, wanted: "1.19.0")
     monkeypatch.setattr(rt, "read_version", lambda _b: "1.19.0")
 
@@ -202,12 +211,17 @@ def test_staging_a_verified_runtime_marks_it_pending(layout, monkeypatch):
     assert mgr.stage("1.19.0") == "1.19.0"
     assert layout.read_pending() == "1.19.0"
     assert layout.managed_binary("1.19.0").is_file()
+    if os.name != "nt":
+        assert os.access(layout.managed_binary("1.19.0"), os.X_OK), \
+            "a downloaded runtime that cannot be executed will not launch"
 
 
 def test_a_binary_that_reports_the_wrong_version_is_not_staged(layout, monkeypatch):
     # Promoting something that is not what was asked for is worse than staying
     # on the bundled build.
-    monkeypatch.setattr(rt, "_fetch_tarball", lambda name, version, dest: _tarball(dest, "package/bin/opencode", b"#!/bin/sh\n"))
+    member = _tar_member()
+    monkeypatch.setattr(rt, "_fetch_tarball",
+                        lambda name, version, dest: _tarball(dest, member, b"binary"))
     monkeypatch.setattr(rt, "_package_version", lambda name, wanted: "1.19.0")
     monkeypatch.setattr(rt, "read_version", lambda _b: "1.18.35")
 
