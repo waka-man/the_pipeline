@@ -24,6 +24,44 @@ def selftest() -> int:
     return 0
 
 
+def smoke() -> int:
+    """Actually start the server and talk to it, then exit.
+
+    `--selftest` only imports, so it proves the freeze contains the modules and
+    nothing about whether the thing starts. The startup path is where a release
+    can break -- it is the code that binds a port, forks nothing and prints the
+    line the launcher waits for -- and it was untested on any platform, which is
+    how a sidecar shipped that never started on a Mac.
+
+    Deliberately does exactly what the launcher does: start, read the port from
+    stdout, call /health.
+    """
+    import json
+    import urllib.request
+
+    from pipeline.server import serve as _serve
+
+    httpd, port = _serve()
+    print(json.dumps({"port": port}), flush=True)
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/health", timeout=10) as r:
+            body = json.loads(r.read())
+        if not body.get("ok"):
+            print(f"health returned {body}", file=sys.stderr)
+            return 1
+        print("smoke ok", flush=True)
+        return 0
+    except Exception as exc:
+        # The reason, which --selftest can never give: a frozen build whose
+        # startup path throws otherwise fails with nothing on stdout at all.
+        print(f"smoke failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+        import traceback
+        traceback.print_exc()
+        return 1
+    finally:
+        httpd.shutdown()
+
+
 def serve() -> int:
     """Bind a loopback port, announce it on stdout, then idle.
 
@@ -45,6 +83,8 @@ def main(argv: list[str] | None = None) -> int:
     args = sys.argv[1:] if argv is None else argv
     if args and args[0] == "--selftest":
         return selftest()
+    if args and args[0] == "--smoke":
+        return smoke()
     return serve()
 
 

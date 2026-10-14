@@ -228,6 +228,35 @@ test('the fonts the stylesheet references are present', () => {
   }
 });
 
+/* -------------------------------------------------------------- packaging */
+
+test('every module main.js requires is packaged', () => {
+  // The failure this prevents: a helper added under lib/ but left out of
+  // build.files. main.js throws on its first require, which happens while
+  // building the application menu -- before the sidecar is spawned. The app
+  // appears to launch, the process is running, and no sidecar ever starts. It
+  // looks like a hang, not a packaging bug.
+  //
+  // Checked here as well as in CI against a real asar: this fails in a second,
+  // the asar check proves it against what actually ships.
+  const pkg = JSON.parse(
+    fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'));
+  const files = pkg.build.files || [];
+  const main = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8');
+  const required = [...main.matchAll(/require\('\.\/([^']+)'\)/g)].map((m) => m[1]);
+
+  assert.ok(required.length, 'found no relative requires; the pattern is wrong');
+  for (const mod of required) {
+    const covered = files.some((glob) => {
+      const re = new RegExp('^' + glob.replace(/[.+^${}()|[\]\\]/g, '\\$&')
+        .replace(/\*\*/g, '.+').replace(/\*/g, '[^/]*') + '$');
+      return re.test(mod);
+    });
+    assert.ok(covered,
+      `main.js requires ./${mod} but build.files (${files.join(', ')}) does not include it`);
+  }
+});
+
 /* --------------------------------------------------------------- edit menu */
 
 const { editMenuTemplate } = require(path.join(__dirname, '..', 'lib', 'edit-menu'));

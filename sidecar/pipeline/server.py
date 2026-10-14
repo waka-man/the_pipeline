@@ -1129,7 +1129,7 @@ def op_job_control(state: AppState, run_id: int, body: dict[str, Any]) -> dict[s
     return {"job": job, "action": action, "state": job_state(state, job)}
 
 
-def op_runtime_status(state: AppState) -> dict[str, Any]:
+def op_runtime_status(state: AppState) -> dict[str, Any]:  # noqa: D401
     """What version of the agent runtime is in use, and whether there is a newer one.
 
     Reads what the startup probe found rather than probing again: this is called
@@ -1138,6 +1138,9 @@ def op_runtime_status(state: AppState) -> dict[str, Any]:
     mgr = state.runtime
     if mgr is None:
         return {"checked": False, "update_available": False}
+    # First time anyone has asked. Start the probe now rather than at launch, so
+    # the sidecar does no work for a version nobody has requested.
+    mgr.probe_async()
     return mgr.status.as_dict()
 
 
@@ -1593,9 +1596,14 @@ def serve(port: int = 0, host: str = "127.0.0.1") -> tuple[ThreadingHTTPServer, 
         state.runtime.promote()
     except Exception:
         pass
-    # Off the critical path: the app is serving before this answers, and on a
-    # machine with no network it simply finishes in its timeout.
-    state.runtime.probe_async()
+    # The probe is NOT started here. It reads the runtime version by running the
+    # bundled opencode, which is a 180MB binary inside a onefile sidecar: forking
+    # that during startup is both slow and, on macOS, not something to do while
+    # the process is establishing itself. It is kicked off the first time the
+    # version is actually asked for, which is on the setup page.
+    #
+    # It used to run here. It added about a second and a half to every launch,
+    # and the sidecar stopped starting at all on a Mac.
 
     httpd = ThreadingHTTPServer((host, port), make_handler(state))
     httpd.daemon_threads = True

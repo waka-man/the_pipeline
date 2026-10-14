@@ -124,11 +124,20 @@ def main(argv: list[str] | None = None) -> int:
 
     # Prove the artifact runs before it ships. A frozen binary that imports but
     # fails on its first real call is the failure mode this catches.
+    # Both modes: --selftest proves the freeze contains the modules, --smoke
+    # proves the thing actually starts and answers. The second is the one that
+    # catches a broken release, and it was missing.
     check = subprocess.run([str(target), "--selftest"])
     if check.returncode != 0:
         print("selftest failed: the binary does not run", file=sys.stderr)
         return 1
     print("selftest ok")
+
+    smoke = subprocess.run([str(target), "--smoke"], timeout=120)
+    if smoke.returncode != 0:
+        print("smoke failed: the sidecar starts but does not serve", file=sys.stderr)
+        return 1
+    print("smoke ok")
     return 0
 
 

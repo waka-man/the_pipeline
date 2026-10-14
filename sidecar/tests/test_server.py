@@ -1106,6 +1106,11 @@ def test_the_runtime_is_reported_and_updates_are_staged_not_swapped(live, monkey
             staged.append(version)
             self.status.pending_version = version
 
+        def probe_async(self):
+            # The route starts the probe on first read. Already-checked here, so
+            # it is a no-op rather than a network call from a test.
+            pass
+
     state.runtime = Manager()
 
     body = get(base, "/api/runtime")
@@ -1128,6 +1133,9 @@ def test_updating_with_nothing_found_is_refused(live):
 
         def stage_async(self, version):
             raise AssertionError("must not download when nothing was found")
+
+        def probe_async(self):
+            pass
 
     state.runtime = Manager()
     try:

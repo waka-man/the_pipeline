@@ -160,9 +160,17 @@ jobs:
   # imports that static analysis cannot see, so a new source converter breaks
   # the freeze without breaking any test. One platform is enough to catch that,
   # and the release workflow still builds all three.
+  # One per platform, because the freeze is platform-specific and so is the
+  # startup path. Running it only on Linux proved nothing about the macOS build:
+  # a sidecar shipped that imported fine and never started on a Mac, and this
+  # job was green throughout.
   frozen-sidecar:
-    name: frozen sidecar
-    runs-on: ubuntu-latest
+    name: frozen sidecar (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-15-intel]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -170,7 +178,10 @@ jobs:
           python-version: "3.12"
       - run: pip install -e . pyinstaller
 
-      - name: Freeze and run it
+      # Freezes, imports, then actually starts the server and calls /health --
+      # what the launcher does. Anything a Mac does differently to a Linux box
+      # in that path fails here rather than on a user's machine.
+      - name: Freeze, import, and start it
         run: python scripts/build_sidecar.py
 
       # The asar failure mode: the renderer is served by the sidecar, a separate
@@ -193,6 +204,17 @@ jobs:
           test -f "$RES/app.asar.unpacked/renderer/index.html" || {
             echo "renderer is not unpacked: the sidecar cannot read it"; exit 1; }
           echo "renderer unpacked at $RES/app.asar.unpacked/renderer"
+
+          # Every module main.js requires must be inside the asar. A helper
+          # left out of build.files makes the first require throw, which on macOS
+          # happens before the sidecar is spawned: the app looks like it started
+          # and then nothing happens at all.
+          npx asar list dist/linux-unpacked/resources/app.asar > /tmp/asar.txt
+          for m in lib/menu-template.js lib/edit-menu.js main.js preload.js; do
+            grep -qx "/$m" /tmp/asar.txt || {
+              echo "packaged app is missing $m"; exit 1; }
+          done
+          echo "every main-process module is packaged"
 
       - name: The packaged app serves the UI
         shell: bash

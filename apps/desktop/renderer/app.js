@@ -72,8 +72,11 @@ const S = {
   // Credential fields, held here because render() rebuilds the inputs and a
   // value living only in the DOM would be lost on the next repaint.
   form: { canvasBase: '', canvasToken: '', openrouterKey: '' },
-  // The bundled agent runtime's version, filled in by the startup probe.
+  // The bundled agent runtime's version. Read when the setup page is first
+  // shown: answering it runs the bundled opencode, which has no business
+  // happening while the app is still starting.
   runtime: null,
+  runtimeRequested: false,
   assignmentsShown: ASSIGNMENT_PAGE,
   logEntries: [],
   logShown: 0,
@@ -314,6 +317,10 @@ function runtimeCard() {
 
 function viewSetup() {
   const st = S.status || {};
+  if (!S.runtimeRequested) {
+    S.runtimeRequested = true;
+    api.runtime().then((r) => { if (r) { S.runtime = r; render(); } }).catch(() => {});
+  }
   const connected = st.canvas_configured;
   // These three keep their contents in S, not in the DOM node. render() throws
   // the node away and builds a new one, so a value that only existed in the old
@@ -1475,9 +1482,6 @@ function closeModal() { clear(els.modal); }
 
 async function loadStatus() {
   S.status = await api.status().catch(() => null);
-  // Fills in what the sidecar's startup probe found. It ran in the background
-  // and may not be finished, which is why the card shows "checking…".
-  api.runtime().then((r) => { if (r) { S.runtime = r; render(); } }).catch(() => {});
 }
 
 async function refreshStatus() {
