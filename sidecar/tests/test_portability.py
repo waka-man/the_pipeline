@@ -425,3 +425,30 @@ def test_the_app_version_is_the_same_in_every_file_that_states_it():
         f"package-lock says {lock['version']} and package.json says {pkg['version']}")
     assert lock["packages"][""]["version"] == pkg["version"], (
         "package-lock's own package entry disagrees with its top level")
+
+
+def test_the_suite_does_not_clone_from_the_internet():
+    """The collect fixture cloned a real GitHub repository.
+
+    Every test that ran a collect shelled out to `git` and cloned it. The clone
+    has a 180s timeout while the tests give up after 30s, so a slow fetch
+    surfaced as a hung job and four server tests failed intermittently for no
+    visible reason -- and on an offline machine they failed outright.
+
+    Cloning a local repository exercises the same code with no packets, and cut
+    the server suite from about 150 seconds to 42.
+    """
+    server_tests = (ROOT / "sidecar/tests/test_server.py").read_text(encoding="utf-8")
+    assert "_local_repo(tmp_path)" in server_tests, \
+        "the collect fixture no longer clones a local repository"
+
+    # `example.invalid` is reserved by the RFC and cannot resolve, so a test
+    # using it fails immediately and is fine. github.com does not resolve to
+    # nothing, which is the whole problem.
+    # This file names the pattern in order to check for it, so it is the one
+    # file excluded from the search.
+    for name in ("test_server.py", "test_collect_sources.py", "test_pipeline.py",
+                 "test_service.py", "test_canvas_transport.py"):
+        text = (ROOT / "sidecar/tests" / name).read_text(encoding="utf-8")
+        assert 'clone_repo("https://github.com' not in text, \
+            f"{name} clones a real repository"

@@ -69,6 +69,9 @@ const S = {
   // True while the course list is being fetched, so the button can say so
   // instead of sitting inert through a slow request.
   loadingCourses: false,
+  // Credential fields, held here because render() rebuilds the inputs and a
+  // value living only in the DOM would be lost on the next repaint.
+  form: { canvasBase: '', canvasToken: '', openrouterKey: '' },
   // The bundled agent runtime's version, filled in by the startup probe.
   runtime: null,
   assignmentsShown: ASSIGNMENT_PAGE,
@@ -126,7 +129,11 @@ async function guard(fn, label) {
     S.busy = true; render();
     return await fn();
   } catch (err) {
-    toast(`${label}: ${err.message || err}`, 'bad');
+    // The status code is the useful part. "Could not load courses: 401" says
+    // the credentials were rejected; the bare message often does not.
+    const detail = err.status ? ` (${err.status})` : '';
+    const cause = err.cause ? `: ${err.cause}` : '';
+    toast(`${label}${detail}: ${err.message || err}${cause}`, 'bad');
     return null;
   } finally {
     S.busy = false; render();
@@ -308,8 +315,20 @@ function runtimeCard() {
 function viewSetup() {
   const st = S.status || {};
   const connected = st.canvas_configured;
-  const base = h('input', { class: 'input', id: 'cf-base', placeholder: 'https://school.instructure.com' });
-  const token = h('input', { class: 'input', id: 'cf-token', type: 'password', placeholder: 'Canvas API token' });
+  // These three keep their contents in S, not in the DOM node. render() throws
+  // the node away and builds a new one, so a value that only existed in the old
+  // node was lost on the next status refresh -- which is what made a pasted
+  // token look like it had never been pasted.
+  const base = h('input', {
+    class: 'input', id: 'cf-base', placeholder: 'https://school.instructure.com',
+    value: S.form.canvasBase,
+    oninput: (e) => { S.form.canvasBase = e.target.value; },
+  });
+  const token = h('input', {
+    class: 'input', id: 'cf-token', type: 'password', placeholder: 'Canvas API token',
+    value: S.form.canvasToken,
+    oninput: (e) => { S.form.canvasToken = e.target.value; },
+  });
   const show = h('button', {
     class: 'btn', 'data-size': 'sm', 'data-variant': 'ghost',
     onclick: () => { token.type = token.type === 'password' ? 'text' : 'password'; },
@@ -319,9 +338,10 @@ function viewSetup() {
   const orKey = h('input', {
     class: 'input', id: 'or-key', type: 'password',
     placeholder: hasKey ? 'A key is already saved' : 'sk-or-v1-...',
-    // Never prefilled. The saved value is not sent to the renderer, so this
-    // field only ever holds a newly typed key, and clearing it removes it.
-    value: '',
+    // Never prefilled with the saved key: it is not sent to the renderer, so
+    // this field only ever holds a newly typed one, and clearing it removes it.
+    value: S.form.openrouterKey,
+    oninput: (e) => { S.form.openrouterKey = e.target.value; },
   });
   const showOr = h('button', {
     class: 'btn', 'data-size': 'sm', 'data-variant': 'ghost',
@@ -346,7 +366,8 @@ function viewSetup() {
         h('button', {
           class: 'btn', 'data-variant': 'primary',
           onclick: async () => {
-            const body = { canvas_base_url: base.value.trim(), canvas_api_token: token.value.trim() };
+            const body = { canvas_base_url: S.form.canvasBase.trim(),
+                           canvas_api_token: S.form.canvasToken.trim() };
             if (!body.canvas_base_url || !body.canvas_api_token) {
               return toast('Enter both the Canvas URL and a token.', 'flag');
             }
@@ -370,11 +391,11 @@ function viewSetup() {
           class: 'btn', 'data-variant': hasKey ? 'ghost' : 'primary',
           onclick: async () => {
             const res = await guard(
-              () => api.saveSettings({ openrouter_api_key: orKey.value.trim() }),
+              () => api.saveSettings({ openrouter_api_key: S.form.openrouterKey.trim() }),
               'Could not save the key');
             if (res) {
               S.status = res;
-              orKey.value = '';
+              S.form.openrouterKey = '';
               toast(res.model_key_configured
                 ? 'Key saved. The agent runtime restarts on the next grading run.'
                 : 'Key removed.');
@@ -482,6 +503,18 @@ function openAgentLog(rowId) {
   };
   poll();
   S.logTimer = setInterval(poll, 1200);
+}
+
+/** Put the caret back where the person left it, across a rebuild. */
+function restoreFocus(id, caret) {
+  if (!id) return;
+  const el = document.getElementById(id);
+  if (!el || typeof el.focus !== 'function') return;
+  el.focus();
+  if (caret !== null && typeof el.setSelectionRange === 'function') {
+    // Password and number inputs throw on a range they cannot represent.
+    try { el.setSelectionRange(caret, caret); } catch (_) { /* not settable */ }
+  }
 }
 
 function renderPanel() {
@@ -1381,6 +1414,18 @@ function renderAside() {
 }
 
 function render() {
+  // Re-rendering rebuilds every input from scratch, so anything typed but not
+  // yet saved lived only in a node that is about to be thrown away. A status
+  // refresh, a background event or the Save button's own busy state was enough
+  // to do it, and the text disappeared with no indication of why.
+  //
+  // The values live in S and are written back below; focus and caret position
+  // are carried across here, because a field that keeps its text but loses the
+  // caret mid-word is its own kind of broken.
+  const active = document.activeElement;
+  const focusId = active && active.id ? active.id : null;
+  const caret = active && typeof active.selectionStart === 'number'
+    ? active.selectionStart : null;
   renderSpine();
   renderTopbar();
   // The aside describes the run you are in. Before you have picked one there is
@@ -1405,6 +1450,7 @@ function render() {
     ? h('div', { style: 'margin-bottom:14px' }, notice(S.toast.message, S.toast.tone))
     : null;
   mount(els.main, banner, node);
+  restoreFocus(focusId, caret);
   // The slide-over lives outside #main so a stage re-render cannot wipe it
   // open, which means it has to be re-rendered explicitly on every paint.
   renderPanel();
@@ -1532,8 +1578,11 @@ async function loadCourses() {
   S.loadingCourses = true;
   render();
   try {
-    const data = await api.courses().catch(() => null);
-    if (data) S.courses = data.courses;
+    // Not `.catch(() => null)`. A rejected token makes Canvas answer 401, and
+    // swallowing that rendered "No courses loaded yet" -- indistinguishable
+    // from not having clicked the button, with nothing in any log.
+    const data = await api.courses();
+    S.courses = data.courses;
   } finally {
     S.loadingCourses = false;
     // Without this the button appears to do nothing: the state changed but

@@ -9,6 +9,8 @@ drive it the way the renderer does.
 from __future__ import annotations
 
 import json
+import os
+import subprocess
 import threading
 import urllib.error
 import urllib.request
@@ -62,12 +64,36 @@ class FakeCanvas:
     def get_submissions(self, course_id, assignment_id, grouped=False):
         return self._submissions
 
-    def get_submission_for(self, user_id):
-        return {"attachments": [], "url": "https://github.com/a/b", "body": ""}
-
     def grade(self, course_id, assignment_id, user_id, **kw):
         self.published.append({"user_id": user_id, **kw})
         return {"id": 1}
+
+
+def _local_repo(tmp_path: Path) -> Path:
+    """A real git repository on disk, for the fixture to clone.
+
+    The suite must not reach the network. The fixture submission pointed at
+    https://github.com/ada/r, so every test that ran a collect shelled out to
+    real `git` and cloned the actual public repository: slow, dependent on the
+    connection, and failing outright on an offline machine. Worse, the clone has
+    a 180s timeout while the tests give up after 30s, so a slow fetch showed up
+    as a hung job and four tests failed intermittently for no reason at all.
+
+    Cloning a local path exercises the same code -- real git, real working tree,
+    real commit metadata -- without a single packet leaving the machine.
+    """
+    repo = tmp_path / "origin"
+    (repo / "material").mkdir(parents=True)
+    (repo / "material" / "essay.md").write_text("# Essay\n\nAn argument.\n")
+    (repo / "README.md").write_text("# Submission\n")
+    env = {**os.environ, "GIT_AUTHOR_NAME": "Fixture",
+           "GIT_AUTHOR_EMAIL": "fixture@example.invalid",
+           "GIT_COMMITTER_NAME": "Fixture",
+           "GIT_COMMITTER_EMAIL": "fixture@example.invalid"}
+    for cmd in (["git", "init", "-q"], ["git", "add", "-A"],
+                ["git", "commit", "-q", "-m", "submission"]):
+        subprocess.run(cmd, cwd=repo, env=env, capture_output=True, check=True)
+    return repo
 
 
 @pytest.fixture()
@@ -89,6 +115,8 @@ def live(tmp_path, monkeypatch):
     bus = srv.EventBus(store)
     state = srv.AppState(store=store, bus=bus)
 
+    repo = _local_repo(tmp_path)
+
     assignment = json.loads((FIXTURES / "assignment_3130_46805.json").read_text())
     spec = spec_from_assignment(assignment, BASE_URL, 3130)
 
@@ -101,10 +129,11 @@ def live(tmp_path, monkeypatch):
                       "submission_types": ["online_url"]}],
         submissions=[{"id": 1, "user_id": 7, "user": {"name": "Ada Lovelace"},
                       "workflow_state": "submitted", "submitted_at": "2026-09-06T19:54:08Z",
-                      "score": None, "url": "https://github.com/ada/r", "attachments": []},
+                      "score": None, "url": str(repo), "attachments": []},
                      {"id": 2, "user_id": 8, "user": {"name": "Bob Smith"},
                       "workflow_state": "unsubmitted", "missing": True}],
     )
+    fake.submission_url = str(repo)
     monkeypatch.setattr(state, "client", lambda: fake)
     monkeypatch.setattr(state, "ensure_opencode", lambda: (_ for _ in ()).throw(
         AssertionError("no model should be needed for these routes")))
@@ -226,7 +255,7 @@ def test_bootstrap_creates_a_run_and_registers_submissions(live):
 
 
 def test_submissions_expose_score_and_report_state(live):
-    base, state, _, _ = live
+    base, state, fake, _ = live
     send(base, "/api/runs", {"course_id": 3130, "assignment_id": 46805})
     assert wait_for(lambda: state.store.progress(1).get("total") == 2)
 
@@ -234,7 +263,7 @@ def test_submissions_expose_score_and_report_state(live):
     by_name = {r["student"]: r for r in rows}
     assert set(by_name) == {"Ada Lovelace", "Bob Smith"}
     assert by_name["Bob Smith"]["missing"] is True
-    assert by_name["Ada Lovelace"]["primary_url"] == "https://github.com/ada/r"
+    assert by_name["Ada Lovelace"]["primary_url"] == fake.submission_url
     assert by_name["Ada Lovelace"]["score"] is None
 
 

@@ -1359,6 +1359,99 @@ await test('the setup page reports the runtime version and offers the update', a
       `the staged update was not reported: ${pending}`);
 });
 
+await test('a credential survives a background repaint', async () => {
+    const { window } = await reboot();
+    await gotoOn(window, 'Setup');
+
+    // render() rebuilds every input, so a value that lived only in the DOM was
+    // destroyed by the next status refresh. Typed text silently disappearing is
+    // what makes a field look like a paste that never happened.
+    await window.eval(`(() => {
+      const el = document.getElementById('cf-token');
+      el.value = 'pasted-secret-value';
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+    })()`);
+    // Something unrelated repaints the page, the way a background event does.
+    await window.eval(`window.__emit(${JSON.stringify({
+      event: 'grade.progress', data: { run_id: 1, student: 'Ada Lovelace', status: 'graded' },
+    })})`);
+    await tick(700);
+    await window.eval(`window.__emit(${JSON.stringify({ event: 'job.done', data: { job: 'grade', ok: true } })})`);
+    await tick(120);
+
+    assert.strictEqual(await window.eval("document.getElementById('cf-token').value"),
+      'pasted-secret-value', 'the typed token was discarded by a repaint');
+    // The same must hold for the model key, which is the other field reported.
+
+  // And the same for the OpenRouter key.
+  await window.eval(`(() => {
+    const el = document.getElementById('or-key');
+    el.value = 'sk-or-v1-abc';
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+  })()`);
+  await window.eval(`window.__emit(${JSON.stringify({ event: 'job.done', data: { job: 'grade', ok: true } })})`);
+  await tick(120);
+  assert.strictEqual(await window.eval("document.getElementById('or-key').value"),
+    'sk-or-v1-abc', 'the typed model key was discarded by a repaint');
+});
+
+await test('repainting does not steal the caret mid-word', async () => {
+    const { window } = await reboot();
+    await gotoOn(window, 'Setup');
+
+    await window.eval(`(() => {
+      const el = document.getElementById('cf-base');
+      el.value = 'https://school.instructure.com';
+      el.focus();
+      el.setSelectionRange(12, 12);
+    })()`);
+    await window.eval(`window.__emit(${JSON.stringify({ event: 'job.done', data: { job: 'grade', ok: true } })})`);
+    await tick(120);
+
+    const focused = await window.eval(
+      "document.activeElement ? document.activeElement.id : ''");
+    assert.strictEqual(focused, 'cf-base',
+      `a background repaint moved focus off the field being typed into: "${focused}"`);
+});
+
+await test('a rejected course request says why instead of showing nothing', async () => {
+    const { window } = await reboot();
+    await gotoOn(window, 'Select');
+
+    // `.catch(() => null)` turned a 401 from Canvas into "No courses loaded
+    // yet" -- indistinguishable from never having clicked the button, and
+    // recorded nowhere.
+    await window.eval(`(() => {
+      window.pipeline.api.courses = () => {
+        const err = new Error('Unauthorized');
+        err.status = 401;
+        return Promise.reject(err);
+      };
+      [...document.querySelectorAll('#main button')]
+        .find((b) => b.textContent.trim() === 'Load courses').click();
+    })()`);
+    await tick(150);
+
+    const toastText = await window.eval(
+      "[...document.querySelectorAll('#main .notice')].map((n) => n.textContent).join('|')");
+    assert.match(toastText, /Could not load courses/,
+      `the failure was swallowed: ${JSON.stringify(toastText)}`);
+    assert.match(toastText, /401/,
+      `the status code was dropped, which is the part that says the token was rejected: ${toastText}`);
+});
+
+await test('the application menu carries the Edit role', async () => {
+    const main = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8');
+    // On macOS the application menu is the only source of the Cmd+C/V/X/A
+    // accelerators. Without this role paste does nothing, and right-click does
+    // nothing either, because the default Edit context menu goes with it.
+    assert.match(main, /role: 'editMenu'/,
+      'no editMenu role: the keyboard accelerators for paste and copy are unbound');
+    // Right-click is handled explicitly rather than left to the default, which
+    // is not reliably present and is not the app's to rely on.
+    assert.match(main, /on\('context-menu'/, 'no context-menu handler for text fields');
+});
+
 await test('no handler threw while every button was clicked', () => {
     assert.deepStrictEqual(base.window.__errs, [],
       `uncaught in renderer:\n  ${base.window.__errs.join('\n  ')}`);

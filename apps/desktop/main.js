@@ -262,6 +262,8 @@ async function createWindow() {
   const icon = path.join(__dirname, 'renderer', 'icon.png');
   if (fs.existsSync(icon)) win.setIcon(icon);
 
+  attachContextMenu(win);
+
   // A start stage can be requested for development and for deep links.
   // Served over HTTP by the sidecar: Chromium blocks ES modules on file://.
   const startStage = process.env.GRADING_PIPELINE_STAGE;
@@ -323,6 +325,34 @@ async function createWindow() {
   }
 }
 
+/**
+ * Right-click menu for text fields.
+ *
+ * Chromium's own Edit menu is what most apps rely on, but it is not something
+ * the app controls and it is not reliably present -- on macOS it is suppressed
+ * along with the keyboard accelerators when the application menu is replaced.
+ * Right-clicking to paste then did nothing at all.
+ *
+ * Building it here means paste works by mouse and by keyboard on every
+ * platform, and the entries follow what is actually available: an empty field
+ * offers Paste but not Cut.
+ */
+function attachContextMenu(window) {
+  window.webContents.on('context-menu', (_event, params) => {
+    if (!params || !params.isEditable) return;   // let the default handle the rest
+    const flags = params.editFlags || [];
+    const offers = (flag) => flags.includes(flag);
+    const items = [];
+    if (offers('cut')) items.push({ role: 'cut', label: 'Cut' });
+    if (offers('copy')) items.push({ role: 'copy', label: 'Copy' });
+    if (offers('paste')) items.push({ role: 'paste', label: 'Paste' });
+    if (items.length) items.push({ type: 'separator' });
+    if (offers('selectAll')) items.push({ role: 'selectAll', label: 'Select All' });
+    if (!items.length) return;
+    Menu.buildFromTemplate(items).popup({ window });
+  });
+}
+
 function menu() {
   const isMac = process.platform === 'darwin';
   Menu.setApplicationMenu(Menu.buildFromTemplate([
@@ -338,6 +368,11 @@ function menu() {
         isMac ? { role: 'close' } : { role: 'quit' },
       ],
     },
+    // The Edit role, not a hand-built submenu: on macOS these accelerators live
+    // in the application menu, so an app that omits this role cannot paste,
+    // copy or select-all with the keyboard at all. Everything still works with
+    // the mouse, which is how this passes unnoticed.
+    { role: 'editMenu' },
     {
       label: 'View',
       submenu: [
