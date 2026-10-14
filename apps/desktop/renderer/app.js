@@ -371,8 +371,20 @@ function viewSetup() {
             if (!body.canvas_base_url || !body.canvas_api_token) {
               return toast('Enter both the Canvas URL and a token.', 'flag');
             }
+            // Canvas is asked whether the token works before it is stored, so a
+            // rejection is reported here rather than surfacing later as an
+            // empty course list. `guard` shows the reason, which is the whole
+            // point: "rejected" and "could not reach Canvas" are different
+            // problems with different fixes.
             const res = await guard(() => api.saveSettings(body), 'Could not save');
-            if (res) { S.status = res; toast('Canvas credentials saved.'); }
+            if (res) {
+              S.status = res;
+              // Wipe the token now it is stored: it is in the keychain, and a
+              // password field that keeps showing a live credential is a hazard
+              // on a shared machine.
+              S.form.canvasToken = '';
+              toast('Canvas accepted the token.');
+            }
           },
         }, 'Save and connect')),
 

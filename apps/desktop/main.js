@@ -347,38 +347,12 @@ function attachContextMenu(window) {
 }
 
 function menu() {
-  const isMac = process.platform === 'darwin';
-  Menu.setApplicationMenu(Menu.buildFromTemplate([
-    ...(isMac ? [{ role: 'appMenu' }] : []),
-    {
-      label: 'File',
-      submenu: [
-        {
-          label: 'Open workspace folder',
-          click: () => win?.webContents.send('menu', 'open-workspace'),
-        },
-        { type: 'separator' },
-        isMac ? { role: 'close' } : { role: 'quit' },
-      ],
-    },
-    // The Edit role, not a hand-built submenu: on macOS these accelerators live
-    // in the application menu, so an app that omits this role cannot paste,
-    // copy or select-all with the keyboard at all. Everything still works with
-    // the mouse, which is how this passes unnoticed.
-    { role: 'editMenu' },
-    {
-      label: 'View',
-      submenu: [
-        { label: 'Toggle theme', accelerator: 'CmdOrCtrl+Shift+D', click: () => win?.webContents.send('menu', 'toggle-theme') },
-        { type: 'separator' },
-        { role: 'reload' }, { role: 'toggleDevTools' },
-        { type: 'separator' },
-        { role: 'resetZoom' }, { role: 'zoomIn' }, { role: 'zoomOut' },
-        { role: 'togglefullscreen' },
-      ],
-    },
-    { role: 'windowMenu' },
-  ]));
+  const { applicationMenuTemplate } = require('./lib/menu-template');
+  Menu.setApplicationMenu(Menu.buildFromTemplate(
+    applicationMenuTemplate(process.platform === 'darwin', {
+      openWorkspace: () => win?.webContents.send('menu', 'open-workspace'),
+      toggleTheme: () => win?.webContents.send('menu', 'toggle-theme'),
+    })));
 }
 
 // -------------------------------------------------------------------- ipc

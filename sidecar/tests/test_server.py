@@ -15,11 +15,13 @@ import threading
 import urllib.error
 import urllib.request
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from pipeline import config
 from pipeline import server as srv
+from pipeline.canvas.client import AuthError, CanvasError
 from pipeline.canvas.spec import spec_from_assignment
 from pipeline.models import SubmissionUnit
 from pipeline.store import Store
@@ -486,14 +488,109 @@ def test_changing_the_key_restarts_a_running_opencode(live):
     assert state.server is None
 
 
-def test_saving_canvas_settings_does_not_restart_opencode(live):
+def test_saving_canvas_settings_does_not_restart_opencode(live, monkeypatch):
     """Only a key change needs a restart; a Canvas change must not kill a run."""
     base, state, _fake, _spec = live
     state.server = None
     state.settings.canvas_base_url = "https://school.instructure.com"
     state.settings.canvas_api_token = "tok"
+    accepted(monkeypatch)
     send(base, "/api/settings", {"canvas_base_url": "https://school.instructure.com"})
     assert state.server is None
+
+
+# ------------------------------------------------------- credential checks
+
+def accepted(monkeypatch) -> None:
+    """Make Canvas accept whatever token is offered."""
+    monkeypatch.setattr(srv, "CanvasClient", lambda *a, **k: SimpleNamespace(
+        get=lambda path: {"id": 7, "name": "Ada Lovelace"}))
+
+
+def rejects(monkeypatch, error) -> None:
+    def boom(*_a, **_k):
+        raise error
+    monkeypatch.setattr(srv, "CanvasClient", boom)
+
+
+def test_a_token_canvas_accepts_is_stored(live, monkeypatch):
+    base, _state, _fake, _spec = live
+    accepted(monkeypatch)
+    body = send(base, "/api/settings", {
+        "canvas_base_url": "https://school.instructure.com/",
+        "canvas_api_token": "tok-good",
+    })
+    assert body["canvas_configured"] is True, body
+    stored = config.get_secret("canvas_api_token")
+    assert stored == "tok-good", stored
+    assert config.get_secret("canvas_base_url") == "https://school.instructure.com"
+
+
+def test_a_token_canvas_rejects_is_not_stored(live, monkeypatch):
+    """The reason this exists.
+
+    "Connected" used to mean two non-empty strings, so a revoked or mistyped
+    token was reported as connected and then failed later, when the course list
+    silently came back empty.
+    """
+    base, _state, _fake, _spec = live
+    rejects(monkeypatch, AuthError("Canvas rejected the token (401) on GET /users/self."))
+    try:
+        send(base, "/api/settings", {
+            "canvas_base_url": "https://school.instructure.com",
+            "canvas_api_token": "tok-bad",
+        })
+        raise AssertionError("a rejected token should not save")
+    except urllib.error.HTTPError as exc:
+        assert exc.code == 401, exc.code
+        payload = json.loads(exc.read())
+        assert "rejected" in payload["error"].lower(), payload
+    # The decisive part: nothing was written, so a bad token cannot sit in the
+    # settings looking valid.
+    assert config.get_secret("canvas_api_token") != "tok-bad", \
+        "a rejected token was written to the secrets file anyway"
+    assert config.get_secret("canvas_base_url") != "https://school.instructure.com"
+
+
+def test_an_unreachable_canvas_is_reported_differently_from_a_rejection(live, monkeypatch):
+    """Different problem, different fix: no network is not a bad token."""
+    base, _state, _fake, _spec = live
+    rejects(monkeypatch, CanvasError("connection refused"))
+    try:
+        send(base, "/api/settings", {
+            "canvas_base_url": "https://school.instructure.com",
+            "canvas_api_token": "tok",
+        })
+        raise AssertionError("an unreachable Canvas should not save")
+    except urllib.error.HTTPError as exc:
+        assert exc.code == 502, exc.code
+        payload = json.loads(exc.read())
+        assert "could not reach canvas" in payload["error"].lower(), payload
+
+
+def test_validating_one_credential_checks_the_pair(live, monkeypatch):
+    """Changing only the URL is still checked against the stored token.
+
+    Otherwise a typo in the URL saves cleanly and fails on the next request.
+    """
+    base, state, _fake, _spec = live
+    state.settings.canvas_base_url = "https://school.instructure.com"
+    state.settings.canvas_api_token = "tok-stored"
+    accepted(monkeypatch)
+    send(base, "/api/settings", {"canvas_base_url": "https://new.instructure.com"})
+    assert config.get_secret("canvas_base_url") == "https://new.instructure.com"
+
+
+def test_the_openrouter_key_is_not_validated_against_canvas(live, monkeypatch):
+    """Saving a model key must not require Canvas to be reachable.
+
+    They are unrelated credentials, and making one depend on the other would
+    mean you cannot configure a model while Canvas is down.
+    """
+    base, _state, _fake, _spec = live
+    rejects(monkeypatch, CanvasError("connection refused"))
+    body = send(base, "/api/settings", {"openrouter_api_key": "sk-or-abc"})
+    assert body["model_key_configured"] is True, body
 
 
 def test_tests_never_write_to_the_developers_real_secrets(live, tmp_path):

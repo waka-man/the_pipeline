@@ -17,6 +17,12 @@ on:
           - mac-arm64
           - mac-x64
 
+# The bundled agent runtime. Declared once here so the build job and the
+# notarize job cannot ship different builds of the same release, which is a
+# duplication no test should have to police.
+env:
+  OPENCODE_VERSION: "1.18.35"
+
 permissions:
   contents: write
 
@@ -118,9 +124,6 @@ jobs:
             echo "::error::could not fetch opencode; refusing to publish a release that needs a separate install"
             exit 1
           fi
-        env:
-          OPENCODE_VERSION: "1.18.35"
-
       - name: Smoke-test the bundled opencode
         if: steps.opencode.outputs.present == 'true'
         shell: bash
@@ -201,10 +204,6 @@ jobs:
           python-version: "3.12"
       - name: Build the signed and notarized dmg
         env:
-          # Must match the build job. A notarized release built against a
-          # different runtime than the installer it accompanies is exactly the
-          # kind of drift nobody notices until a grade does not reproduce.
-          OPENCODE_VERSION: "1.18.35"
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}

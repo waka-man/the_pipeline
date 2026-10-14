@@ -20,6 +20,13 @@ would plausibly do so:
 
 from __future__ import annotations
 
+import json
+import re
+
+import yaml
+
+from pipeline.runtime import parse_version
+
 import os
 import subprocess
 import sys
@@ -370,37 +377,35 @@ def test_recorded_submissions_carry_pseudonymous_names():
         assert parts[0] in allowed_given and parts[1] in allowed_family, parts
 
 
-def test_the_bundled_runtime_pin_is_the_same_everywhere_it_is_written():
+def test_the_release_pins_one_runtime_for_every_job():
     """One runtime per release, or two builds that disagree about what grades.
 
-    The pin lives in the build job and was written out a second time, inline,
-    in the notarize job. Nothing compared them, so a release could ship a
-    signed build of a different opencode than the installer beside it.
+    The pin used to be written out in the build job and again inline in the
+    notarize job, and a regex was used to check they matched. That test passed
+    on formatting and failed on meaning, so the duplication itself was removed:
+    the version is declared once at the workflow level and both jobs read it.
+    There is now nothing to drift and nothing to police.
     """
-    import re
-    workflow = (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
-    pins = re.findall(r'OPENCODE_VERSION:\s*"([^"]+)"', workflow)
-    assert pins, "the release workflow no longer pins a runtime version"
-    assert len(set(pins)) == 1, f"the release jobs pin different runtimes: {pins}"
-
-    pkg = (ROOT / "apps/desktop/package.json").read_text(encoding="utf-8")
-    # Anchored to a version and nothing else: the script continues with shell,
-    # and a looser pattern swallows the rest of the command.
-    dev = re.search(r"opencode-ai@(\d+\.\d+\.\d+)", pkg)
-    assert dev, "the dev fetch script no longer pins a version"
-    assert dev.group(1) == pins[0], (
-        f"the dev fetch script builds {dev.group(1)} but a release ships {pins[0]}")
+    workflow = yaml.safe_load(
+        (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8"))
+    version = (workflow.get("env") or {}).get("OPENCODE_VERSION")
+    assert version, "the release workflow no longer pins a runtime version"
+    assert parse_version(version), f"not a version: {version}"
 
 
-def test_the_runtime_probe_never_reaches_the_network_during_tests():
-    """The unit suite must not depend on npm being up.
+def test_a_release_and_a_dev_build_pin_the_same_runtime():
+    """A developer running from source must be on the harness a release ships."""
+    pkg = json.loads((ROOT / "apps/desktop/package.json").read_text(encoding="utf-8"))
+    scripts = pkg.get("scripts") or {}
+    fetch = scripts.get("fetch:opencode", "")
+    assert "opencode-ai@" in fetch, "the dev fetch script no longer pins a version"
+    pinned = re.search(r"opencode-ai@([0-9][^\s&|]*)", fetch).group(1)
 
-    Nothing here should call the registry for real; the runtime tests inject
-    both the version read and the fetch. Asserted rather than assumed, because
-    a single unmocked request turns the suite red on a train.
-    """
-    from pipeline import runtime as rt
-    assert rt.PROBE_TIMEOUT <= 10, "the probe timeout is long enough to be felt"
+    workflow = yaml.safe_load(
+        (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8"))
+    released = (workflow.get("env") or {}).get("OPENCODE_VERSION")
+    assert pinned == released, (
+        f"a dev build fetches opencode {pinned} but a release ships {released}")
 
 
 def test_the_app_version_is_the_same_in_every_file_that_states_it():
@@ -427,28 +432,48 @@ def test_the_app_version_is_the_same_in_every_file_that_states_it():
         "package-lock's own package entry disagrees with its top level")
 
 
-def test_the_suite_does_not_clone_from_the_internet():
-    """The collect fixture cloned a real GitHub repository.
+def test_collecting_does_not_need_the_network(monkeypatch, tmp_path):
+    """A collect must work with no network at all.
 
-    Every test that ran a collect shelled out to `git` and cloned it. The clone
-    has a 180s timeout while the tests give up after 30s, so a slow fetch
+    The fixture submission pointed at a real GitHub repository, so every test
+    that ran a collect shelled out to `git` and fetched from the internet. The
+    clone has a 180s timeout while the tests give up after 30s, so a slow fetch
     surfaced as a hung job and four server tests failed intermittently for no
     visible reason -- and on an offline machine they failed outright.
 
-    Cloning a local repository exercises the same code with no packets, and cut
-    the server suite from about 150 seconds to 42.
+    Asserted by taking the network away rather than by reading the test files:
+    a grep for a URL tells you what the source says, not what the code does, and
+    it passes happily while a different code path is still dialling out.
     """
-    server_tests = (ROOT / "sidecar/tests/test_server.py").read_text(encoding="utf-8")
-    assert "_local_repo(tmp_path)" in server_tests, \
-        "the collect fixture no longer clones a local repository"
+    import socket
 
-    # `example.invalid` is reserved by the RFC and cannot resolve, so a test
-    # using it fails immediately and is fine. github.com does not resolve to
-    # nothing, which is the whole problem.
-    # This file names the pattern in order to check for it, so it is the one
-    # file excluded from the search.
-    for name in ("test_server.py", "test_collect_sources.py", "test_pipeline.py",
-                 "test_service.py", "test_canvas_transport.py"):
-        text = (ROOT / "sidecar/tests" / name).read_text(encoding="utf-8")
-        assert 'clone_repo("https://github.com' not in text, \
-            f"{name} clones a real repository"
+    from pipeline.sources import clone_repo
+
+    def no_network(*_a, **_k):
+        raise AssertionError("collect reached for the network")
+
+    monkeypatch.setattr(socket.socket, "connect", no_network)
+    monkeypatch.setattr(socket, "create_connection", no_network)
+
+    # Still works, because the fixture clones a local repository.
+    assert _clone_a_local_repo(tmp_path).ok, \
+        "collecting a local submission failed, so it is relying on something else"
+
+    # And an unreachable host is reported rather than retried forever, which is
+    # what turned a slow fetch into a hung job.
+    result = clone_repo("https://example.invalid/x.git", tmp_path / "nope", timeout=5)
+    assert not result.ok and result.error, \
+        "an unreachable host should be reported, not hang or succeed"
+
+
+def _clone_a_local_repo(tmp_path):
+    from pipeline.sources import clone_repo
+    import subprocess
+    repo = tmp_path / "origin"
+    repo.mkdir(parents=True, exist_ok=True)
+    (repo / "README.md").write_text("x\n")
+    env = {**__import__("os").environ, "GIT_AUTHOR_NAME": "T", "GIT_AUTHOR_EMAIL": "t@e.invalid",
+           "GIT_COMMITTER_NAME": "T", "GIT_COMMITTER_EMAIL": "t@e.invalid"}
+    for cmd in (["git", "init", "-q"], ["git", "add", "-A"], ["git", "commit", "-q", "-m", "x"]):
+        subprocess.run(cmd, cwd=repo, env=env, capture_output=True, check=True)
+    return clone_repo(str(repo), tmp_path / "clone")

@@ -228,42 +228,60 @@ test('the fonts the stylesheet references are present', () => {
   }
 });
 
-test('every endpoint the renderer calls is implemented by the sidecar', () => {
-  const serverPath = path.join(__dirname, '..', '..', '..', 'sidecar', 'pipeline', 'server.py');
-  const server = fs.readFileSync(serverPath, 'utf8');
-  const preload = fs.readFileSync(path.join(__dirname, '..', 'preload.js'), 'utf8');
+// Curated rather than derived: re-implementing the renderer's own bridge here
+// would only prove the two lists match themselves.
+const REQUIRED_ROUTES = [
+  ['GET', '/api/status'],
+  ['POST', '/api/settings'],
+  ['GET', '/api/models'],
+  ['POST', '/api/models/select'],
+  ['GET', '/api/courses'],
+  ['GET', '/api/runtime'],
+  ['POST', '/api/runs'],
+  ['POST', '/api/runs/1/collect'],
+  ['POST', '/api/runs/1/grade'],
+  ['POST', '/api/runs/1/control'],
+  ['POST', '/api/submissions/1/stop'],
+  ['POST', '/api/runs/1/render'],
+  ['POST', '/api/runs/1/publish'],
+  ['PUT', '/api/reports/1'],
+];
 
-  // Curated rather than derived: re-implementing the router's own regex here
-  // would only prove the table matches itself.
-  const required = [
-    'GET', '/api/status',
-    'POST', '/api/settings',
-    'GET', '/api/models',
-    'POST', '/api/models/select',
-    'GET', '/api/courses',
-    'POST', '/api/runs',
-    'POST', '/api/runs/1/collect',
-    'POST', '/api/runs/1/grade',
-    'POST', '/api/runs/1/render',
-    'POST', '/api/runs/1/publish',
-    'PUT', '/api/reports/1',
-  ];
-  const esc = (x) => x.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').split('/').join('\\/');
-  for (let i = 0; i < required.length; i += 2) {
-    const verb = required[i];
-    const route = required[i + 1];
-    // Route patterns interleave named groups (`(?P<run_id>\\d+)`) where the
-    // caller substitutes an id, so compare the static prefix and tail.
-    const parts = route.split('1');
-    const prefix = esc(parts[0]);
-    const tail = parts.length > 1 ? esc(parts.slice(1).join('1')) : '';
-    const re = new RegExp(`Route_\\("${verb}",\\s*r"\\^${prefix}[^"]*${tail}\\$"`);
-    assert.ok(re.test(server), `sidecar has no ${verb} ${route}`);
-  }
+test('every endpoint the renderer calls is routed by the sidecar', () => {
+  // Matched against the sidecar's real route table, not by grepping server.py.
+  // A regex over the source says what the file contains; matching the compiled
+  // patterns says what the router will actually answer, so a renamed route or
+  // a typo in a pattern is caught here rather than by a user.
+  const { execFileSync, spawnSync } = require('node:child_process');
+  const repo = path.join(__dirname, '..', '..', '..');
 
-  // The event stream is not a Route_; it is handled before the router.
-  assert.ok(preload.includes('/api/events'));
-  assert.ok(server.includes('"/api/events"'));
+  // Whatever Python has the sidecar importable. CI installs it into the
+  // system interpreter; a developer usually has it in .venv. Guessing one
+  // breaks the other, and the failure looks like a missing route.
+  const candidates = [process.env.GRADING_PIPELINE_PYTHON, 'python3',
+    path.join(repo, '.venv', 'bin', 'python'),
+    path.join(repo, '.venv', 'Scripts', 'python.exe')].filter(Boolean);
+  const py = candidates.find((exe) => spawnSync(exe,
+    ['-c', 'import pipeline'], { cwd: repo }).status === 0);
+  assert.ok(py, `no interpreter can import the sidecar; tried: ${candidates.join(', ')}`);
+
+  const script = [
+    'import json, re, sys',
+    'sys.path.insert(0, "sidecar")',
+    'from pipeline.server import ROUTES',
+    'compiled = [(re.compile(r.pattern), r.method) for r in ROUTES]',
+    'missing = []',
+    'for verb, url in json.loads(sys.argv[1]):',
+    '    if not any(m == verb and rx.match(url) for rx, m in compiled):',
+    '        missing.append(f"{verb} {url}")',
+    'print(json.dumps(missing))',
+  ].join('\n');
+
+  const out = execFileSync(py, ['-c', script, JSON.stringify(REQUIRED_ROUTES)],
+    { cwd: repo, encoding: 'utf8' });
+  const missing = JSON.parse(out);
+  assert.deepStrictEqual(missing, [],
+    'the sidecar does not route: ' + missing.join(', '));
 });
 
 /* --------------------------------------------------------------- edit menu */
@@ -311,13 +329,23 @@ test('nothing is offered where there is nothing to edit', () => {
     true, 'a string form must not throw');
 });
 
-test('the application menu carries the Edit role', () => {
+test('the application menu carries the Edit role on every platform', () => {
   // On macOS the application menu is the only source of the Cmd+C/V/X/A
   // accelerators, and the default right-click menu is suppressed along with
-  // them. Without this role neither works.
-  const main = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8');
-  assert.ok(/role: 'editMenu'/.test(main), 'no editMenu role in the application menu');
-  assert.ok(/'context-menu'/.test(main), 'no context-menu handler wired up');
+  // them, so without this role neither paste nor copy works by keyboard on a
+  // Mac while both work on Windows. The bug is invisible until someone tries.
+  const { applicationMenuTemplate } = require(path.join(__dirname, '..', 'lib', 'menu-template'));
+  for (const [platform, isMac] of [['mac', true], ['windows', false]]) {
+    const roles = applicationMenuTemplate(isMac, {}).map((m) => m.role || m.label);
+    assert.ok(roles.includes('editMenu'), `no editMenu on ${platform}: ${JSON.stringify(roles)}`);
+  }
+  // macOS gets the app menu and a close button; other platforms get quit.
+  const mac = applicationMenuTemplate(true, {});
+  assert.strictEqual(mac[0].role, 'appMenu');
+  assert.ok(mac.find((m) => m.label === 'File').submenu.some((i) => i.role === 'close'));
+  const win = applicationMenuTemplate(false, {});
+  assert.strictEqual(win[0].label, 'File');
+  assert.ok(win.find((m) => m.label === 'File').submenu.some((i) => i.role === 'quit'));
 });
 
 console.log(`\n${passed} passed, ${failures.length} failed\n`);

@@ -24,7 +24,7 @@ from typing import Any, Callable
 from urllib.parse import parse_qs, urlparse
 
 from . import config
-from .canvas.client import CanvasClient, CanvasError
+from .canvas.client import AuthError, CanvasClient, CanvasError
 from .canvas.collect import bootstrap_run, collect_sources
 from .canvas.spec import manual_only_criteria
 from .grading.runner import Grader, OpenCodeServer
@@ -562,11 +562,46 @@ def op_status(state: AppState) -> dict[str, Any]:
     }
 
 
+def check_canvas_credentials(base_url: str, token: str) -> dict[str, Any]:
+    """Ask Canvas whether these credentials work, before they are stored.
+
+    "Connected" used to mean two non-empty strings, so a revoked or mistyped
+    token was reported as connected and then failed much later, when the course
+    list silently came back empty. Canvas answers immediately for the identity
+    behind a token, so there is nothing to gain by deferring the answer.
+
+    Raises ApiError with the reason. A rejection and an unreachable host are
+    different problems with different fixes, so they are reported differently.
+    """
+    try:
+        # Inside the try: the constructor itself raises AuthError when either
+        # half is missing, and that is the same "no, this does not work" answer
+        # rather than an unexplained 500.
+        client = CanvasClient(base_url, token, timeout=30, max_attempts=2)
+        me = client.get("/users/self")
+    except AuthError as exc:
+        raise ApiError(f"Canvas rejected that token. {exc}", 401)
+    except CanvasError as exc:
+        raise ApiError(f"Could not reach Canvas at {base_url}: {exc}", 502)
+    except Exception as exc:
+        raise ApiError(f"Could not reach Canvas at {base_url}: {exc}", 502)
+    return me if isinstance(me, dict) else {}
+
+
 def op_save_settings(state: AppState, body: dict[str, Any]) -> dict[str, Any]:
-    if body.get("canvas_base_url"):
-        config.set_secret("canvas_base_url", str(body["canvas_base_url"]).rstrip("/"))
-    if body.get("canvas_api_token"):
-        config.set_secret("canvas_api_token", str(body["canvas_api_token"]))
+    # Canvas credentials are validated as a pair and stored only if Canvas
+    # accepts them, so a bad token can never sit in the settings looking valid.
+    if "canvas_base_url" in body or "canvas_api_token" in body:
+        base_url = str(body.get("canvas_base_url")
+                       or state.settings.canvas_base_url or "").rstrip("/")
+        token = str(body.get("canvas_api_token")
+                    or state.settings.canvas_api_token or "")
+        if base_url and token:
+            check_canvas_credentials(base_url, token)
+        if body.get("canvas_base_url"):
+            config.set_secret("canvas_base_url", base_url)
+        if body.get("canvas_api_token"):
+            config.set_secret("canvas_api_token", token)
     if "openrouter_api_key" in body:
         key = str(body["openrouter_api_key"]).strip()
         if key:
