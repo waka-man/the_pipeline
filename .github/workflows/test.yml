@@ -212,19 +212,11 @@ jobs:
           # left out of build.files makes the first require throw, which on macOS
           # happens before the sidecar is spawned: the app looks like it started
           # and then nothing happens at all.
-          node -e "
-            const asar = require('@electron/asar');
-            const files = asar.listPackage('dist/linux-unpacked/resources/app.asar')
-              .map((f) => f.replace(/\\\\/g, '/'));
-            const needed = ['/lib/menu-template.js', '/lib/edit-menu.js',
-                            '/main.js', '/preload.js'];
-            const missing = needed.filter((m) => !files.includes(m));
-            if (missing.length) {
-              console.error('packaged app is missing: ' + missing.join(', '));
-              process.exit(1);
-            }
-            console.log('every main-process module is packaged');
-          "
+          # A standalone script rather than inline node: nested quoting through
+          # YAML and bash loses its shape, and a check that reads as broken is a
+          # check nobody trusts. Takes the asar path so it is not Linux-only.
+          node ../../scripts/check_packaged_app.js \
+            "dist/linux-unpacked/resources/app.asar"
 
       - name: The packaged app serves the UI
         shell: bash
