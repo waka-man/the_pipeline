@@ -193,6 +193,9 @@ jobs:
       # shows up.
       - name: The packaged renderer is readable by the sidecar
         working-directory: apps/desktop
+        # bash explicitly: this job now runs on Windows too, where the default
+        # shell is PowerShell and neither `test -f` nor /tmp exist.
+        shell: bash
         run: |
           npm ci
           # npx ignores --prefix for locating package.json, so this has to run
@@ -209,12 +212,19 @@ jobs:
           # left out of build.files makes the first require throw, which on macOS
           # happens before the sidecar is spawned: the app looks like it started
           # and then nothing happens at all.
-          npx asar list dist/linux-unpacked/resources/app.asar > /tmp/asar.txt
-          for m in lib/menu-template.js lib/edit-menu.js main.js preload.js; do
-            grep -qx "/$m" /tmp/asar.txt || {
-              echo "packaged app is missing $m"; exit 1; }
-          done
-          echo "every main-process module is packaged"
+          node -e "
+            const asar = require('@electron/asar');
+            const files = asar.listPackage('dist/linux-unpacked/resources/app.asar')
+              .map((f) => f.replace(/\\\\/g, '/'));
+            const needed = ['/lib/menu-template.js', '/lib/edit-menu.js',
+                            '/main.js', '/preload.js'];
+            const missing = needed.filter((m) => !files.includes(m));
+            if (missing.length) {
+              console.error('packaged app is missing: ' + missing.join(', '));
+              process.exit(1);
+            }
+            console.log('every main-process module is packaged');
+          "
 
       - name: The packaged app serves the UI
         shell: bash
