@@ -266,5 +266,59 @@ test('every endpoint the renderer calls is implemented by the sidecar', () => {
   assert.ok(server.includes('"/api/events"'));
 });
 
+/* --------------------------------------------------------------- edit menu */
+
+const { editMenuTemplate } = require(path.join(__dirname, '..', 'lib', 'edit-menu'));
+
+test('the right-click menu offers paste in an empty field', () => {
+  // The reported bug: `editFlags` is an object of booleans, not an array, so
+  // calling .includes on it threw in the main process and every right-click
+  // produced an error dialog instead of a menu.
+  const items = editMenuTemplate({
+    isEditable: true,
+    editFlags: { canPaste: true, canSelectAll: true },
+  });
+  const roles = items.map((i) => i.role || i.type);
+  assert.ok(roles.includes('paste'), `no paste: ${JSON.stringify(roles)}`);
+  assert.ok(!roles.includes('cut'), 'offers cut on an empty field');
+  assert.ok(!roles.includes('copy'), 'offers copy on an empty field');
+  assert.ok(roles.includes('selectAll'), 'no select-all');
+});
+
+test('the right-click menu offers every edit action on a selection', () => {
+  const items = editMenuTemplate({
+    isEditable: true,
+    editFlags: { canCut: true, canCopy: true, canPaste: true, canSelectAll: true },
+  });
+  const roles = items.map((i) => i.role || i.type);
+  for (const want of ['cut', 'copy', 'paste', 'selectAll']) {
+    assert.ok(roles.includes(want), `no ${want}: ${JSON.stringify(roles)}`);
+  }
+});
+
+test('nothing is offered where there is nothing to edit', () => {
+  // Not editable: the caller leaves the default context menu alone rather than
+  // replacing it with an empty one.
+  assert.deepStrictEqual(
+    editMenuTemplate({ isEditable: false, editFlags: { canPaste: true } }), []);
+  // Editable but nothing available, and malformed input of every shape. A
+  // right-click must never throw: an exception here is an uncaught error in the
+  // main process, which is a dialog rather than a missing menu.
+  assert.deepStrictEqual(editMenuTemplate({ isEditable: true, editFlags: {} }), []);
+  assert.deepStrictEqual(editMenuTemplate({ isEditable: true }), []);
+  assert.deepStrictEqual(editMenuTemplate(null), []);
+  assert.deepStrictEqual(editMenuTemplate({ isEditable: true, editFlags: 'paste' }) !== null,
+    true, 'a string form must not throw');
+});
+
+test('the application menu carries the Edit role', () => {
+  // On macOS the application menu is the only source of the Cmd+C/V/X/A
+  // accelerators, and the default right-click menu is suppressed along with
+  // them. Without this role neither works.
+  const main = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8');
+  assert.ok(/role: 'editMenu'/.test(main), 'no editMenu role in the application menu');
+  assert.ok(/'context-menu'/.test(main), 'no context-menu handler wired up');
+});
+
 console.log(`\n${passed} passed, ${failures.length} failed\n`);
 process.exit(failures.length ? 1 : 0);

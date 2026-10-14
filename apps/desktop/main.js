@@ -338,17 +338,10 @@ async function createWindow() {
  * offers Paste but not Cut.
  */
 function attachContextMenu(window) {
+  const { editMenuTemplate } = require('./lib/edit-menu');
   window.webContents.on('context-menu', (_event, params) => {
-    if (!params || !params.isEditable) return;   // let the default handle the rest
-    const flags = params.editFlags || [];
-    const offers = (flag) => flags.includes(flag);
-    const items = [];
-    if (offers('cut')) items.push({ role: 'cut', label: 'Cut' });
-    if (offers('copy')) items.push({ role: 'copy', label: 'Copy' });
-    if (offers('paste')) items.push({ role: 'paste', label: 'Paste' });
-    if (items.length) items.push({ type: 'separator' });
-    if (offers('selectAll')) items.push({ role: 'selectAll', label: 'Select All' });
-    if (!items.length) return;
+    const items = editMenuTemplate(params);
+    if (!items.length) return;   // not editable, or nothing to offer
     Menu.buildFromTemplate(items).popup({ window });
   });
 }

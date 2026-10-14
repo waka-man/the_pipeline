@@ -1440,18 +1440,6 @@ await test('a rejected course request says why instead of showing nothing', asyn
       `the status code was dropped, which is the part that says the token was rejected: ${toastText}`);
 });
 
-await test('the application menu carries the Edit role', async () => {
-    const main = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8');
-    // On macOS the application menu is the only source of the Cmd+C/V/X/A
-    // accelerators. Without this role paste does nothing, and right-click does
-    // nothing either, because the default Edit context menu goes with it.
-    assert.match(main, /role: 'editMenu'/,
-      'no editMenu role: the keyboard accelerators for paste and copy are unbound');
-    // Right-click is handled explicitly rather than left to the default, which
-    // is not reliably present and is not the app's to rely on.
-    assert.match(main, /on\('context-menu'/, 'no context-menu handler for text fields');
-});
-
 await test('no handler threw while every button was clicked', () => {
     assert.deepStrictEqual(base.window.__errs, [],
       `uncaught in renderer:\n  ${base.window.__errs.join('\n  ')}`);

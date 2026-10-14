@@ -35,7 +35,10 @@ module.exports = [
   },
   js.configs.recommended,
   {
-    files: ['main.js', 'preload.js', 'test/**/*.js', 'eslint.config.js'],
+    // lib/ holds pure main-process helpers, kept separate from main.js so they
+    // can be unit tested: requiring main.js pulls in electron, which cannot
+    // load outside an Electron process.
+    files: ['main.js', 'preload.js', 'lib/**/*.js', 'test/**/*.js', 'eslint.config.js'],
     languageOptions: {
       ecmaVersion: 2024,
       sourceType: 'commonjs',
