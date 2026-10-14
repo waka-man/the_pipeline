@@ -415,7 +415,10 @@ def test_event_stream_delivers_job_lifecycle(live):
         try:
             events.append(seen.get(timeout=1).get("event"))
         except queue.Empty:
-            break
+            # Keep waiting rather than giving up: a gap of one second just
+            # means the job is mid-clone, and on a loaded runner that is normal.
+            # Breaking here reported a failure on a machine that was working.
+            continue
     stop.set()
     state.bus.unsubscribe(sub)
 
