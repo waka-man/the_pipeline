@@ -477,3 +477,32 @@ def _clone_a_local_repo(tmp_path):
     for cmd in (["git", "init", "-q"], ["git", "add", "-A"], ["git", "commit", "-q", "-m", "x"]):
         subprocess.run(cmd, cwd=repo, env=env, capture_output=True, check=True)
     return clone_repo(str(repo), tmp_path / "clone")
+
+
+def test_every_endpoint_the_renderer_calls_is_routed():
+    """A renamed route is a broken button, and nothing else notices.
+
+    Matched against the compiled route table rather than by grepping server.py,
+    so it reports what the router answers instead of what the file contains.
+    This lives here rather than in the desktop suite because it needs the
+    sidecar importable, and only the Python jobs guarantee that.
+    """
+    import re
+
+    from pipeline.server import ROUTES
+
+    preload = (ROOT / "apps/desktop/preload.js").read_text(encoding="utf-8")
+    calls = re.findall(r"req\('(GET|POST|PUT|DELETE)',\s*[`']([^`']+)", preload)
+
+    # The renderer builds paths with template literals; substitute something
+    # plausible so the compiled patterns are exercised rather than read.
+    sample = lambda u: re.sub(r"\$\{[^}]+\}", "1", u)
+    compiled = [(re.compile(r.pattern), r.method) for r in ROUTES]
+
+    unrouted = [
+        f"{verb} {url}"
+        for verb, url in calls
+        if not any(m == verb and rx.match(sample(url)) for rx, m in compiled)
+    ]
+    assert not unrouted, "the sidecar does not route: " + ", ".join(sorted(unrouted))
+    assert len(calls) >= 15, f"only found {len(calls)} calls; the pattern is wrong"

@@ -228,62 +228,6 @@ test('the fonts the stylesheet references are present', () => {
   }
 });
 
-// Curated rather than derived: re-implementing the renderer's own bridge here
-// would only prove the two lists match themselves.
-const REQUIRED_ROUTES = [
-  ['GET', '/api/status'],
-  ['POST', '/api/settings'],
-  ['GET', '/api/models'],
-  ['POST', '/api/models/select'],
-  ['GET', '/api/courses'],
-  ['GET', '/api/runtime'],
-  ['POST', '/api/runs'],
-  ['POST', '/api/runs/1/collect'],
-  ['POST', '/api/runs/1/grade'],
-  ['POST', '/api/runs/1/control'],
-  ['POST', '/api/submissions/1/stop'],
-  ['POST', '/api/runs/1/render'],
-  ['POST', '/api/runs/1/publish'],
-  ['PUT', '/api/reports/1'],
-];
-
-test('every endpoint the renderer calls is routed by the sidecar', () => {
-  // Matched against the sidecar's real route table, not by grepping server.py.
-  // A regex over the source says what the file contains; matching the compiled
-  // patterns says what the router will actually answer, so a renamed route or
-  // a typo in a pattern is caught here rather than by a user.
-  const { execFileSync, spawnSync } = require('node:child_process');
-  const repo = path.join(__dirname, '..', '..', '..');
-
-  // Whatever Python has the sidecar importable. CI installs it into the
-  // system interpreter; a developer usually has it in .venv. Guessing one
-  // breaks the other, and the failure looks like a missing route.
-  const candidates = [process.env.GRADING_PIPELINE_PYTHON, 'python3',
-    path.join(repo, '.venv', 'bin', 'python'),
-    path.join(repo, '.venv', 'Scripts', 'python.exe')].filter(Boolean);
-  const py = candidates.find((exe) => spawnSync(exe,
-    ['-c', 'import pipeline'], { cwd: repo }).status === 0);
-  assert.ok(py, `no interpreter can import the sidecar; tried: ${candidates.join(', ')}`);
-
-  const script = [
-    'import json, re, sys',
-    'sys.path.insert(0, "sidecar")',
-    'from pipeline.server import ROUTES',
-    'compiled = [(re.compile(r.pattern), r.method) for r in ROUTES]',
-    'missing = []',
-    'for verb, url in json.loads(sys.argv[1]):',
-    '    if not any(m == verb and rx.match(url) for rx, m in compiled):',
-    '        missing.append(f"{verb} {url}")',
-    'print(json.dumps(missing))',
-  ].join('\n');
-
-  const out = execFileSync(py, ['-c', script, JSON.stringify(REQUIRED_ROUTES)],
-    { cwd: repo, encoding: 'utf8' });
-  const missing = JSON.parse(out);
-  assert.deepStrictEqual(missing, [],
-    'the sidecar does not route: ' + missing.join(', '));
-});
-
 /* --------------------------------------------------------------- edit menu */
 
 const { editMenuTemplate } = require(path.join(__dirname, '..', 'lib', 'edit-menu'));
