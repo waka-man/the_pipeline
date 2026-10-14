@@ -165,12 +165,8 @@ jobs:
   # a sidecar shipped that imported fine and never started on a Mac, and this
   # job was green throughout.
   frozen-sidecar:
-    name: frozen sidecar (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest, macos-15-intel]
+    name: frozen sidecar
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -204,12 +200,7 @@ jobs:
           # Relative to this step's working-directory, which is apps/desktop.
           # An apps/desktop-prefixed path resolves to apps/desktop/apps/desktop.
           #
-          # Found by globbing rather than naming the directory: this job runs on
-          # three platforms and electron-builder writes linux-unpacked,
-          # win-unpacked and mac* respectively.
-          ASAR=$(ls -d dist/*/resources/app.asar | head -1) || {
-            echo "no built app found under dist/"; exit 1; }
-          RES=$(dirname "$ASAR")
+          RES=dist/linux-unpacked/resources
           test -f "$RES/app.asar.unpacked/renderer/index.html" || {
             echo "renderer is not unpacked: the sidecar cannot read it"; exit 1; }
           echo "renderer unpacked at $RES/app.asar.unpacked/renderer"
@@ -221,17 +212,13 @@ jobs:
           # A standalone script rather than inline node: nested quoting through
           # YAML and bash loses its shape, and a check that reads as broken is a
           # check nobody trusts. Takes the asar path so it is not Linux-only.
-          node ../../scripts/check_packaged_app.js "$ASAR"
+          node ../../scripts/check_packaged_app.js "$RES/app.asar"
 
       - name: The packaged app serves the UI
         shell: bash
         run: |
-          # Globbed, not named: linux-unpacked, win-unpacked and mac* are the
-          # three layouts electron-builder produces.
-          RES=$(ls -d apps/desktop/dist/*/resources | head -1)
+          RES=apps/desktop/dist/linux-unpacked/resources
           SIDECAR="$RES/sidecar/grading-pipeline-sidecar"
-          if [ "$RUNNER_OS" = "Windows" ]; then SIDECAR="$SIDECAR.exe"; fi
-          test -f "$SIDECAR" || { echo "no packaged sidecar at $SIDECAR"; exit 1; }
           GRADING_PIPELINE_HOME="$(mktemp -d)" \
           GRADING_PIPELINE_RENDERER="$PWD/$RES/app.asar.unpacked/renderer" \
             "$SIDECAR" > packaged.log 2>&1 &
@@ -274,6 +261,26 @@ jobs:
           curl -sf "http://127.0.0.1:$PORT/app/" | grep -qi "<html"
           kill $PID 2>/dev/null || true
           echo "frozen sidecar served the UI on $PORT"
+
+  # The freeze is platform-specific, and the sidecar shipped broken on a Mac for
+  # a week because this only ever ran on Linux. Deliberately minimal: freeze,
+  # import, start, call /health. No desktop build, no packaging checks, nothing
+  # with a platform assumption in it beyond the runner itself.
+  frozen-sidecar-macos:
+    name: frozen sidecar (macOS)
+    runs-on: macos-15-intel
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -e . pyinstaller
+
+      # build_sidecar.py runs --selftest (do the modules import?) and --smoke
+      # (does it start and answer?). The second is the one that catches a
+      # release nobody can launch.
+      - name: Freeze, import, and start it
+        run: python scripts/build_sidecar.py
 
   # An invalid workflow file does not produce a readable error. GitHub records a
   # stub run that fails in 0s with "likely failed because of a workflow file
