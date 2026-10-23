@@ -18,9 +18,12 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import json
+import os
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -54,6 +57,77 @@ collect_all = [
 
 def binary_path(output: Path) -> Path:
     return output / (f"{BINARY_NAME}.exe" if sys.platform == "win32" else BINARY_NAME)
+
+
+class MCPCheckFailed(RuntimeError):
+    """The packaged binary cannot serve the scorecard MCP tool."""
+
+
+def check_mcp(target: Path) -> None:
+    """Fail unless the packaged binary answers the MCP handshake.
+
+    Serving HTTP proves nothing about the other mode of the same binary. The
+    MCP server is the grader's only write path: when it cannot start, every
+    turn ends in "no scorecard" and the UI blames the model. This sends the
+    same messages opencode does, to the artifact that actually ships.
+    """
+    with tempfile.TemporaryDirectory(prefix="gp-mcp-") as tmp:
+        spec_file = Path(tmp) / "spec.json"
+        spec_file.write_text(
+            json.dumps({"tool_schema": {"type": "object"}}), encoding="utf-8"
+        )
+        requests = (
+            {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
+            {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}},
+        )
+        try:
+            proc = subprocess.run(
+                [str(target), "--mcp"],
+                input="".join(json.dumps(request) + "\n" for request in requests),
+                capture_output=True,
+                text=True,
+                timeout=120,
+                env={
+                    **os.environ,
+                    "GP_SPEC_PATH": str(spec_file),
+                    "GP_OUT_PATH": str(Path(tmp) / "out.json"),
+                    "GP_META_PATH": str(Path(tmp) / "meta.json"),
+                    # The point is that the bundle alone can serve this. An
+                    # inherited PYTHONPATH could silently supply the module from
+                    # the checkout and hide a build that ships without it.
+                    "PYTHONPATH": "",
+                },
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise MCPCheckFailed(
+                "the binary did not exit after stdin closed; it may be serving "
+                "HTTP instead of MCP"
+            ) from exc
+        if proc.returncode != 0:
+            raise MCPCheckFailed(f"exit {proc.returncode}\n{proc.stderr[-2000:]}")
+        responses: dict[int, dict] = {}
+        for line in proc.stdout.splitlines():
+            try:
+                message = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(message, dict) and isinstance(message.get("id"), int):
+                responses[message["id"]] = message
+        if "protocolVersion" not in (responses.get(1, {}).get("result") or {}):
+            raise MCPCheckFailed(
+                "initialize did not return a protocolVersion\n"
+                f"stdout={proc.stdout[:1000]!r}\n"
+                f"stderr={proc.stderr[:1000]!r}"
+            )
+        tools = (responses.get(2, {}).get("result") or {}).get("tools") or []
+        names = {tool.get("name") for tool in tools if isinstance(tool, dict)}
+        if "submit_scorecard" not in names:
+            raise MCPCheckFailed(
+                "tools/list did not advertise submit_scorecard "
+                f"(got {sorted(names)!r})\n"
+                f"stdout={proc.stdout[:1000]!r}\n"
+                f"stderr={proc.stderr[:1000]!r}"
+            )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -138,6 +212,13 @@ def main(argv: list[str] | None = None) -> int:
         print("smoke failed: the sidecar starts but does not serve", file=sys.stderr)
         return 1
     print("smoke ok")
+
+    try:
+        check_mcp(target)
+    except MCPCheckFailed as exc:
+        print(f"mcp check failed: {exc}", file=sys.stderr)
+        return 1
+    print("mcp ok")
     return 0
 
 

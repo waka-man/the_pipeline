@@ -9,7 +9,9 @@ Two launchers share this module:
 
 Both need identical behaviour, and the packaged app needs a way to check the
 binary works before it tries to use it. ``--selftest`` exits 0 without binding a
-port so the launcher can probe without a listen/dial race.
+port so the launcher can probe without a listen/dial race. ``--smoke`` starts
+the server and calls ``/health``; ``--mcp`` serves the scorecard tool on stdio,
+which is how opencode reaches it from a frozen build.
 """
 
 from __future__ import annotations
@@ -62,6 +64,20 @@ def smoke() -> int:
         httpd.shutdown()
 
 
+def mcp() -> int:
+    """Run the scorecard MCP server on stdio.
+
+    A frozen build has no interpreter to hand `mcp_server.py` to: the sidecar
+    binary *is* `sys.executable`, and the module lives inside the bundle rather
+    than at a path on disk. Re-entering the binary with `--mcp` is the only
+    portable way to give opencode a working stdio server, so this entry point
+    exists in both source and frozen runs.
+    """
+    from pipeline.grading.mcp_server import main as mcp_main
+
+    return mcp_main()
+
+
 def serve() -> int:
     """Bind a loopback port, announce it on stdout, then idle.
 
@@ -85,6 +101,8 @@ def main(argv: list[str] | None = None) -> int:
         return selftest()
     if args and args[0] == "--smoke":
         return smoke()
+    if args and args[0] == "--mcp":
+        return mcp()
     return serve()
 
 

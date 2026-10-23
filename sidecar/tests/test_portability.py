@@ -295,11 +295,16 @@ def test_table_pipes_are_escaped_for_every_platform():
 
 # --------------------------------------------------------- subprocess use
 
-def test_the_mcp_server_is_launched_with_the_running_interpreter(tmp_path, spec):
-    """A hardcoded "python" works on a dev's Linux box and nowhere else."""
+def test_the_written_mcp_command_matches_this_process(tmp_path, spec):
+    """The written command must be runnable on the machine running the app.
+
+    A hardcoded "python" works on a dev's Linux box and nowhere else; a frozen
+    build has no interpreter at all. This pins the wiring to `mcp_command`, and
+    the two tests below pin the shape of each branch without faking `sys.frozen`.
+    """
     import json
 
-    from pipeline.grading.runner import Grader
+    from pipeline.grading.runner import Grader, mcp_command
 
     class _Server:
         pass
@@ -309,9 +314,70 @@ def test_the_mcp_server_is_launched_with_the_running_interpreter(tmp_path, spec)
     path = grader._write_opencode_config(tmp_path / "ws", tmp_path / "spec.json",
                                         tmp_path / "out.json", tmp_path / "meta.json")
     command = json.loads(path.read_text())["mcp"]["grader"]["command"]
-    assert command[0] == sys.executable
-    assert command[0].endswith(".exe") == (os.name == "nt")
-    assert command[1].endswith("mcp_server.py")
+    assert command == mcp_command(sys.executable, ROOT / "sidecar")
+
+
+def test_the_written_command_follows_frozen_detection(tmp_path, spec, monkeypatch):
+    """The config must not hardcode the source-checkout form.
+
+    `mcp_command`'s two branches are tested directly below. This checks that the
+    config actually asks it, under the same `sys.frozen` signal a packaged run
+    presents, so a future refactor cannot quietly write an unexecutable path.
+    """
+    import json
+
+    from pipeline.grading.runner import Grader
+
+    class _Server:
+        pass
+
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    grader = Grader(_Server(), None, spec, run_id=1, run_dir=tmp_path,
+                    code_root=ROOT / "sidecar", python_exe=sys.executable)
+    path = grader._write_opencode_config(tmp_path / "ws", tmp_path / "spec.json",
+                                        tmp_path / "out.json", tmp_path / "meta.json")
+    command = json.loads(path.read_text())["mcp"]["grader"]["command"]
+    assert command == [sys.executable, "--mcp"]
+
+
+def test_a_source_checkout_runs_the_mcp_script_with_the_interpreter(tmp_path):
+    from pipeline.grading.runner import mcp_command
+
+    command = mcp_command(sys.executable, tmp_path, frozen=False)
+    assert command == [sys.executable,
+                       str(tmp_path / "pipeline" / "grading" / "mcp_server.py")]
+
+
+def test_a_frozen_build_reenters_the_binary_for_the_mcp_server(tmp_path):
+    """In a onefile build sys.executable is the sidecar, not an interpreter.
+
+    The module is inside the PyInstaller archive, so there is no script path to
+    hand to anything; the binary has to start itself with --mcp.
+    """
+    from pipeline.grading.runner import mcp_command
+
+    binary = tmp_path / "grading-pipeline-sidecar"
+    assert mcp_command(str(binary), tmp_path, frozen=True) == [str(binary), "--mcp"]
+
+
+def test_mcp_command_detects_whether_this_process_is_frozen(tmp_path):
+    from pipeline.grading.runner import mcp_command
+
+    expected = mcp_command(sys.executable, tmp_path,
+                           frozen=bool(getattr(sys, "frozen", False)))
+    assert mcp_command(sys.executable, tmp_path) == expected
+
+
+def test_the_entry_point_serves_mcp_instead_of_http(monkeypatch):
+    """--mcp must reach the stdio server and leave the sidecar HTTP path alone."""
+    import grading_sidecar
+    from pipeline.grading import mcp_server
+
+    ran = []
+    monkeypatch.setattr(mcp_server, "main", lambda: ran.append(True) or 0)
+
+    assert grading_sidecar.main(["--mcp"]) == 0
+    assert ran == [True]
 
 
 def test_git_is_optional_and_reported_rather_than_crashing(tmp_path):

@@ -98,6 +98,27 @@ def free_port() -> int:
         return int(s.getsockname()[1])
 
 
+def mcp_command(executable: str, code_root: Path, *,
+                frozen: bool | None = None) -> list[str]:
+    """How opencode should start the scorecard MCP server.
+
+    From a source checkout the module is a real file, so the running interpreter
+    can execute it. A frozen onefile build has neither: ``sys.executable`` is
+    the sidecar binary and ``pipeline/grading/mcp_server.py`` exists only inside
+    the PyInstaller archive. There, the binary re-enters itself with ``--mcp``.
+
+    ``frozen`` is a parameter rather than a bare ``sys.frozen`` read so both
+    branches can be tested without pretending the test process is packaged.
+    Passing ``None`` detects the current process.
+    """
+    if frozen is None:
+        frozen = bool(getattr(sys, "frozen", False))
+    if frozen:
+        return [executable, "--mcp"]
+    return [executable,
+            str(Path(code_root) / "pipeline" / "grading" / "mcp_server.py")]
+
+
 @dataclass
 class OpenCodeServer:
     """A headless opencode process, reachable over its HTTP API."""
@@ -395,8 +416,7 @@ class Grader:
             "mcp": {
                 MCP_SERVER_NAME: {
                     "type": "local",
-                    "command": [self.python_exe,
-                                str(self.code_root / "pipeline/grading/mcp_server.py")],
+                    "command": mcp_command(self.python_exe, self.code_root),
                     "enabled": True,
                     "environment": {
                         "GP_SPEC_PATH": str(spec_path),
