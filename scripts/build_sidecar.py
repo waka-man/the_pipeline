@@ -18,6 +18,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import importlib
 import json
 import os
 import shutil
@@ -61,6 +62,34 @@ def binary_path(output: Path) -> Path:
 
 class MCPCheckFailed(RuntimeError):
     """The packaged binary cannot serve the scorecard MCP tool."""
+
+
+def check_dependencies() -> None:
+    """Fail before freezing if a converter the app needs is not importable.
+
+    PyInstaller logs "Hidden import 'pymupdf' not found" and then exits 0, so a
+    release can build with no PDF support while every smoke test still passes.
+    That happened when pymupdf4llm 2.0 shipped as an empty shim: the package
+    installed, the import failed, and only a user uploading a PDF would notice.
+    Import the real entry points and prove the converter has its function.
+    """
+    missing = []
+    for name in ("fitz", "pymupdf", "pymupdf4llm", "docx", "html2text", "pydantic"):
+        try:
+            importlib.import_module(name)
+        except Exception as exc:
+            missing.append(f"{name}: {exc}")
+    if missing:
+        raise RuntimeError(
+            "missing runtime dependencies (PyInstaller would skip them):\n  "
+            + "\n  ".join(missing)
+        )
+    pymupdf4llm = importlib.import_module("pymupdf4llm")
+    if not callable(getattr(pymupdf4llm, "to_markdown", None)):
+        raise RuntimeError(
+            "pymupdf4llm has no to_markdown: the installed package is a "
+            "transition shim, not the converter"
+        )
 
 
 def check_mcp(target: Path) -> None:
@@ -148,6 +177,12 @@ def main(argv: list[str] | None = None) -> int:
             "  python -m pip install pyinstaller",
             file=sys.stderr,
         )
+        return 1
+
+    try:
+        check_dependencies()
+    except RuntimeError as exc:
+        print(exc, file=sys.stderr)
         return 1
 
     output: Path = args.output

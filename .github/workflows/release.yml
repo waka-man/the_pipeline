@@ -78,8 +78,15 @@ jobs:
       - name: Install the pipeline
         run: |
           python -m pip install --upgrade pip
-          pip install -e . pyinstaller
+          pip install -e ".[dev]" pyinstaller
           npm --prefix apps/desktop ci
+
+      # A tag can point at a commit whose CI is red, and this workflow does not
+      # wait for that workflow. Run the suite here too: the PyMuPDF 2.0 shim
+      # taught us that a release can build, smoke, and still ship without a
+      # converter, and the tests are what noticed.
+      - name: Test
+        run: python -m pytest sidecar/tests -q
 
       # Proves the frozen binary runs on this OS before it is wrapped. The
       # commonest packaging failure is a binary that imports fine and then dies

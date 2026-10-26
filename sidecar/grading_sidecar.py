@@ -21,8 +21,22 @@ import sys
 
 
 def selftest() -> int:
-    """Import everything the sidecar needs, then exit 0."""
+    """Import everything the sidecar needs, then exit 0.
+
+    PyMuPDF gets its own checks because it is the dependency that can be
+    "installed" and still absent: a transition release shipped an empty
+    pymupdf4llm, PyInstaller logged the missing hidden import and exited 0, and
+    the release had no PDF support. Importing the modules and the converter
+    entry point inside the frozen binary is what proves they were bundled.
+    """
     import pipeline.server  # noqa: F401
+    import fitz  # noqa: F401
+    import pymupdf  # noqa: F401
+    import pymupdf4llm
+
+    if not callable(getattr(pymupdf4llm, "to_markdown", None)):
+        print("selftest failed: pymupdf4llm has no to_markdown", file=sys.stderr)
+        return 1
     return 0
 
 

@@ -1,6 +1,6 @@
 [project]
 name = "grading-pipeline"
-version = "0.1.11"
+version = "0.1.12"
 description = "Collect, grade, review and publish Canvas submissions with agents."
 requires-python = ">=3.11"
 dependencies = [
@@ -8,7 +8,12 @@ dependencies = [
     "pyyaml>=6.0",
     "requests>=2.31",
     "html2text>=2024.2.26",
-    "pymupdf4llm>=0.0.17",
+    # PyMuPDF 2.0 moved pymupdf4llm inside pymupdf and left the standalone
+    # package as an empty shim that pulls in neither the converter nor fitz.
+    # The 1.x pair is what this code and the PyInstaller hooks are tested
+    # against; revisit together when adopting 2.x.
+    "pymupdf4llm>=0.0.17,<2",
+    "pymupdf>=1.24,<2",
     "python-docx>=1.1",
 ]
 
