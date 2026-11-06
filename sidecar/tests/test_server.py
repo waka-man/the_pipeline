@@ -1250,3 +1250,46 @@ def test_the_agent_log_file_is_trimmed(live):
     tail = path.read_text().splitlines()
     assert len(tail) <= srv.AGENT_LOG_LINES
     assert json.loads(tail[-1])["text"] == "n19999", "kept the wrong end"
+
+
+def _raw_get(base, path):
+    """GET without following redirects, so the status and Location are visible."""
+    import http.client
+    from urllib.parse import urlparse
+
+    parts = urlparse(base)
+    conn = http.client.HTTPConnection(parts.hostname, parts.port, timeout=10)
+    conn.request("GET", path)
+    response = conn.getresponse()
+    body = response.read()
+    headers = dict(response.getheaders())
+    conn.close()
+    return response.status, headers, body
+
+
+def test_the_root_redirects_to_the_ui(live, tmp_path, monkeypatch):
+    """Opening the bare host:port must not serve an unstyled, dead page.
+
+    index.html references its assets relatively, so at "/" the browser asks
+    for /styles.css and /app.js, which 404. The redirect makes relative
+    URLs resolve under /app/, which is what Electron loads directly.
+    """
+    renderer = tmp_path / "renderer"
+    renderer.mkdir()
+    (renderer / "index.html").write_text("<html></html>")
+    (renderer / "styles.css").write_text("body{}")
+    (renderer / "app.js").write_text("export {}")
+    monkeypatch.setattr(srv, "RENDERER_DIR", renderer)
+
+    base = live[0]
+    for path in ("/", "/app"):
+        status, headers, _ = _raw_get(base, path)
+        assert status == 302, (path, status)
+        assert headers["Location"] == "/app/"
+
+    status, _, body = _raw_get(base, "/app/?theme=dark")
+    assert status == 200 and body == b"<html></html>"
+    status, _, body = _raw_get(base, "/app/styles.css")
+    assert status == 200 and body == b"body{}"
+    status, _, body = _raw_get(base, "/app/app.js")
+    assert status == 200 and body == b"export {}"

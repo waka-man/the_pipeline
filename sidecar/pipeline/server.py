@@ -1500,7 +1500,20 @@ def make_handler(state: AppState):
             parsed = urlparse(self.path)
             if parsed.path == "/api/events":
                 return self._stream_events(state)
-            if parsed.path in ("/", "/app", "/app/"):
+            if parsed.path in ("/", "/app"):
+                # index.html references its assets relatively (styles.css,
+                # app.js), so serving it at "/" makes the browser request
+                # /styles.css and /app.js, which do not exist: an unstyled,
+                # dead page. Redirect to /app/ so relative URLs resolve.
+                # Electron already loads /app/; this matters for the browser
+                # (Docker) entry point at the bare host:port.
+                location = "/app/" + (f"?{parsed.query}" if parsed.query else "")
+                self.send_response(302)
+                self.send_header("Location", location)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
+            if parsed.path == "/app/":
                 asset = serve_static("index.html")
                 if asset:
                     return self._send(200, asset[0], asset[1])
