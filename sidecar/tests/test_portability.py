@@ -380,6 +380,31 @@ def test_the_entry_point_serves_mcp_instead_of_http(monkeypatch):
     assert ran == [True]
 
 
+def test_the_server_defaults_to_loopback_and_an_ephemeral_port(monkeypatch):
+    """Desktop behaviour must not change: the sidecar is a local child process."""
+    import grading_sidecar
+
+    monkeypatch.delenv("GRADING_PIPELINE_HOST", raising=False)
+    monkeypatch.delenv("GRADING_PIPELINE_PORT", raising=False)
+    assert grading_sidecar._serve_args() == ("127.0.0.1", 0)
+
+
+def test_the_server_can_be_published_on_a_fixed_port_for_docker(monkeypatch):
+    """Docker needs a fixed, reachable port; the env override provides it."""
+    import grading_sidecar
+
+    monkeypatch.setenv("GRADING_PIPELINE_HOST", "0.0.0.0")
+    monkeypatch.setenv("GRADING_PIPELINE_PORT", "8765")
+    assert grading_sidecar._serve_args() == ("0.0.0.0", 8765)
+
+
+def test_a_malformed_port_falls_back_to_ephemeral(monkeypatch):
+    import grading_sidecar
+
+    monkeypatch.setenv("GRADING_PIPELINE_PORT", "not-a-port")
+    assert grading_sidecar._serve_args() == ("127.0.0.1", 0)
+
+
 def test_git_is_optional_and_reported_rather_than_crashing(tmp_path):
     from pipeline.sources import clone_repo
     result = clone_repo("https://example.invalid/x.git", tmp_path / "clone", timeout=5)

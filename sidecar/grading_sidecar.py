@@ -17,7 +17,23 @@ which is how opencode reaches it from a frozen build.
 from __future__ import annotations
 
 import json
+import os
 import sys
+
+
+def _serve_args() -> tuple[str, int]:
+    """Host/port for the HTTP server, overridable for Docker.
+
+    Defaults preserve the Electron behaviour (loopback, ephemeral port). The
+    container sets GRADING_PIPELINE_HOST/PORT so the UI is reachable from the
+    host browser on a fixed port.
+    """
+    host = os.environ.get("GRADING_PIPELINE_HOST", "").strip() or "127.0.0.1"
+    try:
+        port = int(os.environ.get("GRADING_PIPELINE_PORT", "0") or "0")
+    except ValueError:
+        port = 0
+    return host, port
 
 
 def selftest() -> int:
@@ -93,7 +109,7 @@ def mcp() -> int:
 
 
 def serve() -> int:
-    """Bind a loopback port, announce it on stdout, then idle.
+    """Bind a port, announce it on stdout, then idle.
 
     The port is printed as one JSON line so the launcher can read it instead of
     scanning for a listening socket. Everything after that is a sleep loop: the
@@ -103,8 +119,9 @@ def serve() -> int:
 
     from pipeline.server import serve as _serve
 
-    httpd, port = _serve()
-    print(json.dumps({"port": port}), flush=True)
+    host, port = _serve_args()
+    httpd, bound = _serve(port, host)
+    print(json.dumps({"port": bound}), flush=True)
     while True:
         time.sleep(3600)
 

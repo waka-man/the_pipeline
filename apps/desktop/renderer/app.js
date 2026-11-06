@@ -30,6 +30,92 @@ function fatalEarly(err) {
 window.addEventListener('error', (e) => fatalEarly(e.error || e.message));
 window.addEventListener('unhandledrejection', (e) => fatalEarly(e.reason));
 
+/* Browser (Docker) fallback. Without Electron there is no preload script, so
+ * window.pipeline does not exist and the renderer would die here. The sidecar
+ * serves both this UI (/app/) and the API on one origin, so the same client
+ * contract as preload.js can be implemented with plain fetch + EventSource.
+ * Desktop-only actions (opening a host folder, restarting the sidecar) have
+ * no browser equivalent and degrade to no-ops: in Docker the workspaces live
+ * inside the container, and restart means restarting the container. */
+function installWebBridge() {
+  async function req(method, path, body) {
+    const res = await fetch(path, {
+      method,
+      headers: body ? { 'Content-Type': 'application/json' } : undefined,
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    const text = await res.text();
+    let data;
+    try { data = text ? JSON.parse(text) : null; } catch (_) { data = { error: text }; }
+    if (!res.ok) {
+      const err = new Error((data && data.error) || `${res.status} ${res.statusText}`);
+      err.status = res.status;
+      err.payload = data;
+      throw err;
+    }
+    return data;
+  }
+  window.pipeline = {
+    info: async () => ({ baseUrl: '', platform: 'web' }),
+    restartSidecar: async () => {
+      throw new Error('Restart is unavailable in the browser build. Restart the container instead.');
+    },
+    openPath: async () => {},
+    revealPath: async () => {},
+    onMenu: () => {},
+    api: {
+      status: () => req('GET', '/api/status'),
+      saveSettings: (b) => req('POST', '/api/settings', b),
+      models: () => req('GET', '/api/models'),
+      selectModel: (b) => req('POST', '/api/models/select', b),
+      courses: () => req('GET', '/api/courses'),
+      assignments: (id) => req('GET', `/api/courses/${id}/assignments`),
+      createRun: (b) => req('POST', '/api/runs', b),
+      runs: () => req('GET', '/api/runs'),
+      labelRun: (id, label) => req('PUT', `/api/runs/${id}`, { label }),
+      run: (id) => req('GET', `/api/runs/${id}`),
+      submissions: (id) => req('GET', `/api/runs/${id}/submissions`),
+      collect: (id, b) => req('POST', `/api/runs/${id}/collect`, b || {}),
+      grade: (id, b) => req('POST', `/api/runs/${id}/grade`, b || {}),
+      render: (id) => req('POST', `/api/runs/${id}/render`, {}),
+      publish: (id, b) => req('POST', `/api/runs/${id}/publish`, b),
+      control: (id, b) => req('POST', `/api/runs/${id}/control`, b),
+      agentLog: (row) => req('GET', `/api/reports/${row}/agent-log`),
+      stopSubmission: (row) => req('POST', `/api/submissions/${row}/stop`),
+      runtime: () => req('GET', '/api/runtime'),
+      checkRuntime: () => req('POST', '/api/runtime/check'),
+      updateRuntime: () => req('POST', '/api/runtime/update'),
+      report: (row) => req('GET', `/api/reports/${row}`),
+      saveReport: (row, markdown) => req('PUT', `/api/reports/${row}`, { markdown }),
+    },
+    events(onEvent, onError) {
+      let closed = false;
+      let source = null;
+      let retry = null;
+      const open = () => {
+        if (closed) return;
+        source = new EventSource('/api/events');
+        source.onmessage = (ev) => {
+          try { onEvent(JSON.parse(ev.data)); } catch (_) {}
+        };
+        source.onerror = () => {
+          if (closed) return;
+          if (source) source.close();
+          if (onError) onError();
+          retry = setTimeout(open, 2500);
+        };
+      };
+      open();
+      return () => {
+        closed = true;
+        if (retry) clearTimeout(retry);
+        if (source) source.close();
+      };
+    },
+  };
+}
+if (!window.pipeline) installWebBridge();
+
 const bridge = window.pipeline;
 if (!bridge || !bridge.api) {
   fatalEarly('The preload bridge did not load. Restart the app; if it persists ' +
@@ -264,7 +350,7 @@ function modelNote() {
     h('span', { class: 'model-pick-label' }, label),
     differs ? h('span', { class: 'chip', dataset: { tone: 'accent' } }, 'this run') : null,
     differs ? h('span', { class: 'model-pick-hint' }, '· saved default is '
-      + S.model.selected) : null);
+      + (S.model ? S.model.selected : 'none saved')) : null);
 }
 
 /* ------------------------------------------------------------------ views */

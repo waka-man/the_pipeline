@@ -68,6 +68,25 @@ Windows on ARM is not built.
 expected for an unsigned build and neither indicates a problem with the software.
 See [Signing](#signing) below.
 
+### Docker (recommended, any OS)
+
+One container, no signing, no per-arch installers, no Python install. The
+sidecar and the UI run in the container; you open it in your browser.
+
+```sh
+docker compose up --build
+# open http://127.0.0.1:8765/app/
+```
+
+- The port is bound to `127.0.0.1` only. The sidecar holds your Canvas token
+  and model key and has no login of its own, so never publish it on `0.0.0.0`.
+- Data (database, secrets, collected workspaces) lives in the named volume
+  `grading-data` and survives rebuilds. Remove it with
+  `docker compose down -v` only if you want a clean slate.
+- Needs Docker Desktop (macOS/Windows) or Docker Engine (Linux). Works on
+  Apple Silicon, Intel, and Windows/WSL2 alike — there is one image.
+- Without Docker, use the CLI or the desktop installer above.
+
 #### Installing on macOS
 
 Gatekeeper refuses an unsigned app outright, and the wording is alarming: *"is

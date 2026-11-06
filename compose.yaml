@@ -1,0 +1,17 @@
+services:
+  grading-pipeline:
+    build: .
+    image: grading-pipeline:latest
+    container_name: grading-pipeline
+    # Bound to loopback: the sidecar holds Canvas and model credentials and
+    # has no login of its own. Never publish it on 0.0.0.0.
+    ports:
+      - "127.0.0.1:8765:8765"
+    volumes:
+      # Database, secrets, and collected workspaces live here and survive
+      # image rebuilds and container removal.
+      - grading-data:/data
+    restart: unless-stopped
+
+volumes:
+  grading-data:

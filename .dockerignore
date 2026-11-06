@@ -1,0 +1,12 @@
+.git
+.venv
+**/__pycache__
+**/node_modules
+apps/desktop/dist
+apps/desktop/.opencode
+apps/desktop/resources
+data
+*.dmg
+*.AppImage
+*.deb
+*.exe
