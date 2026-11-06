@@ -128,6 +128,53 @@ def test_secrets_file_is_written_with_pinned_newlines(tmp_path, monkeypatch):
     assert b"\r\n" not in config.secrets_file().read_bytes()
 
 
+def _isolated_settings_env(tmp_path, monkeypatch):
+    """Point secrets at tmp_path and clear every credential env var."""
+    monkeypatch.setattr(config, "data_dir", lambda: tmp_path)
+    monkeypatch.setattr(config, "_keychain_get", lambda *a, **k: None)
+    for name in ("GRADING_PIPELINE_CANVAS_BASE_URL",
+                 "GRADING_PIPELINE_CANVAS_API_TOKEN",
+                 "CANVAS_BASE_URL", "CANVAS_API_TOKEN", "CANVAS_TOKEN",
+                 "OPENROUTER_API_KEY", "GRADING_PIPELINE_OPENROUTER_API_KEY"):
+        monkeypatch.delenv(name, raising=False)
+
+
+def test_credentials_come_from_the_environment(tmp_path, monkeypatch):
+    """Docker/headless mode: no Setup step, so env vars must be enough."""
+    _isolated_settings_env(tmp_path, monkeypatch)
+    monkeypatch.setenv("GRADING_PIPELINE_CANVAS_BASE_URL",
+                       "https://school.instructure.com/")
+    monkeypatch.setenv("GRADING_PIPELINE_CANVAS_API_TOKEN", "tok-env")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-env")
+
+    settings = config.Settings.load()
+    assert settings.canvas_base_url == "https://school.instructure.com"
+    assert settings.canvas_api_token == "tok-env"
+    assert settings.openrouter_api_key == "sk-or-env"
+    settings.check_canvas()  # must not raise
+
+
+def test_the_environment_wins_over_stored_secrets(tmp_path, monkeypatch):
+    _isolated_settings_env(tmp_path, monkeypatch)
+    monkeypatch.setattr(config, "_keychain_set", lambda *a, **k: False)
+    config.set_secret("canvas_api_token", "stored")
+    monkeypatch.setenv("GRADING_PIPELINE_CANVAS_API_TOKEN", "env-wins")
+
+    assert config.Settings.load().canvas_api_token == "env-wins"
+
+
+def test_missing_credentials_name_the_environment_variables(tmp_path, monkeypatch):
+    _isolated_settings_env(tmp_path, monkeypatch)
+    try:
+        config.Settings.load().check_canvas()
+    except RuntimeError as exc:
+        message = str(exc)
+    else:
+        raise AssertionError("check_canvas should have raised")
+    assert "GRADING_PIPELINE_CANVAS_BASE_URL" in message
+    assert "GRADING_PIPELINE_CANVAS_API_TOKEN" in message
+
+
 def test_a_written_report_round_trips_byte_for_byte(tmp_path):
     assignment = __import__("json").loads(
         (FIXTURES / "assignment_3130_46805.json").read_text())

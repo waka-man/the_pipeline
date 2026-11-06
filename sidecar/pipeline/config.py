@@ -351,10 +351,25 @@ class Settings:
 
     @classmethod
     def load(cls, model: str | None = None) -> "Settings":
+        # Environment wins over stored secrets: in Docker (and CI) the
+        # credentials arrive as env vars, not through the Settings step.
+        # GRADING_PIPELINE_* are the documented names; the bare uppercase
+        # names below (CANVAS_*, OPENROUTER_API_KEY) are also honoured via
+        # get_secret for compatibility.
         return cls(
-            canvas_base_url=get_secret("canvas_base_url") or "",
-            canvas_api_token=get_secret("canvas_api_token") or "",
-            openrouter_api_key=get_secret("openrouter_api_key") or "",
+            canvas_base_url=(
+                os.environ.get("GRADING_PIPELINE_CANVAS_BASE_URL", "").strip()
+                or get_secret("canvas_base_url") or ""
+            ).rstrip("/"),
+            canvas_api_token=(
+                os.environ.get("GRADING_PIPELINE_CANVAS_API_TOKEN", "").strip()
+                or get_secret("canvas_api_token") or ""
+            ),
+            openrouter_api_key=(
+                os.environ.get("OPENROUTER_API_KEY", "").strip()
+                or os.environ.get("GRADING_PIPELINE_OPENROUTER_API_KEY", "").strip()
+                or get_secret("openrouter_api_key") or ""
+            ),
             model=model,
             workers=int(os.environ.get("GRADING_PIPELINE_WORKERS", "3")),
         )
@@ -369,7 +384,13 @@ class Settings:
     def check_canvas(self) -> None:
         missing = [k for k in ("canvas_base_url", "canvas_api_token") if not getattr(self, k)]
         if missing:
+            hint = {
+                "canvas_base_url": "GRADING_PIPELINE_CANVAS_BASE_URL",
+                "canvas_api_token": "GRADING_PIPELINE_CANVAS_API_TOKEN",
+            }
+            expected = ", ".join(hint[k] for k in missing)
             raise RuntimeError(
                 "Missing Canvas credentials: " + ", ".join(missing) +
-                ". Set them in the app's Settings step."
+                f". Set {expected} in the environment, or set them in the "
+                "app's Settings step."
             )

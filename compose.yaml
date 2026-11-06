@@ -12,6 +12,15 @@ services:
       # image rebuilds and container removal.
       - grading-data:/data
     restart: unless-stopped
+    environment:
+      # Credentials. In the browser UI they can also be saved on the Setup
+      # step; env vars are the headless/Docker route and take precedence.
+      # Copy the values into a .env file next to this compose file, or
+      # export them before `docker compose up`. Free OpenRouter models
+      # work without a key.
+      GRADING_PIPELINE_CANVAS_BASE_URL: ${GRADING_PIPELINE_CANVAS_BASE_URL:-}
+      GRADING_PIPELINE_CANVAS_API_TOKEN: ${GRADING_PIPELINE_CANVAS_API_TOKEN:-}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
 
 volumes:
   grading-data:

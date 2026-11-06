@@ -80,6 +80,16 @@ docker compose up --build
 
 - The port is bound to `127.0.0.1` only. The sidecar holds your Canvas token
   and model key and has no login of its own, so never publish it on `0.0.0.0`.
+- Credentials via environment (the Setup step in the browser also works and
+  takes second place to env vars):
+  ```sh
+  export GRADING_PIPELINE_CANVAS_BASE_URL=https://school.instructure.com
+  export GRADING_PIPELINE_CANVAS_API_TOKEN=...   # Canvas user token
+  export OPENROUTER_API_KEY=...                  # optional for free models
+  docker compose up --build
+  ```
+  Without them the app starts but Canvas calls fail with a missing-credentials
+  error naming the exact variables.
 - Data (database, secrets, collected workspaces) lives in the named volume
   `grading-data` and survives rebuilds. Remove it with
   `docker compose down -v` only if you want a clean slate.
