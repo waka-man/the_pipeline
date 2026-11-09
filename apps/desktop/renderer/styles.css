@@ -975,30 +975,32 @@ body {
 .logview {
   display: flex;
   flex-direction: column;
-  gap: 1px;
+  gap: 5px;
   font-family: var(--mono);
-  font-size: 11.5px;
-  line-height: 1.5;
+  font-size: 12px;
+  line-height: 1.55;
 }
 
 .log-row {
   display: grid;
-  grid-template-columns: 58px auto 1fr auto;
-  gap: 8px;
-  align-items: baseline;
-  padding: 2px 6px;
-  border-radius: 4px;
+  grid-template-columns: 58px max-content 1fr auto;
+  gap: 4px 10px;
+  align-items: start;
+  padding: 4px 10px;
+  border-radius: 6px;
 }
 
 .log-t {
   color: var(--ink-3);
-  opacity: 0.6;
+  opacity: 0.7;
   font-variant-numeric: tabular-nums;
+  padding-top: 1px;
 }
 
 .log-tag {
   color: var(--accent);
   white-space: nowrap;
+  padding-top: 1px;
 }
 
 .log-text {
@@ -1010,9 +1012,10 @@ body {
 .log-detail {
   grid-column: 3 / -1;
   color: var(--flag);
-  opacity: 0.85;
+  opacity: 0.9;
   font-size: 11px;
   padding-left: 2px;
+  margin-top: 1px;
 }
 
 /* The thought process is the reason this panel exists, so it gets the most
@@ -1033,14 +1036,15 @@ body {
 
 .log-step .log-text {
   color: var(--ink-3);
-  opacity: 0.75;
-  font-size: 10.5px;
+  opacity: 0.8;
+  font-size: 11px;
 }
 
 /* A failure has to be the thing you notice. */
 .log-bad {
-  background: color-mix(in srgb, var(--flag) 14%, transparent);
-  outline: 1px solid color-mix(in srgb, var(--flag) 40%, transparent);
+  background: color-mix(in srgb, var(--flag) 13%, transparent);
+  outline: 1px solid color-mix(in srgb, var(--flag) 38%, transparent);
+  padding: 7px 10px;
 }
 .log-bad .log-tag { color: var(--flag); }
 
