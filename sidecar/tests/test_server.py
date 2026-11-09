@@ -896,6 +896,20 @@ def test_a_failed_turn_is_visible_and_says_whether_anything_follows(live):
     assert entry["retryable"] is False
 
 
+def test_a_rate_limited_turn_is_logged_as_retryable(live):
+    """A 429 must say so in the log instead of vanishing silently."""
+    _base, state, _fake, _spec = live
+    entry = state._agent_entry_for({
+        "type": "error",
+        "text": "Rate limit exceeded: free-models-per-day",
+        "state": {"status": "error", "http": 429},
+    })
+    assert entry["kind"] == "error"
+    assert "Rate limit exceeded" in entry["text"]
+    assert entry["retryable"] is True
+    assert entry["detail"] == "HTTP 429"
+
+
 def test_the_agent_log_polls_a_session_and_records_each_part_once(live):
     _base, state, _fake, _spec = live
 

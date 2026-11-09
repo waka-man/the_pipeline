@@ -28,7 +28,7 @@ from . import config
 from .canvas.client import AuthError, CanvasClient, CanvasError
 from .canvas.collect import bootstrap_run, collect_sources
 from .canvas.spec import manual_only_criteria
-from .grading.runner import Grader, OpenCodeServer
+from .grading.runner import Grader, OpenCodeServer, classify_failure
 from .models import SubmissionUnit
 from .report.render import render_report, report_filename
 from .store import Store
@@ -286,6 +286,21 @@ class AppState:
         if kind == "reasoning":
             text = (part.get("text") or "").strip()
             return {"kind": "think", "text": text} if text else None
+        if kind == "error":
+            # A failed turn (rate limit, out of credits) has no content to
+            # show, so without this the log goes silent exactly when the
+            # person needs to know why. The retry flag drives the
+            # "retrying / failed" tag in the renderer.
+            text = (part.get("text") or "").strip()
+            if not text:
+                return None
+            retryable, _reason = classify_failure(text)
+            entry: dict[str, Any] = {"kind": "error", "text": text,
+                                     "retryable": retryable}
+            status = (part.get("state") or {}).get("http")
+            if status:
+                entry["detail"] = f"HTTP {status}"
+            return entry
         if kind == "text":
             text = (part.get("text") or "").strip()
             return {"kind": "text", "text": text} if text else None

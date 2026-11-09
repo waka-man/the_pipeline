@@ -463,6 +463,20 @@ class OpenCodeServer:
                            if isinstance(v, (int, float))},
                 "reason": msg.get("finish"),
             })
+            error = msg.get("error") or {}
+            if error:
+                # A failed turn has no content to show, so without this the
+                # log goes silent exactly when the person needs to know why
+                # (a 429 rate limit, out of credits). Surfaced as an error
+                # part the poller renders as an error entry.
+                out.append({
+                    "id": f"{mid}:error", "type": "error",
+                    "text": error.get("message") or "the turn failed",
+                    "tool": "",
+                    "state": {"status": "error",
+                              "http": error.get("status")},
+                    "cost": None, "tokens": {}, "reason": None,
+                })
         return out
 
     def events(self, stop: threading.Event, out: queue.Queue,

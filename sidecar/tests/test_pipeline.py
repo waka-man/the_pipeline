@@ -700,6 +700,26 @@ def test_tool_parts_carry_v2_output():
     assert tool["state"]["output"] == "No files found"
 
 
+def test_failed_turns_surface_as_error_parts():
+    """A 429 turn has no content; without an error part the log stays silent."""
+    from pipeline.grading import runner
+
+    srv = runner.OpenCodeServer.__new__(runner.OpenCodeServer)
+    srv._messages = lambda session_id: [{
+        "id": "msg_a1", "type": "assistant",
+        "time": {"created": 2, "completed": 3},
+        "content": [], "finish": "error",
+        "error": {"type": "provider.rate-limit",
+                  "message": "Rate limit exceeded: free-models-per-day",
+                  "status": 429},
+    }]
+    parts = srv.parts("ses_1")
+    errors = [p for p in parts if p["type"] == "error"]
+    assert len(errors) == 1, parts
+    assert "Rate limit exceeded" in errors[0]["text"]
+    assert errors[0]["state"]["http"] == 429
+
+
 def test_only_the_openrouter_key_is_stored_and_nothing_else():
     """One provider key is now stored, to configure the bundled opencode.
 
