@@ -1265,6 +1265,32 @@ def test_a_stopped_row_is_not_graded_by_the_loop(live):
     assert remaining == [], remaining
 
 
+def test_grading_without_a_model_fails_cleanly_not_with_a_name_error(live, monkeypatch):
+    """Regression: the op_grade warm-up referenced a bare `settings` name."""
+    from pipeline.server import JobControl
+
+    base, state, _fake, _spec = live
+    send(base, "/api/runs", {"course_id": 3130, "assignment_id": 46805})
+    assert wait_for(lambda: state.store.progress(1).get("total") == 2)
+
+    class _Server:
+        def catalogue(self):
+            return {}
+
+    state.servers[str(state.settings.data)] = _Server()
+    monkeypatch.setattr(state, "ensure_server",
+                        lambda directory: state.servers[str(directory)])
+    # Run the job inline: asynchronously its error only reaches the log.
+    monkeypatch.setattr(
+        srv, "run_job",
+        lambda _state, _name, work: work(JobControl()))
+    try:
+        send(base, "/api/runs/1/grade", {})
+        raise AssertionError("grading without a model should fail")
+    except urllib.error.HTTPError as exc:
+        assert exc.code == 409, exc.code
+
+
 def test_deleting_a_run_removes_its_rows_and_its_folder(live, tmp_path):
     """Deleting the folder alone does nothing: the graded state is in the DB."""
     base, state, _fake, _spec = live

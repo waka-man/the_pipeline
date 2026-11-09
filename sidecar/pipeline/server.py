@@ -866,7 +866,7 @@ def op_grade(state: AppState, run_id: int, body: dict[str, Any]) -> dict[str, An
 
         # Warm one server so a missing binary fails before the job starts
         # rather than mid-cohort. Per-workspace servers start lazily.
-        state.ensure_server(str(settings.data))
+        state.ensure_server(str(state.settings.data))
         # A model chosen on the grade stage applies to this run and leaves the
         # saved default alone. The model on the setup page is a starting point,
         # not a lock: switching between a free model and a stronger one between
