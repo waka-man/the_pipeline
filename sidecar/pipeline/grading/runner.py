@@ -282,12 +282,18 @@ class OpenCodeServer:
         return self._base + "/api" + path
 
     def create_session(self, title: str, directory: str | None = None,
-                       model: str | None = None) -> dict[str, Any]:
+                       model: str | None = None,
+                       agent: str | None = None) -> dict[str, Any]:
         body: dict[str, Any] = {"title": title}
         if model:
             parts = model.split("/", 1)
             if len(parts) == 2:
                 body["model"] = {"id": parts[1], "providerID": parts[0]}
+        # v2 selects the agent at creation; a per-prompt agent field is
+        # ignored, so sessions created without it silently run as `build`
+        # and never hear about the scorecard tool.
+        if agent:
+            body["agent"] = agent
         r = self._request("POST", "/session", body, timeout=30)
         if not r.ok:
             raise RunnerError(f"create session failed: {r.status_code} {r.text[:200]}")
@@ -423,20 +429,28 @@ class OpenCodeServer:
                                 "reason": None})
                 elif "tool" in itype:
                     error = item.get("error")
+                    state = item.get("state") or {}
+                    output = state.get("output")
+                    if output is None:
+                        # v2 carries tool output as content blocks.
+                        output = "\n".join(
+                            block.get("text") or ""
+                            for block in (state.get("content") or [])
+                            if isinstance(block, dict))
                     out.append({
                         "id": item.get("id") or f"{mid}:{index}",
                         "type": "tool",
                         "text": "",
                         "tool": item.get("name") or item.get("tool") or "",
                         "state": {
-                            "title": item.get("title") or "",
-                            "input": item.get("input") or item.get("args") or {},
-                            "status": item.get("status") or (
+                            "title": item.get("title") or state.get("title") or "",
+                            "input": state.get("input") or item.get("input") or item.get("args") or {},
+                            "status": state.get("status") or item.get("status") or (
                                 "error" if error else "completed"),
-                            "output": str(item.get("output") or (
+                            "output": str(output or (
                                 (error or {}).get("message") if isinstance(error, dict)
                                 else "") or ""),
-                            "metadata": item.get("metadata") or {},
+                            "metadata": state.get("metadata") or item.get("metadata") or {},
                         },
                         "cost": None, "tokens": {}, "reason": None,
                     })
@@ -692,7 +706,8 @@ class Grader:
         srv = self._server(workspace)
         session = srv.create_session(
             f"{self.spec.title} — {unit.display_name} (attempt {attempt_no})",
-            directory=str(workspace), model=self.model or None)
+            directory=str(workspace), model=self.model or None,
+            agent=self.agent_name)
         session_id = session.get("id", "")
         # Recorded per submission so the retry loop can name the session it is
         # reporting on. It used to keep its own empty local, so every terminal
@@ -734,7 +749,8 @@ class Grader:
                                         budget=self.budget)
         session = srv.create_session(
             f"{self.spec.title} — {unit.display_name} (attempt {attempt_no}, reduced budget)",
-            directory=str(workspace), model=self.model or None)
+            directory=str(workspace), model=self.model or None,
+            agent=self.agent_name)
         self.store.finish_attempt(attempt_id, "running", session.get("id", ""))
         return srv.prompt(
             session.get("id", ""), message, system=system, agent=self.agent_name,

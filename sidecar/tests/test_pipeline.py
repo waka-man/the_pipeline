@@ -653,6 +653,53 @@ def test_steer_and_abort_use_the_v2_endpoints(monkeypatch):
     assert (calls[1][0], calls[1][1]) == ("POST", "/session/ses_1/interrupt")
 
 
+def test_create_session_selects_the_agent_and_model(monkeypatch):
+    """v2 selects agent and model at creation; per-prompt fields are ignored.
+
+    Recorded: a session created without `agent` runs as `build`, which never
+    hears about the scorecard tool.
+    """
+    srv, _Response = _v2_server(monkeypatch, iter([]))
+    calls = []
+
+    def fake_request(method, path, body=None, timeout=30):
+        calls.append((method, path, body))
+        return _Response(True, {"data": {"id": "ses_1", "agent": "grader",
+                                        "model": {"id": "m", "providerID": "p"}}})
+
+    srv._request = fake_request
+    session = srv.create_session(
+        "grading", "/tmp/ws", model="openrouter/m", agent="grader")
+    assert session["id"] == "ses_1"
+    assert calls[0][2] == {"title": "grading",
+                           "model": {"id": "m", "providerID": "openrouter"},
+                           "agent": "grader"}
+
+
+def test_tool_parts_carry_v2_output():
+    """Recorded v2 tool shape: output lives in state.content blocks."""
+    from pipeline.grading import runner
+
+    srv = runner.OpenCodeServer.__new__(runner.OpenCodeServer)
+    srv._messages = lambda session_id: [{
+        "id": "msg_a1", "type": "assistant",
+        "time": {"created": 2, "completed": 3},
+        "content": [{
+            "type": "tool", "id": "call-1", "name": "glob",
+            "state": {"status": "completed",
+                      "input": {"pattern": ".grading/**/*"},
+                      "content": [{"type": "text", "text": "No files found"}],
+                      "metadata": {"count": 0}}},
+        ],
+        "finish": "stop", "tokens": {"input": 1, "output": 1},
+    }]
+    parts = srv.parts("ses_1")
+    tool = [p for p in parts if p["type"] == "tool"][0]
+    assert tool["tool"] == "glob"
+    assert tool["state"]["input"] == {"pattern": ".grading/**/*"}
+    assert tool["state"]["output"] == "No files found"
+
+
 def test_only_the_openrouter_key_is_stored_and_nothing_else():
     """One provider key is now stored, to configure the bundled opencode.
 

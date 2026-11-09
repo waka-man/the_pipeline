@@ -586,7 +586,7 @@ class FakeServer:
     def stop(self):
         self.stopped += 1
 
-    def create_session(self, title, directory, model=None):
+    def create_session(self, title, directory, model=None, agent=None):
         self.turns.append({"title": title, "directory": directory, "system": None, "text": None})
         return {"id": f"ses_{len(self.turns)}"}
 
