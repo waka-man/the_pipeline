@@ -55,6 +55,29 @@ SYSTEM_ENV = {
 }
 
 
+def require_v1_opencode(binary: str) -> None:
+    """Refuse an opencode whose server API this pipeline does not speak.
+
+    The pipeline drives `opencode serve` over its v1 HTTP API. A v2 binary
+    answers the same paths with its web UI (200 text/html), so every call
+    fails far from the cause, as a JSON error in the model list. A PATH
+    fallback can silently find v2 on a developer machine; fail fast with
+    the fix instead.
+    """
+    from ..runtime import parse_version, read_version
+
+    version = read_version(binary)
+    parsed = parse_version(version)
+    if parsed is not None and parsed[0] != 1:
+        raise RunnerError(
+            f"opencode {parsed[0]}.{parsed[1]}.{parsed[2]} is too new: the "
+            "pipeline speaks the v1 server API. The app uses its own "
+            "bundled runtime (1.18.x) for exactly this reason; point "
+            "GRADING_PIPELINE_OPENCODE at the bundled binary instead of a "
+            "system opencode."
+        )
+
+
 def ensure_loopback_proxy_bypass(environ: dict | None = None) -> None:
     """Keep loopback HTTP out of any configured proxy.
 
@@ -179,6 +202,7 @@ class OpenCodeServer:
                 f"'{self.binary}' is not on PATH. Install opencode, or set "
                 "GRADING_PIPELINE_OPENCODE to its path."
             )
+        require_v1_opencode(self.binary)
         env = {**os.environ, **SYSTEM_ENV, **(extra_env or {})}
         if self.max_output_tokens:
             env["OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX"] = str(self.max_output_tokens)
@@ -193,9 +217,11 @@ class OpenCodeServer:
                 raise RunnerError(f"opencode serve exited immediately: {err}")
             try:
                 r = requests.get(f"{self._base}/global/health", timeout=3)
-                if r.ok:
+                # A 200 alone is not health: a wrong-major server answers
+                # its web UI with 200 text/html. Require the v1 JSON shape.
+                if r.ok and (r.json() or {}).get("healthy") is True:
                     return
-            except requests.RequestException:
+            except (requests.RequestException, ValueError):
                 pass
             time.sleep(0.3)
         self.stop()
@@ -368,17 +394,20 @@ class OpenCodeServer:
         Right after `serve` starts, the endpoint can answer with an empty
         or non-JSON body. A bare .json() turns that into a JSONDecodeError
         that tells the user nothing, so retry a few times and then say
-        what actually happened.
+        what actually happened, including a snippet of the offending body.
         """
         last = ""
         for attempt in range(attempts):
             try:
-                response = requests.get(f"{self._base}/config/providers", timeout=60)
+                response = requests.get(f"{self._base}/config/providers", timeout=15)
                 if response.ok:
                     try:
                         payload = response.json()
                     except ValueError:
-                        last = "a non-JSON response"
+                        snippet = (response.text or "")[:120].replace("\n", " ")
+                        ctype = response.headers.get("Content-Type", "?")
+                        last = (f"a non-JSON response "
+                                f"(HTTP {response.status_code}, {ctype}: {snippet!r})")
                     else:
                         if isinstance(payload, dict):
                             return payload
@@ -389,6 +418,8 @@ class OpenCodeServer:
                 last = str(exc)[:200]
             if attempt + 1 < attempts:
                 time.sleep(1)
+        print(f"[models] agent runtime did not return a model list: {last}",
+              file=sys.stderr, flush=True)
         raise RunnerError(
             f"the agent runtime did not return a model list ({last})"
         )

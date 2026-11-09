@@ -77,11 +77,18 @@ const BUNDLED_OPENCODE = 'opencode';
 
 /** Path of the opencode binary shipped with the app, or null if absent. */
 function bundledOpencode() {
+  const name = process.platform === 'win32' ? `${BUNDLED_OPENCODE}.exe` : BUNDLED_OPENCODE;
   const res = process.resourcesPath || '';
-  if (!res) return null;
-  const exe = path.join(res, 'opencode',
-    process.platform === 'win32' ? `${BUNDLED_OPENCODE}.exe` : BUNDLED_OPENCODE);
-  return fs.existsSync(exe) ? exe : null;
+  if (res) {
+    const exe = path.join(res, 'opencode', name);
+    if (fs.existsSync(exe)) return exe;
+  }
+  // Unpackaged (dev) runs have no resourcesPath, so without this the sidecar
+  // falls back to whatever opencode is on PATH -- which may be v2, whose
+  // server answers the v1 API paths with HTML. The checkout's own bundled
+  // copy is the one the app is pinned to.
+  const dev = path.join(__dirname, 'resources', 'opencode', name);
+  return fs.existsSync(dev) ? dev : null;
 }
 
 /** Path of the frozen sidecar inside a packaged app, or null if not built. */

@@ -450,6 +450,29 @@ def test_loopback_is_never_sent_through_a_proxy():
     assert env["NO_PROXY"].count("127.0.0.1") == 1
 
 
+def test_a_v2_opencode_is_refused_before_it_can_serve_html(monkeypatch):
+    """PATH can hold v2, whose serve answers the v1 API paths with its web UI.
+
+    Without the guard, every call fails as a JSON error in the model list,
+    far from the actual problem.
+    """
+    from pipeline.grading import runner
+    from pipeline import runtime as rt
+
+    # require_v1_opencode imports read_version from ..runtime at call time.
+    monkeypatch.setattr(rt, "read_version", lambda _b: "opencode v2.2.6")
+    with pytest.raises(runner.RunnerError, match="v1 server API"):
+        runner.require_v1_opencode("opencode")
+
+
+def test_a_v1_opencode_passes_the_guard(monkeypatch):
+    from pipeline.grading import runner
+    from pipeline import runtime as rt
+
+    monkeypatch.setattr(rt, "read_version", lambda _b: "1.18.35")
+    runner.require_v1_opencode("opencode")  # must not raise
+
+
 def test_the_model_list_tolerates_a_briefly_unready_runtime(monkeypatch):
     """Right after serve starts, /config/providers can answer with nothing."""
     from pipeline.grading import runner
@@ -458,10 +481,12 @@ def test_the_model_list_tolerates_a_briefly_unready_runtime(monkeypatch):
     srv._base = "http://127.0.0.1:1"
 
     class _Response:
-        def __init__(self, ok, payload=None, text=""):
+        def __init__(self, ok, payload=None, text="", status_code=200, headers=None):
             self.ok = ok
             self._payload = payload
             self.text = text
+            self.status_code = status_code
+            self.headers = headers or {}
 
         def json(self):
             if self._payload is None:
@@ -489,11 +514,35 @@ def test_an_unreadable_model_list_says_what_happened(monkeypatch):
         ok = False
         status_code = 502
         text = "proxy error"
+        headers = {}
 
     monkeypatch.setattr(runner.requests, "get", lambda *a, **k: _Response())
     monkeypatch.setattr(runner.time, "sleep", lambda *a: None)
 
     with pytest.raises(runner.RunnerError, match="did not return a model list"):
+        srv.catalogue()
+
+
+def test_a_non_json_model_list_includes_what_was_returned(monkeypatch):
+    """The diagnostic must quote the body, not just call it non-JSON."""
+    from pipeline.grading import runner
+
+    srv = runner.OpenCodeServer.__new__(runner.OpenCodeServer)
+    srv._base = "http://127.0.0.1:1"
+
+    class _Response:
+        ok = True
+        status_code = 200
+        text = "<html>proxy error</html>"
+        headers = {"Content-Type": "text/html"}
+
+        def json(self):
+            raise ValueError("Expecting value: line 1 column 1 (char 0)")
+
+    monkeypatch.setattr(runner.requests, "get", lambda *a, **k: _Response())
+    monkeypatch.setattr(runner.time, "sleep", lambda *a: None)
+
+    with pytest.raises(runner.RunnerError, match="proxy error"):
         srv.catalogue()
 
 
