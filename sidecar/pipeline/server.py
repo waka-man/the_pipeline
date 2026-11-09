@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import queue
+import shutil
 import threading
 import time
 import traceback
@@ -1482,6 +1483,33 @@ def _label_run(state: AppState, run_id: int, body: dict[str, Any]) -> dict[str, 
     return op_label_run(state, int(run_id), body)
 
 
+def op_delete_run(state: AppState, run_id: int) -> dict[str, Any]:
+    """Delete a run, its rows, and its workspace folder.
+
+    Deleting the folder alone does nothing: the graded state lives in the
+    database, so the run reappears from there. Both have to go together.
+    """
+    run_id = int(run_id)
+    try:
+        run = state.store.get_run(run_id)
+    except Exception:
+        raise ApiError("no such run", 404)
+    spec = run["spec"]
+    if not state.store.delete_run(run_id):
+        raise ApiError("no such run", 404)
+    run_dir = state.settings.run_dir(spec.course_id, spec.assignment_id)
+    if run_dir.is_dir():
+        shutil.rmtree(run_dir, ignore_errors=True)
+    # Stop any per-workspace servers for this run's folder.
+    for key in [k for k in state.servers if k == str(run_dir) or k.startswith(str(run_dir) + "/")]:
+        state.servers.pop(key).stop()
+    return {"run_id": run_id, "deleted": True}
+
+
+def _delete_run(state: AppState, run_id: int) -> dict[str, Any]:
+    return op_delete_run(state, int(run_id))
+
+
 def _start_control(state: AppState, run_id: int, body: dict[str, Any]) -> dict[str, Any]:
     return op_job_control(state, run_id, body)
 
@@ -1509,6 +1537,7 @@ ROUTES: list[Route_] = [
     Route_("GET", r"^/api/runs$", op_list_runs),
     Route_("POST", r"^/api/runs$", op_bootstrap),
     Route_("PUT", r"^/api/runs/(?P<run_id>\d+)$", _label_run),
+    Route_("DELETE", r"^/api/runs/(?P<run_id>\d+)$", _delete_run),
     Route_("GET", r"^/api/runs/(?P<run_id>\d+)$", _get_run),
     Route_("GET", r"^/api/runs/(?P<run_id>\d+)/submissions$", _get_submissions),
     Route_("POST", r"^/api/runs/(?P<run_id>\d+)/collect$", _start_collect),

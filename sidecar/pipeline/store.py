@@ -196,6 +196,20 @@ class Store:
 
     # ---------------------------------------------------------------- runs
 
+    def delete_run(self, run_id: int) -> bool:
+        """Remove a run and everything under it. Returns False if unknown.
+
+        Children cascade from submissions; events has no foreign key, so it
+        is removed explicitly. The workspace folder is the caller's to
+        remove: the store knows nothing about files.
+        """
+        with self.connect() as db:
+            if db.execute("SELECT 1 FROM runs WHERE id=?", (run_id,)).fetchone() is None:
+                return False
+            db.execute("DELETE FROM events WHERE run_id=?", (run_id,))
+            db.execute("DELETE FROM runs WHERE id=?", (run_id,))
+            return True
+
     def upsert_run(self, spec: AssignmentSpec, model: str | None = None) -> int:
         spec_json = spec.model_dump_json()
         with self.connect() as db:

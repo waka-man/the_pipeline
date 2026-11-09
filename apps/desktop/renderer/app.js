@@ -73,6 +73,7 @@ function installWebBridge() {
       createRun: (b) => req('POST', '/api/runs', b),
       runs: () => req('GET', '/api/runs'),
       labelRun: (id, label) => req('PUT', `/api/runs/${id}`, { label }),
+      deleteRun: (id) => req('DELETE', `/api/runs/${id}`),
       run: (id) => req('GET', `/api/runs/${id}`),
       submissions: (id) => req('GET', `/api/runs/${id}/submissions`),
       collect: (id, b) => req('POST', `/api/runs/${id}/collect`, b || {}),
@@ -784,7 +785,22 @@ function renderPanel() {
                   await loadRuns();
                   renderPanel();
                 }, 'Could not clear the name'),
-              }, 'Clear') : null))))
+              }, 'Clear') : null,
+              h('button', {
+                class: 'btn', 'data-size': 'sm', 'data-variant': 'danger',
+                onclick: async () => {
+                  const ok = window.confirm(
+                    `Delete "${r.label || r.title}" and all its collected work and scores? `
+                    + 'This cannot be undone.');
+                  if (!ok) return;
+                  await guard(async () => {
+                    await api.deleteRun(r.id);
+                    await loadRuns();
+                    renderPanel();
+                    toast('Session deleted.');
+                  }, 'Could not delete');
+                },
+              }, 'Delete')))))
         : h('div', { style: 'color:var(--ink-3);font-size:12px;padding:10px 0' },
             'Nothing saved yet. A session appears here once you start one, and '
             + 'you can come back to it later from any machine.'),

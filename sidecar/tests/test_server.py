@@ -1265,6 +1265,26 @@ def test_a_stopped_row_is_not_graded_by_the_loop(live):
     assert remaining == [], remaining
 
 
+def test_deleting_a_run_removes_its_rows_and_its_folder(live, tmp_path):
+    """Deleting the folder alone does nothing: the graded state is in the DB."""
+    base, state, _fake, _spec = live
+    send(base, "/api/runs", {"course_id": 3130, "assignment_id": 46805})
+    assert wait_for(lambda: state.store.progress(1).get("total") == 2)
+    run_dir = state.settings.run_dir(3130, 46805)
+    run_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / "report.md").write_text("stub output")
+
+    from pipeline.server import op_delete_run
+    assert op_delete_run(state, 1) == {"run_id": 1, "deleted": True}
+    assert not run_dir.exists(), "the workspace folder was left behind"
+    assert state.store.progress(1)["total"] == 0, "rows survived the delete"
+    try:
+        op_delete_run(state, 1)
+        raise AssertionError("deleting a missing run should fail")
+    except Exception as exc:
+        assert getattr(exc, "status", None) == 404, exc
+
+
 def test_the_agent_log_survives_the_job_and_a_restart(live):
     """In memory alone the log is gone the moment grading stops.
 
