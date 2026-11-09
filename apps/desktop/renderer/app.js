@@ -82,6 +82,7 @@ function installWebBridge() {
       control: (id, b) => req('POST', `/api/runs/${id}/control`, b),
       agentLog: (row) => req('GET', `/api/reports/${row}/agent-log`),
       stopSubmission: (row) => req('POST', `/api/submissions/${row}/stop`),
+      steerSubmission: (row, message) => req('POST', `/api/submissions/${row}/steer`, { message }),
       runtime: () => req('GET', '/api/runtime'),
       checkRuntime: () => req('POST', '/api/runtime/check'),
       updateRuntime: () => req('POST', '/api/runtime/update'),
@@ -171,6 +172,11 @@ const S = {
   reviewFilter: 'all',
   // Rows the person has asked to stop, so the button does not offer it twice.
   stoppingRows: new Set(),
+  // Typed-but-unsent steering instructions, keyed by row. The log panel is
+  // re-mounted on every poll tick; without the draft the text would vanish
+  // and the caret would jump on each new log line.
+  steerDraft: {},
+  steerFocused: false,
   bootstrapping: false,
   // Model for the next run only. Empty means 'use the saved default'.
   runModel: '',
@@ -245,6 +251,7 @@ const log = (event, data) => {
 function toneFor(event, d) {
   if (event.endsWith('.error')) return 'bad';
   if (event === 'agent.budget' || event === 'agent.retry') return 'flag';
+  if (event === 'agent.steer') return 'accent';
   if (event === 'agent.done') return 'ok';
   if (event === 'job.start') return 'accent';
   return null;
@@ -263,6 +270,7 @@ function describe(event, d) {
     case 'agent.start':      return `${d.student} · attempt ${d.attempt}`;
     case 'agent.budget':     return `output budget ${d.from} → ${d.to}`;
     case 'agent.retry':      return `retrying: ${(d.issues || []).slice(0, 2).join('; ')}`;
+    case 'agent.steer':      return `steered: ${d.message || ''}`;
     case 'agent.done':       return `${d.student} — ${fmt(d.earned)}/${fmt(d.possible)}`;
     case 'agent.warn':       return `${d.student}: ${d.message}`;
     case 'publish.progress': return `${d.student} — ${d.ok ? 'published' : d.message}`;
@@ -771,26 +779,60 @@ function renderPanel() {
     // screen away, behind a list of 150 other rows.
     const running = row && row.status === 'grading';
     const stopping = S.stoppingRows.has(panel.rowId);
+    const sendSteer = () => {
+      const msg = (S.steerDraft[panel.rowId] || '').trim();
+      if (!msg) return;
+      guard(async () => {
+        const res = await api.steerSubmission(panel.rowId, msg);
+        if (res) {
+          delete S.steerDraft[panel.rowId];
+          S.steerFocused = true;
+          toast('Instruction sent to the agent.');
+          renderPanel();
+        }
+      }, 'Could not steer the agent');
+    };
     mount(el, slideover(
       row ? (row.student || row.student_name || 'Student') : 'Grading agent',
       'Live agent output',
       logView(S.logEntries),
-      h('div', { style: 'display:flex;gap:8px;align-items:center' },
-        running && !stopping ? h('button', {
-          class: 'btn', 'data-size': 'sm', 'data-variant': 'danger',
-          onclick: () => guard(async () => {
-            S.stoppingRows.add(panel.rowId);
-            renderPanel();
-            await api.stopSubmission(panel.rowId);
-            toast('Stopped. This one can be graded again.');
-          }, 'Could not stop this submission'),
-        }, 'Stop') : null,
-        stopping ? h('span', { class: 'chip', dataset: { tone: 'flag' } }, 'stopping…') : null,
-        h('button', {
-          class: 'btn', 'data-size': 'sm', 'data-variant': 'ghost',
-          onclick: closePanel,
-        }, 'Close'))));
+      h('div', {},
+        running ? h('div', { style: 'display:flex;gap:8px;align-items:center;margin-bottom:8px' },
+          h('input', {
+            class: 'input', id: 'steer-input',
+            placeholder: 'Steer the agent…', value: S.steerDraft[panel.rowId] || '',
+            oninput: (e) => { S.steerDraft[panel.rowId] = e.target.value; },
+            onfocus: () => { S.steerFocused = true; },
+            onblur: () => { S.steerFocused = false; },
+            onkeydown: (e) => { if (e.key === 'Enter') { e.preventDefault(); sendSteer(); } },
+          }),
+          h('button', {
+            class: 'btn', 'data-size': 'sm', 'data-variant': 'primary',
+            onclick: sendSteer,
+          }, 'Send')) : null,
+        h('div', { style: 'display:flex;gap:8px;align-items:center' },
+          running && !stopping ? h('button', {
+            class: 'btn', 'data-size': 'sm', 'data-variant': 'danger',
+            onclick: () => guard(async () => {
+              S.stoppingRows.add(panel.rowId);
+              renderPanel();
+              await api.stopSubmission(panel.rowId);
+              toast('Stopped. This one can be graded again.');
+            }, 'Could not stop this submission'),
+          }, 'Stop') : null,
+          stopping ? h('span', { class: 'chip', dataset: { tone: 'flag' } }, 'stopping…') : null,
+          h('button', {
+            class: 'btn', 'data-size': 'sm', 'data-variant': 'ghost',
+            onclick: closePanel,
+          }, 'Close')))));
     restoreLogScroll(el, stick, kept);
+    if (S.steerFocused) {
+      const input = el.querySelector('#steer-input');
+      if (input) {
+        input.focus();
+        try { input.setSelectionRange(input.value.length, input.value.length); } catch (_) {}
+      }
+    }
   }
 }
 

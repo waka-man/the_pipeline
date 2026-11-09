@@ -57,6 +57,7 @@ contextBridge.exposeInMainWorld('pipeline', {
     agentLog: (row) => req('GET', `/api/reports/${row}/agent-log`),
     // Stop grading one submission. The job carries on with the rest.
     stopSubmission: (row) => req('POST', `/api/submissions/${row}/stop`),
+    steerSubmission: (row, message) => req('POST', `/api/submissions/${row}/steer`, { message }),
     // The bundled agent runtime: what is installed, what npm has, and staging
     // a newer one for the next launch.
     runtime: () => req('GET', '/api/runtime'),

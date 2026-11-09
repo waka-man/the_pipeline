@@ -1176,6 +1176,71 @@ def test_stopping_one_submission_does_not_stop_the_run(live):
         assert exc.code == 404, exc.code
 
 
+def _live_session(state):
+    """Register a fake running agent session for submission row 1."""
+    sent = []
+
+    class _Server:
+        def prompt_async(self, session_id, text, directory=None):
+            sent.append((session_id, text, directory))
+            return True
+
+    state.server = _Server()
+    state.session_rows["ses_steer"] = 1
+    state.active_sessions["ses_steer"] = (1, "/tmp/ws")
+    return sent
+
+
+def test_steering_reaches_the_running_session(live):
+    """A mid-turn correction goes to the live session, not a new attempt."""
+    base, state, _fake, _spec = live
+    send(base, "/api/runs", {"course_id": 3130, "assignment_id": 46805})
+    assert wait_for(lambda: state.store.progress(1).get("total") == 2)
+    sent = _live_session(state)
+
+    body = send(base, "/api/submissions/1/steer",
+                {"message": "focus on the counterargument paragraph"})
+    assert body["delivered"] is True and body["row_id"] == 1, body
+    assert len(sent) == 1, sent
+    session_id, text, directory = sent[0]
+    assert session_id == "ses_steer" and directory == "/tmp/ws"
+    assert "focus on the counterargument paragraph" in text
+    assert "Operator instruction" in text
+
+
+def test_steering_validates_its_input(live):
+    base, state, _fake, _spec = live
+    send(base, "/api/runs", {"course_id": 3130, "assignment_id": 46805})
+    assert wait_for(lambda: state.store.progress(1).get("total") == 2)
+    _live_session(state)
+
+    for payload, code in (({"message": "   "}, 400),
+                          ({"message": "x" * 2001}, 400)):
+        try:
+            send(base, "/api/submissions/1/steer", payload)
+            raise AssertionError(f"expected {code} for {str(payload)[:30]}")
+        except urllib.error.HTTPError as exc:
+            assert exc.code == code, (payload, exc.code)
+
+    try:
+        send(base, "/api/submissions/9999/steer", {"message": "hello"})
+        raise AssertionError("steering an unknown row should fail")
+    except urllib.error.HTTPError as exc:
+        assert exc.code == 404, exc.code
+
+
+def test_steering_without_a_live_session_is_a_clean_conflict(live):
+    base, state, _fake, _spec = live
+    send(base, "/api/runs", {"course_id": 3130, "assignment_id": 46805})
+    assert wait_for(lambda: state.store.progress(1).get("total") == 2)
+    # No session registered: nothing is grading this row right now.
+    try:
+        send(base, "/api/submissions/1/steer", {"message": "hello"})
+        raise AssertionError("steering without a session should fail")
+    except urllib.error.HTTPError as exc:
+        assert exc.code == 409, exc.code
+
+
 def test_a_stopped_row_is_not_graded_by_the_loop(live):
     """The flag has to be honoured when the loop reaches that row.
 

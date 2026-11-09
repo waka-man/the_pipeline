@@ -1165,6 +1165,54 @@ await test('the log panel offers Stop while a submission is being graded', async
     'Stop is offered on a row that has already finished');
 });
 
+await test('the log panel offers steering while a submission is being graded', async () => {
+  const { window } = await reboot();
+  await gotoOn(window, 'Grade');
+
+  await window.eval(`(() => {
+    const rows = [...document.querySelectorAll('.rows .row:not(.row-head)')];
+    const row = rows.find((r) => r.textContent.includes('Alan Turing'));
+    [...row.querySelectorAll('button')].find((b) => b.textContent.trim() === 'agent log').click();
+  })()`);
+  await tick(80);
+
+  assert.ok(await window.eval("!!document.querySelector('#steer-input')"),
+    'no steering input on a submission that is being graded');
+
+  // Typing and pressing Send reaches the API with the typed text.
+  await window.eval(`(() => {
+    window.__steers = [];
+    window.pipeline.api.steerSubmission = (row, message) => {
+      window.__steers.push([row, message]);
+      return Promise.resolve({ delivered: true });
+    };
+    const input = document.querySelector('#steer-input');
+    input.value = 'focus on the counterargument paragraph';
+    input.dispatchEvent(new window.Event('input', { bubbles: true }));
+  })()`);
+  await tick(40);
+  await window.eval(
+    "[...document.querySelectorAll('button')].find((b) => b.textContent.trim() === 'Send').click()");
+  await tick(80);
+  const steers = await window.eval('window.__steers');
+  assert.strictEqual(steers.length, 1, 'steering did not reach the API');
+  assert.strictEqual(steers[0][1], 'focus on the counterargument paragraph');
+
+  // A finished row offers no steering input.
+  await window.eval(`(() => {
+    [...document.querySelectorAll('button')].find((b) => b.textContent.trim() === 'Close').click();
+  })()`);
+  await tick(60);
+  await window.eval(`(() => {
+    const rows = [...document.querySelectorAll('.rows .row:not(.row-head)')];
+    const row = rows.find((r) => r.textContent.includes('Ada Lovelace'));
+    [...row.querySelectorAll('button')].find((b) => b.textContent.trim() === 'agent log').click();
+  })()`);
+  await tick(80);
+  assert.ok(!await window.eval("!!document.querySelector('#steer-input')"),
+    'steering is offered on a row that has already finished');
+});
+
 await test('reports flagged for review can be listed and walked', async () => {
     const { window } = await reboot();
 

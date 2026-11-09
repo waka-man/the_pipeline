@@ -229,6 +229,26 @@ class OpenCodeServer:
             raise RunnerError(f"prompt failed: {r.status_code} {r.text[:300]}")
         return r.json()
 
+    def prompt_async(self, session_id: str, text: str, model: str | None = None,
+                     directory: str | None = None) -> bool:
+        """Send a message without waiting for the turn to finish.
+
+        This is the steering channel: the instructor can add an instruction
+        while the agent is mid-turn. opencode accepts it (204) and records it
+        in the session, where the running turn picks it up. Returns False
+        when the session cannot accept it (unknown session, server down).
+        """
+        body: dict[str, Any] = {"parts": [{"type": "text", "text": text}]}
+        if model:
+            body["model"] = {"providerID": model.split("/")[0],
+                             "modelID": "/".join(model.split("/")[1:])}
+        try:
+            r = requests.post(self.url(f"/session/{session_id}/prompt_async", directory),
+                              json=body, timeout=15)
+            return r.status_code == 204
+        except requests.RequestException:
+            return False
+
     def provider_error(self, response: dict[str, Any]) -> str | None:
         """The provider's own error message, if the turn failed."""
         err = ((response or {}).get("info") or {}).get("error") or {}

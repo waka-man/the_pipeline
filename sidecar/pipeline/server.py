@@ -1213,6 +1213,51 @@ def op_stop_submission(state: AppState, row_id: int) -> dict[str, Any]:
     return {"row_id": row_id, "aborted": aborted}
 
 
+STEER_MAX_CHARS = 2000
+
+
+def op_steer_submission(state: AppState, row_id: int, body: dict[str, Any]) -> dict[str, Any]:
+    """Send an instructor instruction to a submission's running agent session.
+
+    Steering is a mid-turn correction, not a new grading attempt: the prompt
+    and rubric stay the same, and the extra instruction is appended to the
+    live session, which keeps its context. Delivery is prompt_async, so this
+    returns as soon as opencode accepts the message rather than blocking
+    until the turn ends.
+    """
+    row_id = int(row_id)
+    message = str((body or {}).get("message") or "").strip()
+    if not message:
+        raise ApiError("message is empty", 400)
+    if len(message) > STEER_MAX_CHARS:
+        raise ApiError(f"message is too long (max {STEER_MAX_CHARS} characters)", 400)
+    try:
+        student = state.store.submission_row(row_id)["student_name"]
+    except Exception:
+        raise ApiError("no such submission", 404)
+
+    sid = next((s for s, rid in state.session_rows.items() if rid == row_id), "")
+    directory = ""
+    if sid and sid in state.active_sessions:
+        directory = state.active_sessions[sid][1] or ""
+    if not sid or sid not in state.active_sessions or state.server is None:
+        raise ApiError("no agent is grading this submission right now", 409)
+
+    wrapped = (
+        "Operator instruction from the instructor watching this run "
+        "(not part of the rubric):\n"
+        f"{message}\n"
+        "Incorporate this into your grading of this submission and continue."
+    )
+    if not state.server.prompt_async(sid, wrapped, directory=directory or None):
+        raise ApiError("the agent session did not accept the instruction", 502)
+    state.bus.emit("agent.steer", {
+        "submission_row_id": row_id, "student": student,
+        "message": message[:300],
+    })
+    return {"row_id": row_id, "session_id": sid, "delivered": True}
+
+
 def op_agent_log(state: AppState, row_id: int) -> dict[str, Any]:
     """Recent agent output for one submission, for the live log panel.
 
@@ -1453,6 +1498,7 @@ ROUTES: list[Route_] = [
     Route_("POST", r"^/api/runs/(?P<run_id>\d+)/publish$", _start_publish),
     Route_("POST", r"^/api/runs/(?P<run_id>\d+)/control$", _start_control),
     Route_("POST", r"^/api/submissions/(?P<row_id>\d+)/stop$", op_stop_submission),
+    Route_("POST", r"^/api/submissions/(?P<row_id>\d+)/steer$", op_steer_submission),
     Route_("GET", r"^/api/runtime$", op_runtime_status),
     Route_("POST", r"^/api/runtime/check$", op_runtime_check),
     Route_("POST", r"^/api/runtime/update$", op_runtime_update),
