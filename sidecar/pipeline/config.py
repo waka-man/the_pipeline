@@ -82,10 +82,8 @@ def _keychain_delete(name: str) -> bool:
         return False
 
 
-def get_secret(name: str) -> str | None:
-    env = os.environ.get(name.upper())
-    if env:
-        return env
+def _stored_secret(name: str) -> str | None:
+    """The secret as saved by the app: keychain first, then the secrets file."""
     from_keychain = _keychain_get(name)
     if from_keychain:
         return from_keychain
@@ -96,6 +94,13 @@ def get_secret(name: str) -> str | None:
         except Exception:
             return None
     return None
+
+
+def get_secret(name: str) -> str | None:
+    env = os.environ.get(name.upper())
+    if env:
+        return env
+    return _stored_secret(name)
 
 
 def set_secret(name: str, value: str) -> None:
@@ -351,24 +356,34 @@ class Settings:
 
     @classmethod
     def load(cls, model: str | None = None) -> "Settings":
-        # Environment wins over stored secrets: in Docker (and CI) the
-        # credentials arrive as env vars, not through the Settings step.
-        # GRADING_PIPELINE_* are the documented names; the bare uppercase
-        # names below (CANVAS_*, OPENROUTER_API_KEY) are also honoured via
-        # get_secret for compatibility.
+        # A stored secret wins over the environment. The environment is the
+        # headless/Docker route (no Settings step to save through), but when
+        # both exist the app's own setting must prevail, otherwise a key
+        # exported in the shell (OPENROUTER_API_KEY is very commonly set)
+        # silently shadows whatever the user saves or removes in the UI and
+        # "Replace or remove key" can never take effect.
+        def pick(name: str, *env_names: str) -> str:
+            stored = _stored_secret(name)
+            if stored:
+                return stored
+            for env_name in env_names:
+                value = os.environ.get(env_name, "").strip()
+                if value:
+                    return value
+            return ""
+
         return cls(
-            canvas_base_url=(
-                os.environ.get("GRADING_PIPELINE_CANVAS_BASE_URL", "").strip()
-                or get_secret("canvas_base_url") or ""
+            canvas_base_url=pick(
+                "canvas_base_url",
+                "GRADING_PIPELINE_CANVAS_BASE_URL", "CANVAS_BASE_URL",
             ).rstrip("/"),
-            canvas_api_token=(
-                os.environ.get("GRADING_PIPELINE_CANVAS_API_TOKEN", "").strip()
-                or get_secret("canvas_api_token") or ""
+            canvas_api_token=pick(
+                "canvas_api_token",
+                "GRADING_PIPELINE_CANVAS_API_TOKEN", "CANVAS_API_TOKEN",
             ),
-            openrouter_api_key=(
-                os.environ.get("OPENROUTER_API_KEY", "").strip()
-                or os.environ.get("GRADING_PIPELINE_OPENROUTER_API_KEY", "").strip()
-                or get_secret("openrouter_api_key") or ""
+            openrouter_api_key=pick(
+                "openrouter_api_key",
+                "OPENROUTER_API_KEY", "GRADING_PIPELINE_OPENROUTER_API_KEY",
             ),
             model=model,
             workers=int(os.environ.get("GRADING_PIPELINE_WORKERS", "3")),

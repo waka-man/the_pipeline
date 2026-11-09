@@ -156,6 +156,12 @@ const S = {
   // True while the course list is being fetched, so the button can say so
   // instead of sitting inert through a slow request.
   loadingCourses: false,
+  // Same treatment for the slower setup actions: reading the model list
+  // starts the agent runtime, which takes seconds, and saving a key
+  // restarts it. Without a busy state both buttons read as dead.
+  loadingModels: false,
+  savingKey: false,
+  modelError: null,
   // Credential fields, held here because render() rebuilds the inputs and a
   // value living only in the DOM would be lost on the next repaint.
   form: { canvasBase: '', canvasToken: '', openrouterKey: '' },
@@ -502,29 +508,47 @@ function viewSetup() {
       h('div', { style: 'display:flex;gap:8px;margin-top:10px' },
         h('button', {
           class: 'btn', 'data-variant': hasKey ? 'ghost' : 'primary',
+          disabled: S.savingKey,
           onclick: async () => {
-            const res = await guard(
-              () => api.saveSettings({ openrouter_api_key: S.form.openrouterKey.trim() }),
-              'Could not save the key');
+            S.savingKey = true;
+            const res = await guard(async () => {
+              const r = await api.saveSettings({ openrouter_api_key: S.form.openrouterKey.trim() });
+              if (r) {
+                S.status = r;
+                S.form.openrouterKey = '';
+                // The key restarts the agent runtime, so the model list it
+                // reports changes too. Refresh it now instead of leaving
+                // the user to discover that Refresh is the missing step.
+                await loadModels();
+              }
+              return r;
+            }, 'Could not save the key');
+            S.savingKey = false;
+            render();
             if (res) {
-              S.status = res;
-              S.form.openrouterKey = '';
               toast(res.model_key_configured
                 ? 'Key saved. The agent runtime restarts on the next grading run.'
                 : 'Key removed.');
             }
           },
-        }, hasKey ? 'Replace or remove key' : 'Save key'))),
+        }, S.savingKey ? 'Saving…' : (hasKey ? 'Replace or remove key' : 'Save key')))),
 
     card('Grading model', S.model ? S.model.selected : 'not chosen',
       h('div', { style: 'display:flex;gap:8px;align-items:center;flex-wrap:wrap' },
-        h('button', { class: 'btn', onclick: () => guard(loadModels, 'Could not read models') },
-          'Refresh models'),
+        h('button', {
+          class: 'btn', disabled: S.loadingModels,
+          onclick: () => loadModels(true),
+        }, S.loadingModels ? 'Loading models…' : 'Refresh models'),
         S.model ? h('span', { class: 'chip', dataset: { tone: 'accent' } },
           `${S.model.selected} · ${S.model.tier} · ${S.model.output_budget} tokens`) : null),
       h('div', { class: 'hint', style: 'margin-top:10px' },
         'Models are read from the bundled agent runtime, which holds the API key. ',
         'Free OpenRouter models are tried first, then low-cost models, then the strongest available.'),
+      S.modelError
+        ? notice(`Could not read models: ${S.modelError}`, 'bad')
+        : !S.model?.candidates?.length
+          ? notice('No models available yet. Save a key above, then Refresh models.', 'flag')
+          : null,
       S.model?.candidates?.length
         ? h('div', { class: 'picklist', style: 'margin-top:12px' },
             S.model.candidates.slice(0, 8).map((c) => h('button', {
@@ -1620,15 +1644,37 @@ async function refreshStatus() {
   render();
 }
 
-async function loadModels() {
-  S.model = await api.models().catch(() => null);
-  if (S.model && !S.model.selected) {
-    const pick = S.model.candidates?.[0];
-    if (pick) {
-      const r = await api.selectModel({ model: pick.id }).catch(() => null);
-      if (r) S.model = { ...S.model, ...r };
+async function loadModels(announce = false) {
+  S.loadingModels = true;
+  S.modelError = null;
+  render();
+  try {
+    S.model = await api.models();
+    if (S.model && !S.model.selected) {
+      const pick = S.model.candidates?.[0];
+      if (pick) {
+        const r = await api.selectModel({ model: pick.id }).catch(() => null);
+        if (r) S.model = { ...S.model, ...r };
+      }
     }
+    if (!S.model?.candidates?.length) {
+      S.modelError = S.model
+        ? 'The agent runtime returned no models.'
+        : 'No response from the agent runtime.';
+    }
+  } catch (err) {
+    // A swallowed failure here left the card at "not chosen" with no list
+    // and no explanation: Refresh appeared to do nothing at all.
+    S.model = null;
+    S.modelError = (err && err.message) || String(err);
+  } finally {
+    S.loadingModels = false;
+    render();
   }
+  if (announce && S.modelError) {
+    toast(`Could not read models: ${S.modelError}`, 'bad');
+  }
+  return !S.modelError;
 }
 
 async function loadRuns() {

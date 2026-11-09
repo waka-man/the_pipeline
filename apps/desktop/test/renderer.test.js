@@ -1213,6 +1213,45 @@ await test('the log panel offers steering while a submission is being graded', a
     'steering is offered on a row that has already finished');
 });
 
+await test('a failing models read says so instead of showing nothing', async () => {
+  const { window } = await reboot();
+  await window.eval(`(() => {
+    window.pipeline.api.models = () => Promise.reject(new Error('opencode not ready'));
+  })()`);
+  await gotoOn(window, 'Setup');
+  await window.eval(
+    "[...document.querySelectorAll('#main button')].find((b) => b.textContent.trim() === 'Refresh models').click()");
+  await tick(120);
+  const body = await window.eval("document.getElementById('main').textContent");
+  assert.ok(body.includes('Could not read models: opencode not ready'),
+    `a failed models read left no explanation: ${body.slice(0, 300)}`);
+});
+
+await test('saving a key refreshes the model list without another click', async () => {
+  const { window } = await reboot();
+  await window.eval(`(() => {
+    window.__modelCalls = 0;
+    const base = window.pipeline.api.models.bind(window.pipeline.api);
+    window.pipeline.api.models = (...args) => {
+      window.__modelCalls += 1;
+      return base(...args);
+    };
+  })()`);
+  await gotoOn(window, 'Setup');
+  const before = await window.eval('window.__modelCalls');
+  await window.eval(`(() => {
+    const el = document.getElementById('or-key');
+    el.value = 'sk-or-v1-new';
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+  })()`);
+  await window.eval(
+    "[...document.querySelectorAll('#main button')].find((b) => b.textContent.trim() === 'Save key').click()");
+  await tick(150);
+  const after = await window.eval('window.__modelCalls');
+  assert.ok(after > before,
+    `saving a key did not refresh the models (${before} -> ${after})`);
+});
+
 await test('reports flagged for review can be listed and walked', async () => {
     const { window } = await reboot();
 

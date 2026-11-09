@@ -629,6 +629,8 @@ def op_models(state: AppState) -> dict[str, Any]:
         "counts": {k: len(v) for k, v in catalogue.items()},
         "free_count": len(config.rank_free_models(catalogue.get("openrouter", []))),
         "selected": str(state.choice) if state.choice else None,
+        "tier": state.choice.tier if state.choice else None,
+        "output_budget": state.choice.max_output_tokens if state.choice else None,
         "candidates": [{"id": f"{c.provider}/{c.model}", "provider": c.provider,
                         "model": c.model, "tier": c.tier} for c in candidates[:40]],
     }

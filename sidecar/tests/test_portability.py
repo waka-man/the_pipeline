@@ -154,13 +154,18 @@ def test_credentials_come_from_the_environment(tmp_path, monkeypatch):
     settings.check_canvas()  # must not raise
 
 
-def test_the_environment_wins_over_stored_secrets(tmp_path, monkeypatch):
+def test_a_stored_secret_wins_over_the_environment(tmp_path, monkeypatch):
+    """A shell-exported OPENROUTER_API_KEY must not shadow the UI's setting.
+
+    Otherwise saving or removing a key in Setup appears to do nothing: the
+    environment keeps supplying the old value.
+    """
     _isolated_settings_env(tmp_path, monkeypatch)
     monkeypatch.setattr(config, "_keychain_set", lambda *a, **k: False)
     config.set_secret("canvas_api_token", "stored")
-    monkeypatch.setenv("GRADING_PIPELINE_CANVAS_API_TOKEN", "env-wins")
+    monkeypatch.setenv("GRADING_PIPELINE_CANVAS_API_TOKEN", "env-loses")
 
-    assert config.Settings.load().canvas_api_token == "env-wins"
+    assert config.Settings.load().canvas_api_token == "stored"
 
 
 def test_missing_credentials_name_the_environment_variables(tmp_path, monkeypatch):
