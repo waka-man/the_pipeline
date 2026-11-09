@@ -450,8 +450,8 @@ def test_loopback_is_never_sent_through_a_proxy():
     assert env["NO_PROXY"].count("127.0.0.1") == 1
 
 
-def test_a_v2_opencode_is_refused_before_it_can_serve_html(monkeypatch):
-    """PATH can hold v2, whose serve answers the v1 API paths with its web UI.
+def test_a_v1_opencode_is_refused_before_it_can_serve_the_wrong_api(monkeypatch):
+    """PATH can hold v1, whose server answers v2 paths with 404s/HTML.
 
     Without the guard, every call fails as a JSON error in the model list,
     far from the actual problem.
@@ -459,26 +459,27 @@ def test_a_v2_opencode_is_refused_before_it_can_serve_html(monkeypatch):
     from pipeline.grading import runner
     from pipeline import runtime as rt
 
-    # require_v1_opencode imports read_version from ..runtime at call time.
-    monkeypatch.setattr(rt, "read_version", lambda _b: "opencode v2.2.6")
-    with pytest.raises(runner.RunnerError, match="v1 server API"):
-        runner.require_v1_opencode("opencode")
+    # require_v2_opencode imports read_version from ..runtime at call time.
+    monkeypatch.setattr(rt, "read_version", lambda _b: "1.18.35")
+    with pytest.raises(runner.RunnerError, match="not v2"):
+        runner.require_v2_opencode("opencode")
 
 
-def test_a_v1_opencode_passes_the_guard(monkeypatch):
+def test_a_v2_opencode_passes_the_guard(monkeypatch):
     from pipeline.grading import runner
     from pipeline import runtime as rt
 
-    monkeypatch.setattr(rt, "read_version", lambda _b: "1.18.35")
-    runner.require_v1_opencode("opencode")  # must not raise
+    monkeypatch.setattr(rt, "read_version", lambda _b: "opencode v2.2.6")
+    runner.require_v2_opencode("opencode")  # must not raise
 
 
-def test_the_model_list_tolerates_a_briefly_unready_runtime(monkeypatch):
-    """Right after serve starts, /config/providers can answer with nothing."""
+def _v2_server(monkeypatch, responses):
+    """An OpenCodeServer whose HTTP layer replays recorded v2 responses."""
     from pipeline.grading import runner
 
     srv = runner.OpenCodeServer.__new__(runner.OpenCodeServer)
     srv._base = "http://127.0.0.1:1"
+    srv._password = "pw"
 
     class _Response:
         def __init__(self, ok, payload=None, text="", status_code=200, headers=None):
@@ -493,31 +494,44 @@ def test_the_model_list_tolerates_a_briefly_unready_runtime(monkeypatch):
                 raise ValueError("Expecting value: line 1 column 1 (char 0)")
             return self._payload
 
-    responses = iter([
-        _Response(True),  # empty body: .json() raises
-        _Response(True, {"providers": [
-            {"id": "openrouter", "models": {"a/b": {}}}]}),
-    ])
-    monkeypatch.setattr(runner.requests, "get", lambda *a, **k: next(responses))
+    monkeypatch.setattr(runner.requests, "request",
+                        lambda *a, **k: next(responses))
     monkeypatch.setattr(runner.time, "sleep", lambda *a: None)
+    return srv, _Response
 
-    assert srv.catalogue() == {"openrouter": ["a/b"]}
+
+def test_the_model_list_tolerates_a_briefly_unready_runtime(monkeypatch):
+    """Right after serve starts, /model can answer with nothing."""
+    responses = iter([
+        # Empty body: .json() raises on the first attempt.
+        None,
+    ])
+    srv, _Response = _v2_server(monkeypatch, responses)
+    # Replay: first a non-JSON body, then the recorded v2 catalogue shape.
+    payloads = iter([
+        _Response(True),
+        _Response(True, {"data": [
+            {"id": "thinkingmachines/inkling-small",
+             "modelID": "thinkingmachines/inkling-small",
+             "providerID": "openrouter"},
+            {"id": "mistral:7b-instruct-v0.3-q4_K_M",
+             "modelID": "mistral:7b-instruct-v0.3-q4_K_M",
+             "providerID": "ollama"},
+        ]}),
+    ])
+    srv._request = lambda method, path, body=None, timeout=30: next(payloads)
+
+    assert srv.catalogue() == {
+        "openrouter": ["thinkingmachines/inkling-small"],
+        "ollama": ["mistral:7b-instruct-v0.3-q4_K_M"],
+    }
 
 
 def test_an_unreadable_model_list_says_what_happened(monkeypatch):
     from pipeline.grading import runner
 
-    srv = runner.OpenCodeServer.__new__(runner.OpenCodeServer)
-    srv._base = "http://127.0.0.1:1"
-
-    class _Response:
-        ok = False
-        status_code = 502
-        text = "proxy error"
-        headers = {}
-
-    monkeypatch.setattr(runner.requests, "get", lambda *a, **k: _Response())
-    monkeypatch.setattr(runner.time, "sleep", lambda *a: None)
+    srv, _Response = _v2_server(monkeypatch, iter([]))
+    srv._request = lambda method, path, body=None, timeout=30: _Response(False, status_code=502)
 
     with pytest.raises(runner.RunnerError, match="did not return a model list"):
         srv.catalogue()
@@ -527,23 +541,116 @@ def test_a_non_json_model_list_includes_what_was_returned(monkeypatch):
     """The diagnostic must quote the body, not just call it non-JSON."""
     from pipeline.grading import runner
 
-    srv = runner.OpenCodeServer.__new__(runner.OpenCodeServer)
-    srv._base = "http://127.0.0.1:1"
-
-    class _Response:
-        ok = True
-        status_code = 200
-        text = "<html>proxy error</html>"
-        headers = {"Content-Type": "text/html"}
-
-        def json(self):
-            raise ValueError("Expecting value: line 1 column 1 (char 0)")
-
-    monkeypatch.setattr(runner.requests, "get", lambda *a, **k: _Response())
-    monkeypatch.setattr(runner.time, "sleep", lambda *a: None)
+    srv, _Response = _v2_server(monkeypatch, iter([]))
+    bad = _Response(True, text="<html>proxy error</html>",
+                    headers={"Content-Type": "text/html"})
+    srv._request = lambda method, path, body=None, timeout=30: bad
 
     with pytest.raises(runner.RunnerError, match="proxy error"):
         srv.catalogue()
+
+
+def test_prompt_waits_for_the_completed_assistant_turn(monkeypatch):
+    """v2 accepts the prompt and runs the turn in the background.
+
+    Recorded shape: POST returns the user message immediately; completion
+    is an assistant message with time.completed set.
+    """
+    from pipeline.grading import runner
+
+    srv, _Response = _v2_server(monkeypatch, iter([]))
+    calls = []
+
+    def fake_request(method, path, body=None, timeout=30):
+        calls.append((method, path, body))
+        if path.endswith("/prompt"):
+            return _Response(True, {"data": {
+                "id": "msg_u1", "type": "user",
+                "payload": {"text": "hi"}, "delivery": "steer"}})
+        # Message list: first poll still empty, second completes the turn.
+        if not hasattr(fake_request, "seen"):
+            fake_request.seen = 0
+        fake_request.seen += 1
+        if fake_request.seen == 1:
+            return _Response(True, {"data": []})
+        return _Response(True, {"data": [
+            {"id": "msg_u1", "type": "user", "text": "hi",
+             "time": {"created": 1}},
+            {"id": "msg_a1", "type": "assistant",
+             "time": {"created": 2, "completed": 3},
+             "content": [{"type": "text", "text": "HI"}],
+             "finish": "stop",
+             "tokens": {"input": 10, "output": 2, "reasoning": 0},
+             "cost": 0.0},
+        ]})
+
+    srv._request = fake_request
+    result = srv.prompt("ses_1", "hi")
+    assert srv.provider_error(result) is None
+    posts = [c for c in calls if c[0] == "POST"]
+    assert posts[0][1] == "/session/ses_1/prompt"
+    assert posts[0][2] == {"text": "hi"}
+
+
+def test_prompt_surfaces_the_provider_error(monkeypatch):
+    """Recorded v2 error shape: finish error with a provider message."""
+    srv, _Response = _v2_server(monkeypatch, iter([]))
+
+    state = {"posted": False}
+
+    def fake_request(method, path, body=None, timeout=30):
+        if path.endswith("/prompt"):
+            state["posted"] = True
+            return _Response(True, {"data": {"id": "msg_u1", "type": "user"}})
+        if not state["posted"]:
+            return _Response(True, {"data": []})
+        return _Response(True, {"data": [
+            {"id": "msg_a1", "type": "assistant",
+             "time": {"created": 2, "completed": 3},
+             "content": [], "finish": "error",
+             "error": {"type": "provider.quota",
+                       "message": "out of credits", "status": 402}},
+        ]})
+
+    srv._request = fake_request
+    result = srv.prompt("ses_1", "hi")
+    assert srv.provider_error(result) == "out of credits"
+
+
+def test_parts_map_v2_messages_onto_the_log_shape(monkeypatch):
+    """User text, assistant text, and a synthesised step-finish per turn."""
+    srv, _Response = _v2_server(monkeypatch, iter([]))
+    srv._request = lambda method, path, body=None, timeout=30: _Response(True, {"data": [
+        {"id": "msg_u1", "type": "user", "text": "hi", "time": {"created": 1}},
+        {"id": "msg_a1", "type": "assistant",
+         "time": {"created": 2, "completed": 3},
+         "content": [{"type": "text", "text": "HI"}],
+         "finish": "stop", "cost": 0.5,
+         "tokens": {"input": 10, "output": 2, "reasoning": 0}},
+        {"id": "msg_idle", "type": "idle", "time": {"created": 4}},
+    ]})
+    parts = srv.parts("ses_1")
+    assert [p["type"] for p in parts] == ["text", "text", "step-finish"]
+    assert parts[0]["text"] == "hi" and parts[1]["text"] == "HI"
+    assert parts[2]["tokens"] == {"input": 10, "output": 2, "reasoning": 0}
+    assert parts[2]["cost"] == 0.5 and parts[2]["reason"] == "stop"
+
+
+def test_steer_and_abort_use_the_v2_endpoints(monkeypatch):
+    """Steering is the same prompt endpoint; abort is interrupt."""
+    srv, _Response = _v2_server(monkeypatch, iter([]))
+    calls = []
+
+    def fake_request(method, path, body=None, timeout=30):
+        calls.append((method, path, body))
+        return _Response(True, {"data": {}, "interrupted": True})
+
+    srv._request = fake_request
+    assert srv.prompt_async("ses_1", "focus on X") is True
+    srv.abort("ses_1")
+    assert (calls[0][0], calls[0][1]) == ("POST", "/session/ses_1/prompt")
+    assert calls[0][2] == {"text": "focus on X"}
+    assert (calls[1][0], calls[1][1]) == ("POST", "/session/ses_1/interrupt")
 
 
 def test_only_the_openrouter_key_is_stored_and_nothing_else():

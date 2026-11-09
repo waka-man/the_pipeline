@@ -28,7 +28,7 @@ def write_runtime(layout, version, text="#!/bin/sh\necho v\n"):
     return binary
 
 
-def stub_probe(monkeypatch, active="1.18.35", latest="1.19.0"):
+def stub_probe(monkeypatch, active="2.2.6", latest="2.3.0"):
     monkeypatch.setattr(rt, "read_version", lambda _b: active)
     monkeypatch.setattr(rt, "latest_version", lambda timeout=rt.PROBE_TIMEOUT: latest)
 
@@ -36,11 +36,11 @@ def stub_probe(monkeypatch, active="1.18.35", latest="1.19.0"):
 # ------------------------------------------------------------------ versions
 
 def test_versions_compare_as_numbers_not_as_text():
-    # The bug this prevents: "1.9.0" > "1.18.35" as strings, because '9' > '1'.
-    assert rt.parse_version("1.19.0") > rt.parse_version("1.18.35")
-    assert rt.parse_version("1.18.35") > rt.parse_version("1.18.9")
+    # The bug this prevents: "1.9.0" > "2.2.6" as strings, because '9' > '1'.
+    assert rt.parse_version("2.3.0") > rt.parse_version("2.2.6")
+    assert rt.parse_version("2.2.6") > rt.parse_version("1.18.9")
     assert rt.parse_version("2.0.0") > rt.parse_version("1.99.99")
-    assert rt.parse_version("1.18.35") == rt.parse_version("v1.18.35")
+    assert rt.parse_version("2.2.6") == rt.parse_version("v2.2.6")
 
 
 def test_an_unparseable_version_is_unknown_rather_than_wrong():
@@ -62,11 +62,11 @@ def test_an_offline_registry_leaves_the_version_unknown(monkeypatch):
 def test_a_downloaded_runtime_wins_over_the_bundled_one(layout):
     # This is what makes a staged update take effect on the next launch: the
     # resolver prefers ours, so promoting it at startup is the whole mechanism.
-    write_runtime(layout, "1.19.0")
-    layout.write_active("1.19.0")
+    write_runtime(layout, "2.3.0")
+    layout.write_active("2.3.0")
     chosen, source = rt.resolve_binary(layout, "/app/Contents/Resources/opencode/opencode")
     assert source == "managed", (chosen, source)
-    assert "1.19.0" in chosen
+    assert "2.3.0" in chosen
 
 
 def test_with_nothing_downloaded_the_bundled_one_is_used(layout):
@@ -76,19 +76,19 @@ def test_with_nothing_downloaded_the_bundled_one_is_used(layout):
 
 
 def test_a_staged_update_does_not_displace_a_running_one(layout):
-    write_runtime(layout, "1.19.0")
-    layout.write_active("1.19.0")
+    write_runtime(layout, "2.3.0")
+    layout.write_active("2.3.0")
     write_runtime(layout, "1.20.0")
     layout.write_pending("1.20.0")
     chosen, source = rt.resolve_binary(layout, "/bundled/opencode")
     assert source == "managed"
-    assert "1.19.0" in chosen, f"a staged update displaced the running one: {chosen}"
+    assert "2.3.0" in chosen, f"a staged update displaced the running one: {chosen}"
 
 
 def test_an_active_version_whose_binary_vanished_falls_back(layout):
-    write_runtime(layout, "1.19.0")
-    layout.write_active("1.19.0")
-    layout.managed_binary("1.19.0").unlink()
+    write_runtime(layout, "2.3.0")
+    layout.write_active("2.3.0")
+    layout.managed_binary("2.3.0").unlink()
     chosen, source = rt.resolve_binary(layout, "/bundled/opencode")
     assert source == "bundled", (chosen, source)
 
@@ -96,7 +96,7 @@ def test_an_active_version_whose_binary_vanished_falls_back(layout):
 def test_a_half_finished_download_is_not_adopted(layout):
     # The directory exists but the binary does not: a download that died. Using
     # it would leave the app with nothing to launch.
-    (layout.managed_root / "1.19.0").mkdir(parents=True)
+    (layout.managed_root / "2.3.0").mkdir(parents=True)
     chosen, source = rt.resolve_binary(layout, "/bundled/opencode")
     assert source == "bundled", (chosen, source)
 
@@ -107,8 +107,8 @@ def test_a_downloaded_runtime_is_not_used_until_it_is_promoted(layout):
     # The bug: listing whatever was on disk meant a downloaded binary was
     # adopted the moment it landed, so the sidecar would switch builds between
     # two submissions of the same cohort.
-    write_runtime(layout, "1.19.0")
-    layout.write_pending("1.19.0")
+    write_runtime(layout, "2.3.0")
+    layout.write_pending("2.3.0")
 
     chosen, source = rt.resolve_binary(layout, "/bundled/opencode")
     assert source == "bundled", "a staged runtime was adopted without a restart"
@@ -116,10 +116,10 @@ def test_a_downloaded_runtime_is_not_used_until_it_is_promoted(layout):
 
     # Promotion is what puts it into use, and it is idempotent.
     manager = rt.RuntimeManager(layout.data, "/bundled/opencode")
-    assert manager.promote() == "1.19.0"
+    assert manager.promote() == "2.3.0"
     assert layout.read_pending() is None
     assert rt.resolve_binary(layout, "/bundled/opencode") == (
-        str(layout.managed_binary("1.19.0")), "managed")
+        str(layout.managed_binary("2.3.0")), "managed")
 
     assert manager.promote() is None
     assert rt.resolve_binary(layout, "/bundled/opencode")[1] == "managed"
@@ -128,7 +128,7 @@ def test_a_downloaded_runtime_is_not_used_until_it_is_promoted(layout):
 def test_a_promotion_with_nothing_downloaded_is_dropped(layout):
     # The marker said one thing and the file says another. Pointing the next
     # run at a missing binary would be worse than not updating at all.
-    layout.write_pending("1.19.0")
+    layout.write_pending("2.3.0")
     manager = rt.RuntimeManager(layout.data, "/bundled/opencode")
     assert manager.promote() is None
     assert layout.read_pending() is None
@@ -144,22 +144,22 @@ def test_a_corrupt_pending_marker_is_ignored(layout):
 # -------------------------------------------------------------------- probe
 
 def test_the_probe_reports_an_available_update(layout, monkeypatch):
-    stub_probe(monkeypatch, active="1.18.35", latest="1.19.0")
+    stub_probe(monkeypatch, active="2.2.6", latest="2.3.0")
     mgr = rt.RuntimeManager(layout.data, "/bundled/opencode")
     st = mgr.probe()
     assert st.update_available is True, st.as_dict()
-    assert st.active_version == "1.18.35"
-    assert st.latest_version == "1.19.0"
+    assert st.active_version == "2.2.6"
+    assert st.latest_version == "2.3.0"
 
 
 def test_the_probe_does_not_cry_an_update_when_already_current(layout, monkeypatch):
-    stub_probe(monkeypatch, active="1.19.0", latest="1.19.0")
+    stub_probe(monkeypatch, active="2.3.0", latest="2.3.0")
     assert rt.RuntimeManager(layout.data, "/bundled/opencode").probe().update_available is False
 
 
 def test_not_being_able_to_reach_the_registry_is_not_an_update_notice(layout, monkeypatch):
     # Offline must read as "we do not know", never as "there is an update".
-    stub_probe(monkeypatch, active="1.18.35", latest=None)
+    stub_probe(monkeypatch, active="2.2.6", latest=None)
     st = rt.RuntimeManager(layout.data, "/bundled/opencode").probe()
     assert st.update_available is False
     assert st.latest_version is None
@@ -168,16 +168,16 @@ def test_not_being_able_to_reach_the_registry_is_not_an_update_notice(layout, mo
 def test_an_unknown_installed_version_offers_no_update(layout, monkeypatch):
     # Nothing installed and nothing readable: comparing against None would be
     # comparing against nonsense.
-    stub_probe(monkeypatch, active=None, latest="1.19.0")
+    stub_probe(monkeypatch, active=None, latest="2.3.0")
     assert rt.RuntimeManager(layout.data).probe().update_available is False
 
 
 def test_a_staged_version_is_reported_as_pending(layout, monkeypatch):
-    write_runtime(layout, "1.19.0")
-    layout.write_pending("1.19.0")
-    stub_probe(monkeypatch, active="1.18.35", latest="1.19.0")
+    write_runtime(layout, "2.3.0")
+    layout.write_pending("2.3.0")
+    stub_probe(monkeypatch, active="2.2.6", latest="2.3.0")
     st = rt.RuntimeManager(layout.data, "/bundled/opencode").probe()
-    assert st.pending_version == "1.19.0"
+    assert st.pending_version == "2.3.0"
     # Not offered again: it is already downloaded and waiting.
     assert st.update_available is True
 
@@ -204,15 +204,15 @@ def test_staging_a_verified_runtime_marks_it_pending(layout, monkeypatch):
     member = _tar_member()
     monkeypatch.setattr(rt, "_fetch_tarball",
                         lambda name, version, dest: _tarball(dest, member, b"binary"))
-    monkeypatch.setattr(rt, "_package_version", lambda name, wanted: "1.19.0")
-    monkeypatch.setattr(rt, "read_version", lambda _b: "1.19.0")
+    monkeypatch.setattr(rt, "_package_version", lambda name, wanted: "2.3.0")
+    monkeypatch.setattr(rt, "read_version", lambda _b: "2.3.0")
 
     mgr = rt.RuntimeManager(layout.data, "/bundled/opencode")
-    assert mgr.stage("1.19.0") == "1.19.0"
-    assert layout.read_pending() == "1.19.0"
-    assert layout.managed_binary("1.19.0").is_file()
+    assert mgr.stage("2.3.0") == "2.3.0"
+    assert layout.read_pending() == "2.3.0"
+    assert layout.managed_binary("2.3.0").is_file()
     if os.name != "nt":
-        assert os.access(layout.managed_binary("1.19.0"), os.X_OK), \
+        assert os.access(layout.managed_binary("2.3.0"), os.X_OK), \
             "a downloaded runtime that cannot be executed will not launch"
 
 
@@ -222,52 +222,52 @@ def test_a_binary_that_reports_the_wrong_version_is_not_staged(layout, monkeypat
     member = _tar_member()
     monkeypatch.setattr(rt, "_fetch_tarball",
                         lambda name, version, dest: _tarball(dest, member, b"binary"))
-    monkeypatch.setattr(rt, "_package_version", lambda name, wanted: "1.19.0")
-    monkeypatch.setattr(rt, "read_version", lambda _b: "1.18.35")
+    monkeypatch.setattr(rt, "_package_version", lambda name, wanted: "2.3.0")
+    monkeypatch.setattr(rt, "read_version", lambda _b: "2.2.6")
 
     mgr = rt.RuntimeManager(layout.data, "/bundled/opencode")
-    with pytest.raises(RuntimeError, match="not 1.19.0"):
-        mgr.stage("1.19.0")
+    with pytest.raises(RuntimeError, match="not 2.3.0"):
+        mgr.stage("2.3.0")
     assert layout.read_pending() is None
-    assert not layout.managed_binary("1.19.0").exists()
+    assert not layout.managed_binary("2.3.0").exists()
 
 
 def test_a_tarball_without_the_expected_binary_is_refused(layout, monkeypatch):
     # This file is about to be executed. A tarball that does not contain
     # exactly the expected path is not one to pull an executable out of.
     monkeypatch.setattr(rt, "_fetch_tarball", lambda name, version, dest: _tarball(dest, "package/bin/something-else", b"x"))
-    monkeypatch.setattr(rt, "_package_version", lambda name, wanted: "1.19.0")
+    monkeypatch.setattr(rt, "_package_version", lambda name, wanted: "2.3.0")
 
     mgr = rt.RuntimeManager(layout.data, "/bundled/opencode")
     with pytest.raises(RuntimeError):
-        mgr.stage("1.19.0")
-    assert not layout.managed_binary("1.19.0").exists()
+        mgr.stage("2.3.0")
+    assert not layout.managed_binary("2.3.0").exists()
 
 
 def test_a_platform_with_no_published_build_says_so(layout, monkeypatch):
     monkeypatch.setattr(rt, "platform_package", lambda: [])
     with pytest.raises(RuntimeError, match="No opencode build"):
-        rt.RuntimeManager(layout.data).stage("1.19.0")
+        rt.RuntimeManager(layout.data).stage("2.3.0")
 
 
 def test_the_baseline_variant_is_tried_for_x86_64(monkeypatch):
     monkeypatch.setattr(rt._platform, "system", lambda: "Linux")
     monkeypatch.setattr(rt._platform, "machine", lambda: "x86_64")
-    # The prefix is `opencode-`, not `opencode-ai-`: these are the names in
-    # opencode-ai's own optionalDependencies, which is where its postinstall
-    # gets the binary from.
-    assert rt.platform_package()[0] == "opencode-linux-x64", rt.platform_package()
-    assert "opencode-linux-x64-baseline" in rt.platform_package()
+    # The prefix is the scoped `@opencode/cli-`: these are the names in
+    # @opencode/cli's own optionalDependencies, which is where its
+    # postinstall gets the binary from.
+    assert rt.platform_package()[0] == "@opencode/cli-linux-x64", rt.platform_package()
+    assert "@opencode/cli-linux-x64-baseline" in rt.platform_package()
 
 
 def test_the_platform_package_names_are_the_ones_opencode_publishes(monkeypatch):
-    # Caught a real one: the packages are opencode-darwin-arm64 and friends, not
-    # opencode-ai-*, and getting it wrong is a silent 404 on every update.
+    # Caught a real one: the packages are @opencode/cli-darwin-arm64 and
+    # friends, and getting it wrong is a silent 404 on every update.
     for system, machine, expected in [
-        ("Darwin", "arm64", ["opencode-darwin-arm64"]),
-        ("Darwin", "x86_64", ["opencode-darwin-x64", "opencode-darwin-x64-baseline"]),
-        ("Linux", "aarch64", ["opencode-linux-arm64"]),
-        ("Windows", "AMD64", ["opencode-windows-x64", "opencode-windows-x64-baseline"]),
+        ("Darwin", "arm64", ["@opencode/cli-darwin-arm64"]),
+        ("Darwin", "x86_64", ["@opencode/cli-darwin-x64", "@opencode/cli-darwin-x64-baseline"]),
+        ("Linux", "aarch64", ["@opencode/cli-linux-arm64"]),
+        ("Windows", "AMD64", ["@opencode/cli-windows-x64", "@opencode/cli-windows-x64-baseline"]),
     ]:
         monkeypatch.setattr(rt._platform, "system", lambda s=system: s)
         monkeypatch.setattr(rt._platform, "machine", lambda m=machine: m)

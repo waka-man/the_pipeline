@@ -361,11 +361,11 @@ def test_the_written_mcp_command_matches_this_process(tmp_path, spec):
     class _Server:
         pass
 
-    grader = Grader(_Server(), None, spec, run_id=1, run_dir=tmp_path,
+    grader = Grader(lambda workspace: _Server(), None, spec, run_id=1, run_dir=tmp_path,
                     code_root=ROOT / "sidecar", python_exe=sys.executable)
     path = grader._write_opencode_config(tmp_path / "ws", tmp_path / "spec.json",
                                         tmp_path / "out.json", tmp_path / "meta.json")
-    command = json.loads(path.read_text())["mcp"]["grader"]["command"]
+    command = json.loads(path.read_text())["mcp"]["servers"]["grader"]["command"]
     assert command == mcp_command(sys.executable, ROOT / "sidecar")
 
 
@@ -384,11 +384,11 @@ def test_the_written_command_follows_frozen_detection(tmp_path, spec, monkeypatc
         pass
 
     monkeypatch.setattr(sys, "frozen", True, raising=False)
-    grader = Grader(_Server(), None, spec, run_id=1, run_dir=tmp_path,
+    grader = Grader(lambda workspace: _Server(), None, spec, run_id=1, run_dir=tmp_path,
                     code_root=ROOT / "sidecar", python_exe=sys.executable)
     path = grader._write_opencode_config(tmp_path / "ws", tmp_path / "spec.json",
                                         tmp_path / "out.json", tmp_path / "meta.json")
-    command = json.loads(path.read_text())["mcp"]["grader"]["command"]
+    command = json.loads(path.read_text())["mcp"]["servers"]["grader"]["command"]
     assert command == [sys.executable, "--mcp"]
 
 
@@ -541,8 +541,8 @@ def test_a_release_and_a_dev_build_pin_the_same_runtime():
     pkg = json.loads((ROOT / "apps/desktop/package.json").read_text(encoding="utf-8"))
     scripts = pkg.get("scripts") or {}
     fetch = scripts.get("fetch:opencode", "")
-    assert "opencode-ai@" in fetch, "the dev fetch script no longer pins a version"
-    pinned = re.search(r"opencode-ai@([0-9][^\s&|]*)", fetch).group(1)
+    assert "@opencode/cli@" in fetch, "the dev fetch script no longer pins a version"
+    pinned = re.search(r"@opencode/cli@([0-9][^\s&|]*)", fetch).group(1)
 
     workflow = yaml.safe_load(
         (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8"))

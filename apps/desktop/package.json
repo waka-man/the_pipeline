@@ -11,7 +11,7 @@
     "build": "electron-builder",
     "build:dir": "electron-builder --dir",
     "lint": "eslint .",
-    "fetch:opencode": "npm install --no-save --prefix .opencode opencode-ai@1.18.35 && mkdir -p resources/opencode && cp .opencode/node_modules/opencode-ai/bin/* resources/opencode/opencode && chmod +x resources/opencode/opencode"
+    "fetch:opencode": "npm install --no-save --prefix .opencode @opencode/cli@2.2.6 && mkdir -p resources/opencode && cp .opencode/node_modules/@opencode/cli/bin/* resources/opencode/opencode && chmod +x resources/opencode/opencode"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

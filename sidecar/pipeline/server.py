@@ -123,7 +123,11 @@ class AppState:
     store: Store
     bus: EventBus
     settings: config.Settings = field(default_factory=config.Settings.load)
-    server: OpenCodeServer | None = None
+    # One opencode server per project directory (v2 serves a single project
+    # per process), keyed by directory. Grading a cohort of 150 students
+    # therefore holds up to 150 small servers, one per workspace, started
+    # lazily and stopped together at job end.
+    servers: dict[str, OpenCodeServer] = field(default_factory=dict)
     catalogue: dict[str, list[str]] = field(default_factory=dict)
     choice: Any = None
     jobs: dict[str, threading.Thread] = field(default_factory=dict)
@@ -297,7 +301,7 @@ class AppState:
         # step-start and anything unrecognised: nothing worth a line.
         return None
 
-    def poll_agent_log(self, srv: OpenCodeServer, stop: threading.Event,
+    def poll_agent_log(self, server_for, stop: threading.Event,
                        drain: bool = False) -> None:
         """Poll each active session and record parts the log has not seen.
 
@@ -320,6 +324,9 @@ class AppState:
                                if sid not in self.active_sessions]
             for sid, (row_id, directory) in watched:
                 seen = self.agent_seen.setdefault(sid, {})
+                srv = server_for(directory)
+                if srv is None:
+                    continue
                 try:
                     parts = srv.parts(sid, directory or None)
                 except Exception:
@@ -368,7 +375,7 @@ class AppState:
                 self.recent_sessions.clear()
                 return
 
-    def start_agent_log(self, srv: OpenCodeServer) -> threading.Event:
+    def start_agent_log(self, server_for) -> threading.Event:
         """Follow the agent's output for the duration of a grading job.
 
         Returns a callable rather than an event. Calling it stops the poller but
@@ -380,7 +387,7 @@ class AppState:
         closed it and opened it again.
         """
         stop = threading.Event()
-        thread = threading.Thread(target=self.poll_agent_log, args=(srv, stop),
+        thread = threading.Thread(target=self.poll_agent_log, args=(server_for, stop),
                                   name="agent-log", daemon=True)
         thread.start()
 
@@ -388,7 +395,7 @@ class AppState:
             # Drain first, stop second: the last poll is the only chance to
             # record what the agent wrote after the final regular one.
             try:
-                self.poll_agent_log(srv, stop, drain=True)
+                self.poll_agent_log(server_for, stop, drain=True)
             except Exception:
                 pass
             stop.set()
@@ -446,21 +453,24 @@ class AppState:
         return extra
 
     def stop_opencode(self) -> None:
-        if self.server is not None:
-            self.server.stop()
-            self.server = None
-            self.catalogue = {}
+        for srv in self.servers.values():
+            srv.stop()
+        self.servers.clear()
+        self.catalogue = {}
 
-    def ensure_opencode(self) -> OpenCodeServer:
-        if self.server is None:
-            srv = OpenCodeServer()
+    def ensure_server(self, directory: str | Path) -> OpenCodeServer:
+        """The started server for a project directory, creating it on demand."""
+        key = str(directory)
+        srv = self.servers.get(key)
+        if srv is None:
+            srv = OpenCodeServer(cwd=directory)
             srv.start(self.opencode_env())
-            self.server = srv
+            self.servers[key] = srv
             try:
                 self.catalogue = srv.catalogue()
             except Exception:
                 self.catalogue = {}
-        return self.server
+        return srv
 
 
 # -------------------------------------------------------------------- jobs
@@ -611,15 +621,15 @@ def op_save_settings(state: AppState, body: dict[str, Any]) -> dict[str, Any]:
             # user with no way to unconfigure one they pasted by mistake.
             config.delete_secret("openrouter_api_key")
     state.settings = config.Settings.load()
-    # The opencode process holds the old environment, so it has to be restarted
-    # before a new or removed key takes effect.
-    if "openrouter_api_key" in body and state.server is not None:
+    # The opencode processes hold the old environment, so they have to be
+    # restarted before a new or removed key takes effect.
+    if "openrouter_api_key" in body:
         state.stop_opencode()
     return op_status(state)
 
 
 def op_models(state: AppState) -> dict[str, Any]:
-    srv = state.ensure_opencode()
+    srv = state.ensure_server(str(state.settings.data))
     catalogue = state.catalogue or srv.catalogue()
     state.catalogue = catalogue
     candidates = config.candidates_from_catalogue(
@@ -643,7 +653,8 @@ def resolve_model(state: AppState, model_id: str | None) -> tuple[Any, str, int]
     picking a model there resolves exactly the way it does on setup rather than
     through a second, subtly different path.
     """
-    catalogue = state.catalogue or state.ensure_opencode().catalogue()
+    catalogue = state.catalogue or state.ensure_server(
+        str(state.settings.data)).catalogue()
     state.catalogue = catalogue
     prefer = model_id != "no-prefer-free"
     wanted = None if model_id == "no-prefer-free" else (model_id or None)
@@ -658,7 +669,8 @@ def resolve_model(state: AppState, model_id: str | None) -> tuple[Any, str, int]
 
 
 def op_select_model(state: AppState, body: dict[str, Any]) -> dict[str, Any]:
-    catalogue = state.catalogue or state.ensure_opencode().catalogue()
+    catalogue = state.catalogue or state.ensure_server(
+        str(state.settings.data)).catalogue()
     state.catalogue = catalogue
     prefer = body.get("model") != "no-prefer-free"
     model = body.get("model") or None
@@ -851,7 +863,9 @@ def op_grade(state: AppState, run_id: int, body: dict[str, Any]) -> dict[str, An
                                   "progress": store.progress(run_id)})
             return
 
-        srv = state.ensure_opencode()
+        # Warm one server so a missing binary fails before the job starts
+        # rather than mid-cohort. Per-workspace servers start lazily.
+        state.ensure_server(str(settings.data))
         # A model chosen on the grade stage applies to this run and leaves the
         # saved default alone. The model on the setup page is a starting point,
         # not a lock: switching between a free model and a stronger one between
@@ -912,8 +926,8 @@ def op_grade(state: AppState, run_id: int, body: dict[str, Any]) -> dict[str, An
                 # whole session from the top.
             bus.emit(event, data)
 
-        log_stop = state.start_agent_log(srv)
-        grader = Grader(srv, store, spec, run_id,
+        log_stop = state.start_agent_log(state.ensure_server)
+        grader = Grader(state.ensure_server, store, spec, run_id,
                         state.settings.run_dir(spec.course_id, spec.assignment_id),
                         CODE_ROOT, python_exe=_python_exe(),
                         emit=emit_agent, model=model, budget=budget,
@@ -1202,9 +1216,11 @@ def op_stop_submission(state: AppState, row_id: int) -> dict[str, Any]:
     # for tokens nobody is going to read.
     sid = next((s for s, rid in state.session_rows.items() if rid == row_id), "")
     aborted = False
-    if sid and state.server is not None:
+    entry = state.active_sessions.get(sid) if sid else None
+    srv = state.servers.get(entry[1]) if entry else None
+    if srv is not None:
         try:
-            state.server.abort(sid)
+            srv.abort(sid)
             aborted = True
         except Exception:
             aborted = False
@@ -1242,7 +1258,8 @@ def op_steer_submission(state: AppState, row_id: int, body: dict[str, Any]) -> d
     directory = ""
     if sid and sid in state.active_sessions:
         directory = state.active_sessions[sid][1] or ""
-    if not sid or sid not in state.active_sessions or state.server is None:
+    srv = state.servers.get(directory) if directory else None
+    if not sid or sid not in state.active_sessions or srv is None:
         raise ApiError("no agent is grading this submission right now", 409)
 
     wrapped = (
@@ -1251,7 +1268,7 @@ def op_steer_submission(state: AppState, row_id: int, body: dict[str, Any]) -> d
         f"{message}\n"
         "Incorporate this into your grading of this submission and continue."
     )
-    if not state.server.prompt_async(sid, wrapped, directory=directory or None):
+    if not srv.prompt_async(sid, wrapped, directory=directory or None):
         raise ApiError("the agent session did not accept the instruction", 502)
     state.bus.emit("agent.steer", {
         "submission_row_id": row_id, "student": student,

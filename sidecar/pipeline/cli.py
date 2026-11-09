@@ -177,9 +177,14 @@ def cmd_grade(args: argparse.Namespace) -> int:
         print("nothing to grade; run `collect` first.")
         return 0
 
-    server = OpenCodeServer(model=chosen,
-                            max_output_tokens=choice.max_output_tokens)
-    grader = Grader(server, store, spec, run_id, run_dir, CODE_ROOT,
+    def _server_for(workspace: Path):
+        srv = OpenCodeServer(model=chosen,
+                             max_output_tokens=choice.max_output_tokens,
+                             cwd=workspace)
+        srv.start()
+        return srv
+
+    grader = Grader(_server_for, store, spec, run_id, run_dir, CODE_ROOT,
                     python_exe=sys.executable,
                     emit=_emit_printer(args.verbose),
                     max_attempts=args.attempts, model=chosen,

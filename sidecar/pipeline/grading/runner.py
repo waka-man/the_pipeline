@@ -55,24 +55,24 @@ SYSTEM_ENV = {
 }
 
 
-def require_v1_opencode(binary: str) -> None:
+def require_v2_opencode(binary: str) -> None:
     """Refuse an opencode whose server API this pipeline does not speak.
 
-    The pipeline drives `opencode serve` over its v1 HTTP API. A v2 binary
-    answers the same paths with its web UI (200 text/html), so every call
-    fails far from the cause, as a JSON error in the model list. A PATH
-    fallback can silently find v2 on a developer machine; fail fast with
-    the fix instead.
+    The pipeline drives `opencode serve` over the v2 HTTP API under /api
+    with basic auth. A v1 binary answers those paths with 404s or its own
+    shapes, and a PATH fallback can silently find the wrong major version.
+    Fail fast with the fix instead of failing far from the cause, as a
+    JSON error in the model list.
     """
     from ..runtime import parse_version, read_version
 
     version = read_version(binary)
     parsed = parse_version(version)
-    if parsed is not None and parsed[0] != 1:
+    if parsed is not None and parsed[0] != 2:
         raise RunnerError(
-            f"opencode {parsed[0]}.{parsed[1]}.{parsed[2]} is too new: the "
-            "pipeline speaks the v1 server API. The app uses its own "
-            "bundled runtime (1.18.x) for exactly this reason; point "
+            f"opencode {parsed[0]}.{parsed[1]}.{parsed[2]} is not v2: the "
+            "pipeline speaks the v2 server API. The app uses its own "
+            "bundled runtime for exactly this reason; point "
             "GRADING_PIPELINE_OPENCODE at the bundled binary instead of a "
             "system opencode."
         )
@@ -161,19 +161,26 @@ def mcp_command(executable: str, code_root: Path, *,
 
 @dataclass
 class OpenCodeServer:
-    """A headless opencode process, reachable over its HTTP API."""
+    """A headless opencode v2 process, reachable over its HTTP API.
+
+    One server serves one project directory (its cwd): v2 sessions always
+    live in the server's project. Per-student isolation therefore means
+    one server per workspace, cached by the caller.
+    """
 
     binary: str = "opencode"
     model: str = ""
     hostname: str = "127.0.0.1"
     port: int = field(default_factory=free_port)
     timeout: int = 60
+    cwd: str | Path | None = None
     # A metered or free key can refuse a large max_tokens even when small
     # requests succeed, so the ceiling measured at preflight is enforced here
     # rather than letting the agent request its 32k default and get a 402.
     max_output_tokens: int = 0
     _proc: subprocess.Popen | None = None
     _base: str = ""
+    _password: str = ""
 
     def __post_init__(self) -> None:
         ensure_loopback_proxy_bypass()
@@ -195,6 +202,36 @@ class OpenCodeServer:
             if override:
                 self.binary = override
         self._base = f"http://{self.hostname}:{self.port}"
+        # v2 requires basic auth on every API call. We choose the password
+        # ourselves (via OPENCODE_SERVER_PASSWORD) instead of scraping the
+        # generated one from the server's output.
+        import secrets
+        self._password = secrets.token_urlsafe(24)
+
+    def _auth_header(self) -> str:
+        import base64
+        return "Basic " + base64.b64encode(
+            f"opencode:{self._password}".encode()).decode()
+
+    def _request(self, method: str, path: str, body: Any = None,
+                 timeout: int = 30):
+        """One authenticated v2 API call. Paths are given without /api."""
+        headers = {"Authorization": self._auth_header()}
+        if body is not None:
+            headers["Content-Type"] = "application/json"
+        return requests.request(
+            method, self._base + "/api" + path, headers=headers,
+            json=body, timeout=timeout)
+
+    @staticmethod
+    def _data(response) -> Any:
+        """Unwrap v2's {"data": ...} envelope; bare payloads pass through."""
+        try:
+            payload = response.json()
+        except ValueError:
+            raise RunnerError(
+                f"unexpected non-JSON response (HTTP {response.status_code})")
+        return payload.get("data", payload) if isinstance(payload, dict) else payload
 
     def start(self, extra_env: dict[str, str] | None = None) -> None:
         if not Path(self.binary).is_file() and shutil.which(self.binary) is None:
@@ -202,13 +239,15 @@ class OpenCodeServer:
                 f"'{self.binary}' is not on PATH. Install opencode, or set "
                 "GRADING_PIPELINE_OPENCODE to its path."
             )
-        require_v1_opencode(self.binary)
+        require_v2_opencode(self.binary)
         env = {**os.environ, **SYSTEM_ENV, **(extra_env or {})}
+        env["OPENCODE_SERVER_PASSWORD"] = self._password
         if self.max_output_tokens:
             env["OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX"] = str(self.max_output_tokens)
         self._proc = subprocess.Popen(
             [self.binary, "serve", "--hostname", self.hostname, "--port", str(self.port)],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env, text=True,
+            cwd=str(self.cwd) if self.cwd else None,
         )
         deadline = time.time() + self.timeout
         while time.time() < deadline:
@@ -216,10 +255,9 @@ class OpenCodeServer:
                 err = (self._proc.stderr.read() or "")[:800] if self._proc.stderr else ""
                 raise RunnerError(f"opencode serve exited immediately: {err}")
             try:
-                r = requests.get(f"{self._base}/global/health", timeout=3)
-                # A 200 alone is not health: a wrong-major server answers
-                # its web UI with 200 text/html. Require the v1 JSON shape.
-                if r.ok and (r.json() or {}).get("healthy") is True:
+                r = self._request("GET", "/config", timeout=3)
+                if r.ok:
+                    r.json()  # any JSON answers means the v2 API is up
                     return
             except (requests.RequestException, ValueError):
                 pass
@@ -236,6 +274,26 @@ class OpenCodeServer:
                 self._proc.kill()
         self._proc = None
 
+    # ---------------------------------------------------------------- API
+
+    def url(self, path: str, directory: str | None = None) -> str:
+        # v2 sessions live in the server's project directory; there is no
+        # per-call directory. Kept for call-site compatibility.
+        return self._base + "/api" + path
+
+    def create_session(self, title: str, directory: str | None = None,
+                       model: str | None = None) -> dict[str, Any]:
+        body: dict[str, Any] = {"title": title}
+        if model:
+            parts = model.split("/", 1)
+            if len(parts) == 2:
+                body["model"] = {"id": parts[1], "providerID": parts[0]}
+        r = self._request("POST", "/session", body, timeout=30)
+        if not r.ok:
+            raise RunnerError(f"create session failed: {r.status_code} {r.text[:200]}")
+        data = self._data(r)
+        return {"id": data.get("id", ""), "raw": data}
+
     def __enter__(self) -> "OpenCodeServer":
         self.start()
         return self
@@ -246,112 +304,160 @@ class OpenCodeServer:
     # ---------------------------------------------------------------- API
 
     def url(self, path: str, directory: str | None = None) -> str:
-        u = f"{self._base}{path}"
-        if directory:
-            u += ("&" if "?" in u else "?") + f"directory={directory}"
-        return u
-
-    def create_session(self, title: str, directory: str) -> dict[str, Any]:
-        r = requests.post(self.url("/session", directory), json={"title": title}, timeout=30)
-        r.raise_for_status()
-        return r.json()
+        # v2 sessions live in the server's project directory; there is no
+        # per-call directory. Kept for call-site compatibility.
+        return self._base + "/api" + path
 
     def prompt(self, session_id: str, text: str, system: str | None = None,
                agent: str | None = None, model: str | None = None,
                directory: str | None = None, timeout: int = 1800) -> dict[str, Any]:
-        body: dict[str, Any] = {"parts": [{"type": "text", "text": text}]}
+        """Send a prompt and wait for the turn to finish.
+
+        v2 accepts the message and returns the user message immediately;
+        the turn runs in the background. Completion is therefore polled
+        from the message list until a new assistant message completes.
+        The model is chosen at session creation in v2, so `model` here is
+        accepted for compatibility and ignored.
+        """
+        body: dict[str, Any] = {"text": text}
         if system:
             body["system"] = system
         if agent:
             body["agent"] = agent
-        if model:
-            body["model"] = {"providerID": model.split("/")[0],
-                             "modelID": "/".join(model.split("/")[1:])}
-        r = requests.post(self.url(f"/session/{session_id}/message", directory),
-                          json=body, timeout=timeout)
+        before_ids = {m.get("id") for m in self._messages(session_id)}
+        r = self._request("POST", f"/session/{session_id}/prompt", body, timeout=30)
         if not r.ok:
             raise RunnerError(f"prompt failed: {r.status_code} {r.text[:300]}")
-        return r.json()
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            messages = self._messages(session_id)
+            fresh = [m for m in messages
+                     if m.get("id") not in before_ids
+                     and m.get("type") == "assistant"
+                     and (m.get("time") or {}).get("completed")]
+            if fresh:
+                assistant = fresh[-1]
+                error = assistant.get("error") or {}
+                info: dict[str, Any] = {}
+                if error:
+                    info["error"] = {"message": error.get("message") or "",
+                                     "name": error.get("type") or "error"}
+                return {"info": info, "parts": self.parts(session_id)}
+            time.sleep(2)
+        raise RunnerError("timed out waiting for the agent turn to finish")
 
     def prompt_async(self, session_id: str, text: str, model: str | None = None,
                      directory: str | None = None) -> bool:
         """Send a message without waiting for the turn to finish.
 
         This is the steering channel: the instructor can add an instruction
-        while the agent is mid-turn. opencode accepts it (204) and records it
-        in the session, where the running turn picks it up. Returns False
-        when the session cannot accept it (unknown session, server down).
+        while the agent is mid-turn. opencode accepts it and records it in
+        the session, where the running turn picks it up. Returns False when
+        the session cannot accept it (unknown session, server down).
         """
-        body: dict[str, Any] = {"parts": [{"type": "text", "text": text}]}
-        if model:
-            body["model"] = {"providerID": model.split("/")[0],
-                             "modelID": "/".join(model.split("/")[1:])}
         try:
-            r = requests.post(self.url(f"/session/{session_id}/prompt_async", directory),
-                              json=body, timeout=15)
-            return r.status_code == 204
+            r = self._request("POST", f"/session/{session_id}/prompt",
+                              {"text": text}, timeout=15)
+            return r.ok
         except requests.RequestException:
             return False
 
     def provider_error(self, response: dict[str, Any]) -> str | None:
         """The provider's own error message, if the turn failed."""
         err = ((response or {}).get("info") or {}).get("error") or {}
-        data = err.get("data") or {}
-        return data.get("message") or err.get("name")
+        return err.get("message") or err.get("name")
 
-    def parts(self, session_id: str, directory: str | None = None) -> list[dict[str, Any]]:
-        """The session's message parts so far.
-
-        This, not opencode's /event stream, is what the live log reads from. The
-        stream proved unreliable in practice: against the same server, curl and
-        requests both received only the opening frame and heartbeats while the
-        turn was demonstrably running, so there was nothing to display. The REST
-        endpoint returns the reasoning and text parts as they are written, which
-        is the same information without depending on a long-lived connection
-        that a restarted server or a dropped socket can silently kill.
-        """
+    def _messages(self, session_id: str) -> list[dict[str, Any]]:
         try:
-            r = requests.get(self.url(f"/session/{session_id}/message", directory), timeout=20)
+            r = self._request("GET", f"/session/{session_id}/message", timeout=20)
             if not r.ok:
                 return []
-            payload = r.json()
+            data = self._data(r)
         except Exception:
             return []
+        return data if isinstance(data, list) else []
+
+    def parts(self, session_id: str, directory: str | None = None) -> list[dict[str, Any]]:
+        """The session's message parts so far, in the pipeline's part shape.
+
+        This, not opencode's event stream, is what the live log reads from.
+        The stream proved unreliable in practice: against the same server,
+        curl and requests both received only the opening frame and
+        heartbeats while the turn was demonstrably running, so there was
+        nothing to display. The REST endpoint returns the reasoning and
+        text parts as they are written, which is the same information
+        without depending on a long-lived connection that a restarted
+        server or a dropped socket can silently kill.
+        """
         out: list[dict[str, Any]] = []
-        for msg in (payload if isinstance(payload, list) else [payload]):
-            for part in (msg.get("parts") or []):
-                pid = part.get("id") or ""
-                if not pid:
-                    continue
-                out.append({
-                    "id": pid,
-                    "type": part.get("type") or "",
-                    "text": part.get("text") or "",
-                    "tool": part.get("tool") or "",
-                    # The whole state, not just its error: the live log renders
-                    # the call's title, its arguments and its output, and a tool
-                    # part without them is just a verb.
-                    "state": part.get("state") or {},
-                    "cost": part.get("cost"),
-                    "tokens": part.get("tokens") or {},
-                    "reason": part.get("reason"),
-                })
+        # v2 lists messages newest-first; the log poller assumes chronological
+        # order (it skips the first text part as the prompt echo and appends
+        # reasoning growth), so sort by creation time before mapping.
+        messages = sorted(
+            self._messages(session_id),
+            key=lambda m: (m.get("time") or {}).get("created") or 0)
+        for msg in messages:
+            mid = msg.get("id") or ""
+            if not mid:
+                continue
+            if msg.get("type") == "user":
+                text = msg.get("text") or ((msg.get("payload") or {}).get("text") or "")
+                if text:
+                    out.append({"id": mid, "type": "text", "text": text,
+                                "tool": "", "state": {}, "cost": None,
+                                "tokens": {}, "reason": None})
+                continue
+            if msg.get("type") != "assistant":
+                continue
+            for index, item in enumerate(msg.get("content") or []):
+                itype = item.get("type") or ""
+                if itype == "text":
+                    out.append({"id": f"{mid}:{index}", "type": "text",
+                                "text": item.get("text") or "", "tool": "",
+                                "state": {}, "cost": None, "tokens": {},
+                                "reason": None})
+                elif itype == "reasoning":
+                    out.append({"id": f"{mid}:{index}", "type": "reasoning",
+                                "text": item.get("text") or "", "tool": "",
+                                "state": {}, "cost": None, "tokens": {},
+                                "reason": None})
+                elif "tool" in itype:
+                    error = item.get("error")
+                    out.append({
+                        "id": item.get("id") or f"{mid}:{index}",
+                        "type": "tool",
+                        "text": "",
+                        "tool": item.get("name") or item.get("tool") or "",
+                        "state": {
+                            "title": item.get("title") or "",
+                            "input": item.get("input") or item.get("args") or {},
+                            "status": item.get("status") or (
+                                "error" if error else "completed"),
+                            "output": str(item.get("output") or (
+                                (error or {}).get("message") if isinstance(error, dict)
+                                else "") or ""),
+                            "metadata": item.get("metadata") or {},
+                        },
+                        "cost": None, "tokens": {}, "reason": None,
+                    })
+            tokens = msg.get("tokens") or {}
+            out.append({
+                "id": f"{mid}:finish", "type": "step-finish", "text": "",
+                "tool": "", "state": {},
+                "cost": msg.get("cost"),
+                "tokens": {k: v for k, v in tokens.items()
+                           if isinstance(v, (int, float))},
+                "reason": msg.get("finish"),
+            })
         return out
 
     def events(self, stop: threading.Event, out: queue.Queue,
                directory: str | None = None) -> threading.Thread:
         def run() -> None:
             try:
-                with requests.get(self.url("/event", directory), stream=True,
+                with requests.get(self.url("/event"), stream=True,
+                                  headers={"Authorization": self._auth_header()},
                                   timeout=(10, 3600)) as resp:
-                    # resp.raw.stream_lines, not resp.iter_lines. requests'
-                    # iter_lines sits on iter_content, which buffers instead of
-                    # yielding as the socket fills: against an endpoint that never
-                    # ends, that is an event stream that delivers nothing at all,
-                    # forever, with no error. Verified here - curl against the
-                    # same URL receives every event while requests received only
-                    # the opening frame and heartbeats. urllib3's stream_lines
-                    # exists for exactly this and yields per line.
                     for raw in resp.raw.stream_lines(decode_unicode=True):
                         if stop.is_set():
                             return
@@ -374,32 +480,26 @@ class OpenCodeServer:
         This is the pipeline's only view of available models. Model
         credentials live in opencode's auth store and are never read here.
         """
-        payload = self._providers_payload()
+        payload = self._models_payload()
         out: dict[str, list[str]] = {}
-        for provider in payload.get("providers") or []:
-            pid = provider.get("id")
-            if not pid:
-                continue
-            models = provider.get("models") or {}
-            if isinstance(models, dict):
-                ids = [k for k in models.keys()]
-            else:
-                ids = [m.get("id") for m in models if m.get("id")]
-            out[pid] = [m for m in ids if m]
+        for entry in payload:
+            pid = entry.get("providerID") or ""
+            mid = entry.get("modelID") or entry.get("id") or ""
+            if pid and mid:
+                out.setdefault(pid, []).append(mid)
         return out
 
-    def _providers_payload(self, attempts: int = 3) -> dict[str, Any]:
-        """GET /config/providers, tolerating a briefly-unready server.
+    def _models_payload(self, attempts: int = 3) -> list[dict[str, Any]]:
+        """GET /model, tolerating a briefly-unready server.
 
         Right after `serve` starts, the endpoint can answer with an empty
-        or non-JSON body. A bare .json() turns that into a JSONDecodeError
-        that tells the user nothing, so retry a few times and then say
-        what actually happened, including a snippet of the offending body.
+        or non-JSON body. Retry a few times and then say what actually
+        happened, including a snippet of the offending body.
         """
         last = ""
         for attempt in range(attempts):
             try:
-                response = requests.get(f"{self._base}/config/providers", timeout=15)
+                response = self._request("GET", "/model", timeout=15)
                 if response.ok:
                     try:
                         payload = response.json()
@@ -409,9 +509,10 @@ class OpenCodeServer:
                         last = (f"a non-JSON response "
                                 f"(HTTP {response.status_code}, {ctype}: {snippet!r})")
                     else:
-                        if isinstance(payload, dict):
-                            return payload
-                        last = "a JSON response that is not an object"
+                        data = payload.get("data", payload) if isinstance(payload, dict) else payload
+                        if isinstance(data, list):
+                            return data
+                        last = "a JSON response that is not a list"
                 else:
                     last = f"HTTP {response.status_code}"
             except requests.RequestException as exc:
@@ -425,15 +526,12 @@ class OpenCodeServer:
         )
 
     def defaults(self) -> dict[str, str]:
-        try:
-            return requests.get(f"{self._base}/config/providers", timeout=60).json().get(
-                "default") or {}
-        except Exception:
-            return {}
+        # v2 has no equivalent default-model map in the catalogue response.
+        return {}
 
     def abort(self, session_id: str) -> None:
         try:
-            requests.post(f"{self._base}/session/{session_id}/abort", timeout=10)
+            self._request("POST", f"/session/{session_id}/interrupt", {}, timeout=10)
         except requests.RequestException:
             pass
 
@@ -475,13 +573,20 @@ class GradeResult:
 
 
 class Grader:
-    def __init__(self, server: OpenCodeServer, store: Store, spec: AssignmentSpec,
+    def __init__(self, server_for: Callable[[Path], OpenCodeServer],
+                 store: Store, spec: AssignmentSpec,
                  run_id: int, run_dir: Path, code_root: Path,
                  python_exe: str | None = None, emit: Emitter | None = None,
                  max_attempts: int = 2, agent_name: str = "grader",
                  model: str = "", budget: int = 8192,
                  should_stop: Callable[[int], bool] | None = None):
-        self.server = server
+        # v2 serves one project directory per server, and each student
+        # workspace is its own project (its config carries that student's
+        # MCP environment). So the grader asks for the server of the
+        # workspace it is about to grade in, rather than holding one
+        # server for the whole run.
+        self._server_for = server_for
+        self._servers: dict[str, OpenCodeServer] = {}
         self.store = store
         self.spec = spec
         self.run_id = run_id
@@ -505,6 +610,14 @@ class Grader:
 
     # ------------------------------------------------------------ helpers
 
+    def _server(self, workspace: Path) -> OpenCodeServer:
+        key = str(workspace)
+        srv = self._servers.get(key)
+        if srv is None:
+            srv = self._server_for(workspace)
+            self._servers[key] = srv
+        return srv
+
     def _workspace_for(self, unit: SubmissionUnit) -> Path:
         from ..sources import slug
         return self.run_dir / "submissions" / slug(unit.display_name)
@@ -514,50 +627,50 @@ class Grader:
         cfg: dict[str, Any] = {
             "$schema": "https://opencode.ai/config.json",
             "mcp": {
-                MCP_SERVER_NAME: {
-                    "type": "local",
-                    "command": mcp_command(self.python_exe, self.code_root),
-                    "enabled": True,
-                    "environment": {
-                        "GP_SPEC_PATH": str(spec_path),
-                        "GP_OUT_PATH": str(out_path),
-                        "GP_META_PATH": str(meta_path),
-                        "GP_CODE_ROOT": str(self.code_root),
-                        "PYTHONPATH": str(self.code_root),
-                    },
+                "servers": {
+                    MCP_SERVER_NAME: {
+                        "type": "local",
+                        "command": mcp_command(self.python_exe, self.code_root),
+                        # Direct native tools, not Code Mode grouping, so the
+                        # model sees grader_submit_scorecard itself.
+                        "codemode": False,
+                        "environment": {
+                            "GP_SPEC_PATH": str(spec_path),
+                            "GP_OUT_PATH": str(out_path),
+                            "GP_META_PATH": str(meta_path),
+                            "GP_CODE_ROOT": str(self.code_root),
+                            "PYTHONPATH": str(self.code_root),
+                        },
+                    }
                 }
             },
-            "agent": {
+            "agents": {
                 self.agent_name: {
                     "description": "Grades one student submission against a rubric.",
                     "mode": "primary",
-                    "prompt": GRADER_AGENT_PROMPT.replace("{tool}", EXPOSED_TOOL_NAME),
-                    "tools": {
-                        "read": True,
-                        "write": False,
-                        "edit": False,
-                        "bash": True,
-                        "grep": True,
-                        "glob": True,
-                        "webfetch": False,
-                        "task": False,
-                        "todowrite": True,
-                        "websearch": False,
-                        "patch": False,
-                    },
-                    "permission": {"edit": "deny", "webfetch": "deny"},
-                    "maxSteps": 60,
+                    "system": GRADER_AGENT_PROMPT.replace("{tool}", EXPOSED_TOOL_NAME),
+                    "permissions": [
+                        {"action": "edit", "resource": "*", "effect": "deny"},
+                        {"action": "webfetch", "resource": "*", "effect": "deny"},
+                        {"action": "websearch", "resource": "*", "effect": "deny"},
+                        {"action": "subagent", "resource": "*", "effect": "deny"},
+                    ],
                 }
             },
-            "permission": {"edit": "deny", "webfetch": "deny"},
         }
         if self.model:
             cfg["model"] = self.model
-        # A reasoning model spends the output budget on thinking and can finish
-        # with no answer at all. On a tight budget, ask for reasoning to be off.
-        if self.budget < 4096:
-            cfg["agent"][self.agent_name]["options"] = {"reasoning_effort": "none"}
-            cfg["agent"][self.agent_name]["variant"] = "minimal"
+            # The output ceiling lives in the model config in v2, not in a
+            # server env var: without it the provider is asked for its full
+            # default (hundreds of thousands of tokens) and a key with a
+            # small credit balance refuses outright. Rewritten on every
+            # budget reduction, which restarts the workspace server.
+            provider, _, model_id = self.model.partition("/")
+            if provider and model_id:
+                cfg["providers"] = {
+                    provider: {"models": {model_id: {
+                        "limit": {"output": int(self.budget)}}}}
+                }
         workspace.mkdir(parents=True, exist_ok=True)
         path = workspace / "opencode.json"
         path.write_text(json.dumps(cfg, indent=2), newline=_NL)
@@ -576,9 +689,10 @@ class Grader:
         Rather than failing the student, the ceiling is read out of opencode's
         error and the turn is retried at a size the key can afford.
         """
-        session = self.server.create_session(
+        srv = self._server(workspace)
+        session = srv.create_session(
             f"{self.spec.title} — {unit.display_name} (attempt {attempt_no})",
-            directory=str(workspace))
+            directory=str(workspace), model=self.model or None)
         session_id = session.get("id", "")
         # Recorded per submission so the retry loop can name the session it is
         # reporting on. It used to keep its own empty local, so every terminal
@@ -591,11 +705,11 @@ class Grader:
             "session_id": session_id, "attempt": attempt_no, "model": self.model,
             "directory": str(workspace),
         })
-        response = self.server.prompt(
+        response = srv.prompt(
             session_id, message, system=system, agent=self.agent_name,
             model=self.model or None, directory=str(workspace))
 
-        refusal = self.server.provider_error(response)
+        refusal = srv.provider_error(response)
         if not refusal:
             return response
 
@@ -607,9 +721,9 @@ class Grader:
                                    "from": self.budget, "to": reduced,
                                    "reason": refusal[:160]})
         self.budget = reduced
-        self.server.max_output_tokens = reduced
-        self.server.stop()
-        self.server.start()
+        srv.max_output_tokens = reduced
+        srv.stop()
+        srv.start()
         self._write_opencode_config(workspace, spec_path, out_path, meta_path)
 
         system = build_system_prompt(self.spec, self.manual_ids, budget=self.budget)
@@ -618,11 +732,11 @@ class Grader:
                                         manual_ids=self.manual_ids,
                                         test_results=test_results, anchors=anchors,
                                         budget=self.budget)
-        session = self.server.create_session(
+        session = srv.create_session(
             f"{self.spec.title} — {unit.display_name} (attempt {attempt_no}, reduced budget)",
-            directory=str(workspace))
+            directory=str(workspace), model=self.model or None)
         self.store.finish_attempt(attempt_id, "running", session.get("id", ""))
-        return self.server.prompt(
+        return srv.prompt(
             session.get("id", ""), message, system=system, agent=self.agent_name,
             model=self.model or None, directory=str(workspace))
 
@@ -782,7 +896,8 @@ class Grader:
 
         Returns the message and a detail line, both short enough for the log.
         """
-        parts = self.server.parts(session_id, directory) if session_id else []
+        srv = self._servers.get(str(directory))
+        parts = srv.parts(session_id, directory) if (session_id and srv) else []
         tools = [x for x in parts if x.get("type") == "tool"]
         texts = [x for x in parts if x.get("type") == "text" and (x.get("text") or "").strip()]
         # The first text part is the prompt echo we wrote, so it says nothing

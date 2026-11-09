@@ -137,7 +137,7 @@ def live(tmp_path, monkeypatch):
     )
     fake.submission_url = str(repo)
     monkeypatch.setattr(state, "client", lambda: fake)
-    monkeypatch.setattr(state, "ensure_opencode", lambda: (_ for _ in ()).throw(
+    monkeypatch.setattr(state, "ensure_server", lambda directory: (_ for _ in ()).throw(
         AssertionError("no model should be needed for these routes")))
 
     httpd, port = srv.serve_test(state)
@@ -485,21 +485,21 @@ def test_changing_the_key_restarts_a_running_opencode(live):
         def stop(self):
             stopped.append(True)
 
-    state.server = FakeServer()
+    state.servers["/tmp/ws"] = FakeServer()
     send(base, "/api/settings", {"openrouter_api_key": "sk-or-abc123"})
     assert stopped == [True], "opencode kept running with the old key"
-    assert state.server is None
+    assert state.servers == {}
 
 
 def test_saving_canvas_settings_does_not_restart_opencode(live, monkeypatch):
     """Only a key change needs a restart; a Canvas change must not kill a run."""
     base, state, _fake, _spec = live
-    state.server = None
+    state.servers.clear()
     state.settings.canvas_base_url = "https://school.instructure.com"
     state.settings.canvas_api_token = "tok"
     accepted(monkeypatch)
     send(base, "/api/settings", {"canvas_base_url": "https://school.instructure.com"})
-    assert state.server is None
+    assert state.servers == {}
 
 
 # ------------------------------------------------------- credential checks
@@ -874,7 +874,7 @@ def test_the_agent_log_streams_reasoning_as_it_grows(live):
 
     server = GrowingServer()
     state.active_sessions["ses_g"] = (1, "/tmp/ws")
-    stop = state.start_agent_log(server)
+    stop = state.start_agent_log(lambda directory: server)
     try:
         assert wait_for(lambda: len(state.agent_logs.get(1, [])) >= 3, timeout=10), \
             f"reasoning did not stream: {state.agent_logs.get(1)}"
@@ -913,7 +913,7 @@ def test_the_agent_log_polls_a_session_and_records_each_part_once(live):
 
     server = FakeServer()
     state.active_sessions["ses_p"] = (1, "/tmp/ws")
-    stop = state.start_agent_log(server)
+    stop = state.start_agent_log(lambda directory: server)
     try:
         assert wait_for(lambda: server.polls >= 3, timeout=10), "the poller stopped"
         entries = state.agent_logs.get(1, [])
@@ -989,7 +989,7 @@ def test_the_agent_log_records_the_output_written_after_the_last_poll(live):
     state.recent_sessions["ses_late"] = state.active_sessions.pop("ses_late")
     state.agent_seen.pop("ses_late", None)
 
-    state.start_agent_log(server)()
+    state.start_agent_log(lambda directory: server)()
     entries = state.agent_logs.get(1, [])
     texts = [e.get("text", "") for e in entries]
     assert "final thought" in texts, \
@@ -1185,7 +1185,7 @@ def _live_session(state):
             sent.append((session_id, text, directory))
             return True
 
-    state.server = _Server()
+    state.servers["/tmp/ws"] = _Server()
     state.session_rows["ses_steer"] = 1
     state.active_sessions["ses_steer"] = (1, "/tmp/ws")
     return sent

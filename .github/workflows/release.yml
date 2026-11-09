@@ -21,7 +21,7 @@ on:
 # notarize job cannot ship different builds of the same release, which is a
 # duplication no test should have to police.
 env:
-  OPENCODE_VERSION: "1.18.35"
+  OPENCODE_VERSION: "2.2.6"
 
 permissions:
   contents: write
@@ -113,9 +113,9 @@ jobs:
           name=opencode
           [ "$RUNNER_OS" = "Windows" ] && name=opencode.exe
           dest="apps/desktop/resources/opencode/$name"
-          bin="$RUNNER_TEMP/oc/node_modules/opencode-ai/bin"
+          bin="$RUNNER_TEMP/oc/node_modules/@opencode/cli/bin"
           if npm install --prefix "$RUNNER_TEMP/oc" --no-audit --no-fund \
-               "opencode-ai@${OPENCODE_VERSION}"; then
+               "@opencode/cli@${OPENCODE_VERSION}"; then
             # find rather than ls: the payload's name is not guaranteed to be
             # tidy, and this is the one place a shell glob would bite.
             src=$(find "$bin" -maxdepth 1 -type f | head -1)
@@ -222,8 +222,8 @@ jobs:
           # The same pin the build job used. It was written out inline here and
           # nothing kept the two in step, so one release could ship a different
           # runtime than the installer next to it.
-          npm install --prefix "$RUNNER_TEMP/oc" --no-audit --no-fund "opencode-ai@${OPENCODE_VERSION}"
-          cp "$RUNNER_TEMP/oc/node_modules/opencode-ai/bin/"* \
+          npm install --prefix "$RUNNER_TEMP/oc" --no-audit --no-fund "@opencode/cli@${OPENCODE_VERSION}"
+          cp "$RUNNER_TEMP/oc/node_modules/@opencode/cli/bin/"* \
              apps/desktop/resources/opencode/opencode
           chmod +x apps/desktop/resources/opencode/opencode
           cd apps/desktop

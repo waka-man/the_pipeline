@@ -3,10 +3,10 @@
 # Stage 1: fetch the pinned agent runtime. The npm package ships a native
 # binary per platform, so this stage needs Node but the final image does not.
 FROM node:22-slim AS opencode
-ARG OPENCODE_VERSION=1.18.35
-RUN npm install --prefix /oc --no-audit --no-fund "opencode-ai@${OPENCODE_VERSION}" \
+ARG OPENCODE_VERSION=2.2.6
+RUN npm install --prefix /oc --no-audit --no-fund "@opencode/cli@${OPENCODE_VERSION}" \
  && mkdir -p /usr/local/bin \
- && cp "$(find /oc/node_modules/opencode-ai/bin -maxdepth 1 -type f | head -1)" /usr/local/bin/opencode \
+ && cp "$(find /oc/node_modules/@opencode/cli/bin -maxdepth 1 -type f | head -1)" /usr/local/bin/opencode \
  && chmod +x /usr/local/bin/opencode
 
 FROM python:3.12-slim

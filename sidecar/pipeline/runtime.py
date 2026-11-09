@@ -5,8 +5,8 @@ ships a *pinned* one. Harnesses change; a pin that is only ever moved by hand
 means a faculty machine quietly runs a year-old runtime for the whole of a
 cohort, and nobody finds out until something breaks in a way nobody can explain.
 
-So this module probes npm for the current `opencode-ai`, compares it with what
-is actually installed, and can stage a newer one.
+So this module probes npm for the current `@opencode/cli`, compares it with
+what is actually installed, and can stage a newer one.
 
 Three rules, each of which exists because of how this thing can go wrong:
 
@@ -19,9 +19,10 @@ Three rules, each of which exists because of how this thing can go wrong:
   - **Never block.** No network at startup, no waiting on a lock. Every call
     here has a timeout and returns something usable when offline.
 
-The binary itself is fetched from npm's platform packages (`opencode-darwin-
-arm64` and friends), which is what the npm package's own postinstall does. That
-means a plain tarball fetch: no GitHub URLs to keep in step, and no node.
+The binary itself is fetched from npm's platform packages (`@opencode/cli-
+linux-x64` and friends), which is what the npm package's own postinstall
+does. That means a plain tarball fetch: no GitHub URLs to keep in step,
+and no node.
 """
 
 from __future__ import annotations
@@ -43,12 +44,20 @@ from typing import Any
 import requests
 
 REGISTRY = "https://registry.npmjs.org"
-PACKAGE = "opencode-ai"
-# The binary itself is not in that package. opencode-ai's postinstall resolves
-# one of these per-platform packages, each holding nothing but the binary:
-#   "optionalDependencies": { "opencode-darwin-arm64": "1.19.0", ... }
-# Note the prefix is `opencode-`, not `opencode-ai-`.
-BINARY_PREFIX = "opencode"
+PACKAGE = "@opencode/cli"
+# The binary itself is not in that package. The meta package's
+# optionalDependencies resolve one of these per-platform packages, each
+# holding nothing but the binary:
+#   "optionalDependencies": { "@opencode/cli-linux-x64": "2.2.6", ... }
+# Note the scoped prefix: @opencode/cli-<plat>-<arch>.
+BINARY_PREFIX = "@opencode/cli"
+
+
+def _registry_url(name: str, suffix: str = "") -> str:
+    """Registry URL for a (possibly scoped) package name."""
+    from urllib.parse import quote
+
+    return f"{REGISTRY}/{quote(name, safe='')}{suffix}"
 
 # Short on purpose. This runs while somebody is waiting to click something, and
 # a probe that has not answered by now has told us what we need to know.
@@ -103,7 +112,7 @@ def read_version(binary: str | Path | None) -> str | None:
 def latest_version(timeout: int = PROBE_TIMEOUT) -> str | None:
     """The newest published version of the harness, or None if unreachable."""
     try:
-        r = requests.get(f"{REGISTRY}/{PACKAGE}/latest", timeout=timeout,
+        r = requests.get(_registry_url(PACKAGE, "/latest"), timeout=timeout,
                          headers={"Accept": "application/json"})
         r.raise_for_status()
         version = (r.json() or {}).get("version")
@@ -379,6 +388,7 @@ class RuntimeManager:
                     continue
                 try:
                     archive = root / f"{name}.tgz"
+                    archive.parent.mkdir(parents=True, exist_ok=True)
                     _fetch_tarball(name, wanted_pkg, archive)
                     binary = _extract_binary(archive, root / name)
                     if binary is None:
@@ -400,10 +410,11 @@ class RuntimeManager:
             self.status.downloading = True
         try:
             path = self.download(version, on_progress)
-            if (read_version(path) or "") != version:
+            if parse_version(read_version(path)) != parse_version(version):
                 # A binary that reports a different version is not the one that
                 # was asked for, and promoting it would be worse than not
-                # updating at all.
+                # updating at all. (`--version` prints "opencode v2.2.6", so
+                # compare parsed triples, not raw strings.)
                 try:
                     path.unlink(missing_ok=True)
                 except OSError:
@@ -435,7 +446,7 @@ class RuntimeManager:
 def _package_version(name: str, wanted: tuple[int, int, int]) -> str | None:
     """The published version of a platform package, if it matches what we want."""
     try:
-        r = requests.get(f"{REGISTRY}/{name}", timeout=PROBE_TIMEOUT,
+        r = requests.get(_registry_url(name), timeout=PROBE_TIMEOUT,
                          headers={"Accept": "application/json"})
         r.raise_for_status()
         versions = (r.json() or {}).get("versions") or {}
@@ -448,7 +459,8 @@ def _package_version(name: str, wanted: tuple[int, int, int]) -> str | None:
 
 
 def _fetch_tarball(name: str, version: str, dest: Path) -> None:
-    url = f"{REGISTRY}/{name}/-/{name}-{version}.tgz"
+    basename = name.split("/")[-1]
+    url = f"{_registry_url(name)}/-/{basename}-{version}.tgz"
     with requests.get(url, stream=True, timeout=DOWNLOAD_TIMEOUT) as r:
         r.raise_for_status()
         with open(dest, "wb") as fh:

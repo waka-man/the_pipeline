@@ -586,7 +586,7 @@ class FakeServer:
     def stop(self):
         self.stopped += 1
 
-    def create_session(self, title, directory):
+    def create_session(self, title, directory, model=None):
         self.turns.append({"title": title, "directory": directory, "system": None, "text": None})
         return {"id": f"ses_{len(self.turns)}"}
 
@@ -627,7 +627,7 @@ class FakeServer:
 def _grader(tmp_path, store, spec, mode="accept", manual=None, attempts=2):
     from pipeline.grading.runner import Grader
     server = FakeServer(mode=mode, spec=spec, manual=manual)
-    grader = Grader(server, store, spec, run_id=1, run_dir=tmp_path / "run",
+    grader = Grader(lambda workspace: server, store, spec, run_id=1, run_dir=tmp_path / "run",
                     code_root=CODE_ROOT, python_exe=sys.executable,
                     max_attempts=attempts, model="test/model", budget=4096)
     grader.manual_ids = manual or []
@@ -657,10 +657,15 @@ def test_runner_writes_a_workspace_and_agent_config(tmp_path, store, spec):
     assert (workspace / ".grading" / "spec.json").is_file()
 
     config = json.loads((workspace / "opencode.json").read_text())
-    assert MCP_SERVER_NAME in config["mcp"]
+    mcp_server = config["mcp"]["servers"][MCP_SERVER_NAME]
+    assert mcp_server["type"] == "local"
+    assert mcp_server["codemode"] is False
     assert config["model"] == "test/model"
-    assert config["agent"]["grader"]["tools"]["edit"] is False
-    assert config["agent"]["grader"]["tools"]["write"] is False
+    agent = config["agents"]["grader"]
+    assert agent["mode"] == "primary"
+    assert EXPOSED_TOOL_NAME in agent["system"]
+    denied = {p["action"] for p in agent["permissions"] if p["effect"] == "deny"}
+    assert {"edit", "webfetch", "websearch", "subagent"} <= denied
     # The tool schema is narrowed to this assignment's real criterion ids.
     blob = json.loads((workspace / ".grading" / "spec.json").read_text())
     assert blob["tool_schema"]["properties"]["scores"]["required"] == [
