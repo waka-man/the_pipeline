@@ -55,6 +55,23 @@ SYSTEM_ENV = {
 }
 
 
+def ensure_loopback_proxy_bypass(environ: dict | None = None) -> None:
+    """Keep loopback HTTP out of any configured proxy.
+
+    `requests` honours HTTP_PROXY/HTTPS_PROXY even for 127.0.0.1 unless
+    NO_PROXY covers it, and a proxy's HTML or empty reply then surfaces as a
+    JSON error far from its cause ("Expecting value: line 1 column 1").
+    The agent runtime is always loopback, so it must never be proxied.
+    """
+    env = os.environ if environ is None else environ
+    for var in ("NO_PROXY", "no_proxy"):
+        parts = [p.strip() for p in (env.get(var) or "").split(",") if p.strip()]
+        for host in ("127.0.0.1", "localhost"):
+            if host not in parts:
+                parts.append(host)
+        env[var] = ",".join(parts)
+
+
 class RunnerError(RuntimeError):
     pass
 
@@ -136,6 +153,7 @@ class OpenCodeServer:
     _base: str = ""
 
     def __post_init__(self) -> None:
+        ensure_loopback_proxy_bypass()
         # The packaged app ships its own opencode and points at it through the
         # environment, so a user is not required to install one. A developer's
         # own opencode is used when nothing is specified.
@@ -330,7 +348,7 @@ class OpenCodeServer:
         This is the pipeline's only view of available models. Model
         credentials live in opencode's auth store and are never read here.
         """
-        payload = requests.get(f"{self._base}/config/providers", timeout=60).json()
+        payload = self._providers_payload()
         out: dict[str, list[str]] = {}
         for provider in payload.get("providers") or []:
             pid = provider.get("id")
@@ -343,6 +361,37 @@ class OpenCodeServer:
                 ids = [m.get("id") for m in models if m.get("id")]
             out[pid] = [m for m in ids if m]
         return out
+
+    def _providers_payload(self, attempts: int = 3) -> dict[str, Any]:
+        """GET /config/providers, tolerating a briefly-unready server.
+
+        Right after `serve` starts, the endpoint can answer with an empty
+        or non-JSON body. A bare .json() turns that into a JSONDecodeError
+        that tells the user nothing, so retry a few times and then say
+        what actually happened.
+        """
+        last = ""
+        for attempt in range(attempts):
+            try:
+                response = requests.get(f"{self._base}/config/providers", timeout=60)
+                if response.ok:
+                    try:
+                        payload = response.json()
+                    except ValueError:
+                        last = "a non-JSON response"
+                    else:
+                        if isinstance(payload, dict):
+                            return payload
+                        last = "a JSON response that is not an object"
+                else:
+                    last = f"HTTP {response.status_code}"
+            except requests.RequestException as exc:
+                last = str(exc)[:200]
+            if attempt + 1 < attempts:
+                time.sleep(1)
+        raise RunnerError(
+            f"the agent runtime did not return a model list ({last})"
+        )
 
     def defaults(self) -> dict[str, str]:
         try:

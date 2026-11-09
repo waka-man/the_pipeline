@@ -1245,7 +1245,7 @@ await test('saving a key refreshes the model list without another click', async 
     el.dispatchEvent(new Event('input', { bubbles: true }));
   })()`);
   await window.eval(
-    "[...document.querySelectorAll('#main button')].find((b) => b.textContent.trim() === 'Save key').click()");
+    "[...document.querySelectorAll('#main button')].find((b) => b.textContent.trim() === 'Save').click()");
   await tick(150);
   const after = await window.eval('window.__modelCalls');
   assert.ok(after > before,

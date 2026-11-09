@@ -531,7 +531,7 @@ function viewSetup() {
                 : 'Key removed.');
             }
           },
-        }, S.savingKey ? 'Saving…' : (hasKey ? 'Replace or remove key' : 'Save key')))),
+        }, S.savingKey ? 'Saving…' : 'Save'))),
 
     card('Grading model', S.model ? S.model.selected : 'not chosen',
       h('div', { style: 'display:flex;gap:8px;align-items:center;flex-wrap:wrap' },

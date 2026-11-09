@@ -436,6 +436,67 @@ def test_pick_model_returns_none_without_a_catalogue():
     assert config.pick_model({}) is None
 
 
+def test_loopback_is_never_sent_through_a_proxy():
+    """A proxied loopback reply is HTML/empty: a JSON error far from its cause."""
+    from pipeline.grading.runner import ensure_loopback_proxy_bypass
+
+    env = {"HTTP_PROXY": "http://proxy:8080", "NO_PROXY": "example.com"}
+    ensure_loopback_proxy_bypass(env)
+    assert "127.0.0.1" in env["NO_PROXY"]
+    assert "localhost" in env["NO_PROXY"]
+    assert "example.com" in env["NO_PROXY"]
+    # Idempotent: a second pass does not duplicate entries.
+    ensure_loopback_proxy_bypass(env)
+    assert env["NO_PROXY"].count("127.0.0.1") == 1
+
+
+def test_the_model_list_tolerates_a_briefly_unready_runtime(monkeypatch):
+    """Right after serve starts, /config/providers can answer with nothing."""
+    from pipeline.grading import runner
+
+    srv = runner.OpenCodeServer.__new__(runner.OpenCodeServer)
+    srv._base = "http://127.0.0.1:1"
+
+    class _Response:
+        def __init__(self, ok, payload=None, text=""):
+            self.ok = ok
+            self._payload = payload
+            self.text = text
+
+        def json(self):
+            if self._payload is None:
+                raise ValueError("Expecting value: line 1 column 1 (char 0)")
+            return self._payload
+
+    responses = iter([
+        _Response(True),  # empty body: .json() raises
+        _Response(True, {"providers": [
+            {"id": "openrouter", "models": {"a/b": {}}}]}),
+    ])
+    monkeypatch.setattr(runner.requests, "get", lambda *a, **k: next(responses))
+    monkeypatch.setattr(runner.time, "sleep", lambda *a: None)
+
+    assert srv.catalogue() == {"openrouter": ["a/b"]}
+
+
+def test_an_unreadable_model_list_says_what_happened(monkeypatch):
+    from pipeline.grading import runner
+
+    srv = runner.OpenCodeServer.__new__(runner.OpenCodeServer)
+    srv._base = "http://127.0.0.1:1"
+
+    class _Response:
+        ok = False
+        status_code = 502
+        text = "proxy error"
+
+    monkeypatch.setattr(runner.requests, "get", lambda *a, **k: _Response())
+    monkeypatch.setattr(runner.time, "sleep", lambda *a: None)
+
+    with pytest.raises(runner.RunnerError, match="did not return a model list"):
+        srv.catalogue()
+
+
 def test_only_the_openrouter_key_is_stored_and_nothing_else():
     """One provider key is now stored, to configure the bundled opencode.
 
