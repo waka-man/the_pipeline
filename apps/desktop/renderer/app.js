@@ -74,6 +74,8 @@ function installWebBridge() {
       runs: () => req('GET', '/api/runs'),
       labelRun: (id, label) => req('PUT', `/api/runs/${id}`, { label }),
       deleteRun: (id) => req('DELETE', `/api/runs/${id}`),
+      resetGrades: (id, row_ids) => req('POST', `/api/runs/${id}/reset-grades`,
+        row_ids ? { row_ids } : {}),
       run: (id) => req('GET', `/api/runs/${id}`),
       submissions: (id) => req('GET', `/api/runs/${id}/submissions`),
       collect: (id, b) => req('POST', `/api/runs/${id}/collect`, b || {}),
@@ -1164,7 +1166,11 @@ function viewGrade() {
           }, 'Could not start grading'),
         }, grading ? 'Grading…' : `Grade All (${gradeable.length})`),
         h('button', {
-          class: 'btn', disabled: grading || !S.selected.size,
+          // Smart: grading a selection only makes sense when it contains
+          // something still awaiting a score.
+          class: 'btn', disabled: grading
+            || ![...S.selected].some((id) => S.submissions.some(
+              (s) => s.row_id === id && s.score === null)),
           onclick: () => guard(async () => {
             await api.grade(run.run_id, {
               row_ids: [...S.selected],
@@ -1174,7 +1180,42 @@ function viewGrade() {
           }, 'Could not start grading'),
         }, `Grade Selected (${S.selected.size})`),
         h('button', { class: 'btn', disabled: !graded, onclick: () => go('review') },
-          'Continue to review'))),
+          'Continue to review'),
+        // Undo grades (e.g. stub grades) without re-collecting: sources stay,
+        // scores go. Refused once anything in scope has been published.
+        h('button', {
+          class: 'btn', 'data-variant': 'ghost', disabled: grading || !graded,
+          onclick: async () => {
+            const ok = window.confirm(
+              'Clear all grades in this run so it can be graded again? '
+              + 'Collected sources are kept. This cannot be used once grades '
+              + 'have been published to Canvas.');
+            if (!ok) return;
+            await guard(async () => {
+              await api.resetGrades(run.run_id);
+              await refreshSubmissions();
+              toast('Grades cleared. The run can be graded again from scratch.');
+            }, 'Could not reset grades');
+          },
+        }, 'Reset grades'),
+        h('button', {
+          // Smart: resetting only makes sense for a selection containing
+          // something already graded.
+          class: 'btn', 'data-variant': 'ghost', disabled: grading
+            || ![...S.selected].some((id) => S.submissions.some(
+              (s) => s.row_id === id && s.score !== null)),
+          onclick: async () => {
+            const ok = window.confirm(
+              `Clear grades for ${S.selected.size} selected submission(s) so `
+              + 'they can be graded again? Collected sources are kept.');
+            if (!ok) return;
+            await guard(async () => {
+              await api.resetGrades(run.run_id, [...S.selected]);
+              await refreshSubmissions();
+              toast(`Grades cleared for ${S.selected.size} selected.`);
+            }, 'Could not reset grades');
+          },
+        }, `Reset Selected (${S.selected.size})`))),
 
     notice('Posting is always optional. If a run does not hold up you can grade from the reports in your own words.', null)),
 
@@ -1411,17 +1452,16 @@ function showPublishPlan(plan) {
 /* -------------------------------------------------------------- fragments */
 
 function submissionTable(compact) {
-  // Gradeable rows are the ones still awaiting a score; already-graded ones are
-  // not offered, because selecting them to regrade is a different action.
+  // Every row is pickable, graded or not: selecting a graded row is how
+  // re-grading (Grade Selected) and resetting (Reset Selected) reach it.
+  // Hiding the control on graded rows made stub-graded cohorts impossible
+  // to fix one student at a time.
   const gradeable = S.submissions.filter((s) => s.score === null);
-  const allSelected = gradeable.length > 0
-    && gradeable.every((s) => S.selected.has(s.row_id));
-  // Once a row has a mark its checkbox goes away, but the row may still be in
-  // the selection: grading is asynchronous, so the list refreshes with a score
-  // on a row that was ticked a moment earlier. Hiding the control then left it
-  // selected with no way to remove it, and it went on being counted in Grade
-  // Selected. So a selected row keeps a checkbox even when it is not gradeable.
-  const pickable = (s) => !compact && (s.score === null || S.selected.has(s.row_id));
+  const allSelected = S.submissions.length > 0
+    && S.submissions.every((s) => S.selected.has(s.row_id));
+  // A selected row keeps its checkbox even after it gains a score, so it
+  // can always be taken out of the selection again.
+  const pickable = (s) => !compact;
   const rows = S.submissions.map((s) => {
     const toggle = () => {
       S.selected.has(s.row_id) ? S.selected.delete(s.row_id) : S.selected.add(s.row_id);
@@ -1472,7 +1512,7 @@ function submissionTable(compact) {
     h('div', { class: 'rows' },
       h('div', { class: 'row row-head' },
         h('span', {},
-          !compact && gradeable.length
+          !compact && S.submissions.length
             ? h('input', {
                 type: 'checkbox',
                 class: 'pick-all',
@@ -1485,8 +1525,8 @@ function submissionTable(compact) {
                   // A half-ticked box reports `checked` after a click rather
                   // than `unchecked`, so reading it would re-select everything
                   // when the obvious intent is to clear.
-                  const any = gradeable.some((x) => S.selected.has(x.row_id));
-                  gradeable.forEach((x) => (any
+                  const any = S.submissions.some((x) => S.selected.has(x.row_id));
+                  S.submissions.forEach((x) => (any
                     ? S.selected.delete(x.row_id) : S.selected.add(x.row_id)));
                   render();
                 },

@@ -1483,6 +1483,53 @@ def _label_run(state: AppState, run_id: int, body: dict[str, Any]) -> dict[str, 
     return op_label_run(state, int(run_id), body)
 
 
+def op_reset_grades(state: AppState, run_id: int, body: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Clear grades so rows can be graded again, keeping their sources.
+
+    This is the cheap path for undoing stub (or otherwise unwanted) grades
+    before anything is posted. It refuses once anything in scope has been
+    published: resetting the database cannot unpublish Canvas.
+    """
+    run_id = int(run_id)
+    body = body or {}
+    row_ids = body.get("row_ids")
+    if row_ids is not None:
+        row_ids = [int(x) for x in row_ids]
+    try:
+        run = state.store.get_run(run_id)
+    except Exception:
+        raise ApiError("no such run", 404)
+    if state.store.published_count(run_id, row_ids):
+        raise ApiError(
+            "grades in this scope were already published to Canvas; "
+            "resetting cannot unpublish them", 409)
+    counts = state.store.reset_grades(run_id, row_ids)
+    spec = run["spec"]
+    run_dir = state.settings.run_dir(spec.course_id, spec.assignment_id)
+    if row_ids is None:
+        reports = run_dir / "reports"
+        if reports.is_dir():
+            shutil.rmtree(reports, ignore_errors=True)
+    submissions_dir = run_dir / "submissions"
+    if submissions_dir.is_dir():
+        if row_ids is None:
+            grading = list(submissions_dir.glob("*/.grading"))
+        else:
+            from .sources import slug
+
+            names = {
+                slug(_unit_from_row(
+                    state.store.submission_row(rid)).display_name)
+                for rid in row_ids
+            }
+            grading = [d for d in submissions_dir.glob("*/.grading")
+                       if d.parent.name in names]
+        for d in grading:
+            shutil.rmtree(d, ignore_errors=True)
+    state.bus.emit("grades.reset", {"run_id": run_id, **counts})
+    return {"run_id": run_id, "reset": True, **counts}
+
+
 def op_delete_run(state: AppState, run_id: int) -> dict[str, Any]:
     """Delete a run, its rows, and its workspace folder.
 
@@ -1508,6 +1555,10 @@ def op_delete_run(state: AppState, run_id: int) -> dict[str, Any]:
 
 def _delete_run(state: AppState, run_id: int) -> dict[str, Any]:
     return op_delete_run(state, int(run_id))
+
+
+def _reset_grades(state: AppState, run_id: int, body: dict[str, Any]) -> dict[str, Any]:
+    return op_reset_grades(state, int(run_id), body)
 
 
 def _start_control(state: AppState, run_id: int, body: dict[str, Any]) -> dict[str, Any]:
@@ -1538,6 +1589,7 @@ ROUTES: list[Route_] = [
     Route_("POST", r"^/api/runs$", op_bootstrap),
     Route_("PUT", r"^/api/runs/(?P<run_id>\d+)$", _label_run),
     Route_("DELETE", r"^/api/runs/(?P<run_id>\d+)$", _delete_run),
+    Route_("POST", r"^/api/runs/(?P<run_id>\d+)/reset-grades$", _reset_grades),
     Route_("GET", r"^/api/runs/(?P<run_id>\d+)$", _get_run),
     Route_("GET", r"^/api/runs/(?P<run_id>\d+)/submissions$", _get_submissions),
     Route_("POST", r"^/api/runs/(?P<run_id>\d+)/collect$", _start_collect),
@@ -1623,6 +1675,9 @@ def make_handler(state: AppState):
 
         def do_PUT(self) -> None:  # noqa: N802
             self._dispatch("PUT", urlparse(self.path))
+
+        def do_DELETE(self) -> None:  # noqa: N802
+            self._dispatch("DELETE", urlparse(self.path))
 
         def _dispatch(self, method: str, parsed: Any) -> None:
             length = int(self.headers.get("Content-Length") or 0)

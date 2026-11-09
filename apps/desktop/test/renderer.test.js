@@ -167,6 +167,8 @@ function stubApi() {
     createRun: rec('createRun', RUN),
     runs: rec('runs', () => ({ runs: SAVED_RUNS })),
     labelRun: rec('labelRun', { run_id: 1, label: 'renamed' }),
+    deleteRun: rec('deleteRun', { deleted: true }),
+    resetGrades: rec('resetGrades', { reset: true }),
     run: rec('run', () => ({ ...RUN, progress: stubState.progress })),
     submissions: rec('submissions',
       () => (stubState.noRunYet ? { submissions: [] } : { submissions: SUBMISSIONS })),
@@ -239,6 +241,11 @@ async function boot() {
     (e.error && (e.error.stack || e.error.message)) || String(e.message)));
   window.addEventListener('unhandledrejection', (e) => window.__errs.push(
     `unhandledrejection: ${(e.reason && (e.reason.stack || e.reason.message)) || e.reason}`));
+
+  // jsdom does not implement confirm(); destructive actions ask first, so
+  // the generic click-every-button pass would throw without this. Tests
+  // that need a refusal can override it per-test.
+  window.confirm = () => true;
 
   const api = stubApi();
   window.pipeline = {
@@ -881,11 +888,14 @@ async function run() {
       'no select-all in the table header');
 
     // It works, and reports a half-ticked state when part of the cohort is chosen.
+    // Every row is pickable now (graded rows must be selectable to re-grade or
+    // reset them), so Select all ticks the whole table.
     await window.eval("document.querySelector('.row-head .pick-all').click()");
     await tick(60);
     assert.strictEqual(await window.eval(
-      "document.querySelectorAll('#main input[type=checkbox]:checked').length"), 3,
-      'select all did not tick the gradeable rows');
+      "document.querySelectorAll('#main input[type=checkbox]:checked').length"),
+      await window.eval("document.querySelectorAll('#main input[type=checkbox]').length"),
+      'select all did not tick every row');
 
     await window.eval("document.querySelector('.row-head .pick-all').click()");
     await tick(60);
@@ -1028,7 +1038,7 @@ async function run() {
 
     const unticked = await window.eval(`(() => {
       const rows = [...document.querySelectorAll('.rows .row:not(.row-head)')];
-      const row = rows.find((r) => r.textContent.includes('Grace Hopper'));
+      const row = rows.find((r) => r.textContent.includes('Ada Lovelace'));
       if (!row) return 'no-row';
       const box = row.querySelector('input[type=checkbox]');
       if (box) { box.click(); return 'checkbox'; }
@@ -1041,6 +1051,42 @@ async function run() {
     const after = (await buttonTexts(window)).find((t) => t.startsWith('Grade Selected'));
     assert.match(after, /Grade Selected \(0\)/,
       `clicking the graded row did not clear the selection: ${after}`);
+  });
+
+  await test('grade and reset buttons activate only for the right selection', async () => {
+    const { window } = await reboot();
+    await gotoOn(window, 'Grade');
+
+    const disabled = async (prefix) => window.eval(`(() => {
+      const b = [...document.querySelectorAll('#main button')]
+        .find((x) => x.textContent.trim().startsWith(${JSON.stringify(prefix)}));
+      return b ? b.disabled : null;
+    })()`);
+
+    // The fixture has graded rows (Ada, Grace) and ungraded ones (Alan):
+    // ticking only a graded row enables Reset Selected but not Grade Selected.
+    await window.eval(`(() => {
+      const rows = [...document.querySelectorAll('.rows .row:not(.row-head)')];
+      const row = rows.find((r) => r.textContent.includes('Ada Lovelace'));
+      row.querySelector('input[type=checkbox]').click();
+    })()`);
+    await tick(60);
+    assert.strictEqual(await disabled('Grade Selected'), true,
+      'Grade Selected was offered for a selection with nothing to grade');
+    assert.strictEqual(await disabled('Reset Selected'), false,
+      'Reset Selected was withheld from a graded selection');
+
+    // Ticking an ungraded row too flips both.
+    await window.eval(`(() => {
+      const rows = [...document.querySelectorAll('.rows .row:not(.row-head)')];
+      const row = rows.find((r) => r.textContent.includes('Alan Turing'));
+      row.querySelector('input[type=checkbox]').click();
+    })()`);
+    await tick(60);
+    assert.strictEqual(await disabled('Grade Selected'), false,
+      'Grade Selected stayed disabled with an ungraded row selected');
+    assert.strictEqual(await disabled('Reset Selected'), false,
+      'Reset Selected stayed disabled with a graded row selected');
   });
 
   await test('clicking a row toggles it without disturbing its buttons', async () => {

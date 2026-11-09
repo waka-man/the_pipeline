@@ -47,6 +47,8 @@ contextBridge.exposeInMainWorld('pipeline', {
     runs: () => req('GET', '/api/runs'),
     labelRun: (id, label) => req('PUT', `/api/runs/${id}`, { label }),
     deleteRun: (id) => req('DELETE', `/api/runs/${id}`),
+    resetGrades: (id, row_ids) => req('POST', `/api/runs/${id}/reset-grades`,
+      row_ids ? { row_ids } : {}),
     run: (id) => req('GET', `/api/runs/${id}`),
     submissions: (id) => req('GET', `/api/runs/${id}/submissions`),
     collect: (id, b) => req('POST', `/api/runs/${id}/collect`, b || {}),

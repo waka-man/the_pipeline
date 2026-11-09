@@ -1285,6 +1285,71 @@ def test_deleting_a_run_removes_its_rows_and_its_folder(live, tmp_path):
         assert getattr(exc, "status", None) == 404, exc
 
 
+def test_resetting_grades_keeps_sources_and_clears_scores(live):
+    """The cheap re-grade path: stub grades go, collected work stays."""
+    from pipeline.server import op_reset_grades
+
+    base, state, _fake, _spec = live
+    send(base, "/api/runs", {"course_id": 3130, "assignment_id": 46805})
+    assert wait_for(lambda: state.store.progress(1).get("total") == 2)
+    store = state.store
+    attempt = store.start_attempt(1, "stub")
+    spec = store.get_run(1)["spec"]
+    from pipeline.stub import stub_scorecard
+    sc = stub_scorecard(spec, "Ada Lovelace", [])
+    store.save_scorecard(1, attempt, sc, "valid", 25, 25, [])
+    store.set_submission_status(1, "graded")
+    assert store.best_scorecard(1) is not None
+
+    counts = op_reset_grades(state, 1)
+    assert counts["scorecards"] == 1 and counts["attempts"] == 1, counts
+    assert store.best_scorecard(1) is None, "the stub scorecard survived"
+    assert store.submission_row(1)["status"] == "collected"
+    # The other row was never graded and is untouched.
+    assert store.submission_row(2)["status"] == "pending"
+
+
+def test_resetting_selected_grades_leaves_the_rest_alone(live):
+    """Like Grade Selected: a selection resets exactly those rows."""
+    from pipeline.server import op_reset_grades
+
+    base, state, _fake, _spec = live
+    send(base, "/api/runs", {"course_id": 3130, "assignment_id": 46805})
+    assert wait_for(lambda: state.store.progress(1).get("total") == 2)
+    store = state.store
+    spec = store.get_run(1)["spec"]
+    from pipeline.stub import stub_scorecard
+    for rid in (1, 2):
+        attempt = store.start_attempt(rid, "stub")
+        store.save_scorecard(rid, attempt, stub_scorecard(spec, f"s{rid}", []),
+                             "valid", 25, 25, [])
+        store.set_submission_status(rid, "graded")
+
+    counts = op_reset_grades(state, 1, {"row_ids": [1]})
+    assert counts["scorecards"] == 1, counts
+    assert store.best_scorecard(1) is None
+    assert store.submission_row(1)["status"] == "collected"
+    assert store.best_scorecard(2) is not None, "unselected row was reset too"
+    assert store.submission_row(2)["status"] == "graded"
+
+
+def test_resetting_grades_refuses_a_published_run(live):
+    """Resetting cannot unpublish: a published run keeps its grades."""
+    from pipeline.server import op_reset_grades
+
+    base, state, _fake, _spec = live
+    send(base, "/api/runs", {"course_id": 3130, "assignment_id": 46805})
+    assert wait_for(lambda: state.store.progress(1).get("total") == 2)
+    with state.store.connect() as db:
+        db.execute("INSERT INTO publications (submission_row_id, payload_json, "
+                   "published_at, status) VALUES (1, '{}', '2026-01-01', 'ok')")
+    try:
+        op_reset_grades(state, 1)
+        raise AssertionError("resetting a published run should fail")
+    except Exception as exc:
+        assert getattr(exc, "status", None) == 409, exc
+
+
 def test_the_agent_log_survives_the_job_and_a_restart(live):
     """In memory alone the log is gone the moment grading stops.
 

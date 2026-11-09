@@ -196,6 +196,55 @@ class Store:
 
     # ---------------------------------------------------------------- runs
 
+    def published_count(self, run_id: int, row_ids: list[int] | None = None) -> int:
+        with self.connect() as db:
+            if row_ids is not None:
+                if not row_ids:
+                    return 0
+                ph = ",".join("?" * len(row_ids))
+                row = db.execute(
+                    f"SELECT COUNT(*) AS n FROM publications "
+                    f"WHERE submission_row_id IN ({ph})", row_ids).fetchone()
+            else:
+                row = db.execute(
+                    "SELECT COUNT(*) AS n FROM publications p "
+                    "JOIN submissions s ON p.submission_row_id = s.id "
+                    "WHERE s.run_id=?", (run_id,)).fetchone()
+            return int(row["n"]) if row else 0
+
+    def reset_grades(self, run_id: int, row_ids: list[int] | None = None) -> dict[str, int]:
+        """Clear grades so rows can be graded again from scratch.
+
+        Collected sources are kept: this is the cheap re-grade path for a
+        run whose grades are wrong (for example stub grades) but which has
+        not been posted to Canvas. Callers must check published_count
+        first: resetting cannot unpublish.
+        """
+        with self.connect() as db:
+            if row_ids is not None:
+                ids = [r[0] for r in db.execute(
+                    f"SELECT id FROM submissions WHERE run_id=? AND id IN "
+                    f"({','.join('?' * len(row_ids))})", (run_id, *row_ids))] \
+                    if row_ids else []
+            else:
+                ids = [r[0] for r in db.execute(
+                    "SELECT id FROM submissions WHERE run_id=?", (run_id,))]
+            if not ids:
+                return {"submissions": 0, "scorecards": 0, "attempts": 0,
+                        "reports": 0}
+            ph = ",".join("?" * len(ids))
+            counts = {}
+            for table in ("scorecards", "attempts", "reports"):
+                cur = db.execute(
+                    f"DELETE FROM {table} WHERE submission_row_id IN ({ph})", ids)
+                counts[table] = cur.rowcount
+            db.execute(
+                "UPDATE submissions SET status='collected', error=NULL "
+                f"WHERE id IN ({ph}) AND status IN "
+                "('graded','needs_review','reviewed','failed')", ids)
+            counts["submissions"] = len(ids)
+            return counts
+
     def delete_run(self, run_id: int) -> bool:
         """Remove a run and everything under it. Returns False if unknown.
 
