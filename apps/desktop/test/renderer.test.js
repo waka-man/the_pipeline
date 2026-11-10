@@ -1600,15 +1600,10 @@ await test('no handler threw while every button was clicked', () => {
 
   // The light theme is a printed sheet: its ink has to be darker than the
   // dark theme's, and the quietest level still has to be readable, because it
-  // carries labels, hints and timestamps at 11px.
-  await test('the light theme keeps its text above 4.5:1', () => {
+  // carries labels, hints and timestamps at 11px. The same floor holds in the
+  // dark theme, where a grey tuned by eye disappears just as easily.
+  await test('both themes keep their text above 4.5:1', () => {
     const css = fs.readFileSync(path.join(RENDERER, 'styles.css'), 'utf8');
-    const block = css.match(/:root\[data-theme='light'\]\s*\{([\s\S]*?)\n\}/);
-    assert.ok(block, 'no light theme block in styles.css');
-    const tokens = {};
-    for (const m of block[1].matchAll(/--([a-z0-9-]+):\s*([^;]+);/g)) {
-      tokens[m[1]] = m[2].trim();
-    }
     const rgb = (hex) => [0, 2, 4].map((i) => parseInt(hex.replace('#', '').slice(i, i + 2), 16));
     const lum = (c) => {
       const f = c.map((v) => {
@@ -1622,24 +1617,35 @@ await test('no handler threw while every button was clicked', () => {
       const l2 = lum(b);
       return (Math.max(l1, l2) + 0.05) / (Math.min(l1, l2) + 0.05);
     };
-    const surface = rgb(tokens.surface);
-    const surface2 = rgb(tokens['surface-2']);
-    const surface3 = rgb(tokens['surface-3']);
-    const desk = rgb(tokens.desk);
-    for (const ink of ['ink', 'ink-2', 'ink-3']) {
-      for (const [name, bg] of [['surface', surface], ['surface-2', surface2],
-        ['surface-3', surface3], ['desk', desk]]) {
-        const r = ratio(rgb(tokens[ink]), bg);
-        assert.ok(r >= 4.5,
-          `${ink} on ${name} is ${r.toFixed(2)}:1, under 4.5`);
+    const blocks = {
+      light: css.match(/:root\[data-theme='light'\]\s*\{([\s\S]*?)\n\}/),
+      dark: css.match(/\n:root\s*\{([\s\S]*?)\n\}/),
+    };
+    for (const [theme, block] of Object.entries(blocks)) {
+      assert.ok(block, `no ${theme} theme block in styles.css`);
+      const tokens = {};
+      for (const m of block[1].matchAll(/--([a-z0-9-]+):\s*([^;]+);/g)) {
+        tokens[m[1]] = m[2].trim();
       }
+      const surface = rgb(tokens.surface);
+      const surface2 = rgb(tokens['surface-2']);
+      const surface3 = rgb(tokens['surface-3']);
+      const desk = rgb(tokens.desk);
+      for (const ink of ['ink', 'ink-2', 'ink-3']) {
+        for (const [name, bg] of [['surface', surface], ['surface-2', surface2],
+          ['surface-3', surface3], ['desk', desk]]) {
+          const r = ratio(rgb(tokens[ink]), bg);
+          assert.ok(r >= 4.5,
+            `${theme}: ${ink} on ${name} is ${r.toFixed(2)}:1, under 4.5`);
+        }
+      }
+      const onAccent = ratio(rgb(tokens['on-accent']), rgb(tokens.accent));
+      assert.ok(onAccent >= 4.5,
+        `${theme}: the button label on the accent is ${onAccent.toFixed(2)}:1, under 4.5`);
+      const boundary = ratio(rgb(tokens['rule-strong']), surface);
+      assert.ok(boundary >= 3,
+        `${theme}: an input boundary is ${boundary.toFixed(2)}:1, under 3`);
     }
-    const onAccent = ratio(rgb(tokens['on-accent']), rgb(tokens.accent));
-    assert.ok(onAccent >= 4.5,
-      `the button label on the accent is ${onAccent.toFixed(2)}:1, under 4.5`);
-    const boundary = ratio(rgb(tokens['rule-strong']), surface);
-    assert.ok(boundary >= 3,
-      `an input boundary is ${boundary.toFixed(2)}:1, under 3`);
   });
 
   // The save button used to stretch to the height of the view switch beside

@@ -62,11 +62,14 @@
   --rule-soft: #1d2025;
   /* The boundary of something you can act on. A hairline separates rows from
      each other; this one has to be seen on its own to be found. */
-  --rule-strong: #3c424a;
+  --rule-strong: #626974;
 
   --ink: #e3e6ea;
   --ink-2: #99a0a9;
-  --ink-3: #646b74;
+  /* The quietest level still has to be readable: it carries labels, hints and
+     timestamps at 11px, and a grey that looks right against a near-black
+     surface disappears when it is small. */
+  --ink-3: #868d97;
 
   --accent: #7b8cff;
   --accent-ink: #aab4ff;
