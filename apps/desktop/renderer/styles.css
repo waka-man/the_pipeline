@@ -784,8 +784,19 @@ body {
   border-radius: 2px;
   transition: width var(--t);
 }
-.mark-row[data-tone='flag'] .mark-fill { background: var(--flag); }
+/* The bar is the score, so the bar carries the score's colour: green for a
+   strong result, amber for a partial one, red for a failing one. */
 .mark-row[data-tone='ok'] .mark-fill { background: var(--ok); }
+.mark-row[data-tone='warn'] .mark-fill { background: var(--flag); }
+.mark-row[data-tone='bad'] .mark-fill { background: var(--bad); }
+
+/* A criterion flagged for a human, beside its score. */
+.mark-flag {
+  display: inline-block;
+  margin-left: 7px;
+  vertical-align: middle;
+  color: var(--flag);
+}
 
 .mark-score {
   font-size: 12px;
@@ -814,7 +825,14 @@ body {
 .chip[data-tone='bad'] { border-color: transparent; background: var(--bad-wash); color: var(--bad); }
 .chip[data-tone='accent'] { border-color: var(--accent-line); background: var(--accent-wash); color: var(--accent-ink); }
 
-.dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; flex: none; }
+.dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  flex: none;
+}
 
 /* ---------------------------------------------------------------- aside */
 

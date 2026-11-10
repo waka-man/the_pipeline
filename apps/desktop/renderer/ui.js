@@ -61,15 +61,25 @@ export function statusChip(status) {
 
 /**
  * The signature element: one proportional bar per criterion with the exact
- * fraction beside it. Amber only when a human must look.
+ * fraction beside it.
+ *
+ * The bar is the score, so the bar carries the score's colour: green for a
+ * strong result, amber for a partial one, red for a failing one. A criterion
+ * flagged for a human keeps its own marker beside the score, because that is
+ * a different signal and the bar should only mean one thing.
  */
 export function marksStrip(criteria, scores, { flagKeys = [] } = {}) {
   const wrap = h('div', { class: 'marks' });
   for (const c of criteria) {
     const got = scores ? scores[c.id] : null;
-    const pct = got === null || got === undefined || !c.points
+    const scored = got !== null && got !== undefined;
+    const pct = !scored || !c.points
       ? 0 : Math.max(0, Math.min(100, (got / c.points) * 100));
-    const tone = flagKeys.includes(c.id) ? 'flag' : pct >= 99 ? 'ok' : null;
+    const tone = !scored ? null : pct >= 85 ? 'ok' : pct >= 50 ? 'warn' : 'bad';
+    // A flag that names this criterion marks it. The bar stays the score's
+    // colour; the marker says a person should look here.
+    const flagged = flagKeys.some((k) => k === c.id
+      || (c.title && String(c.title).toLowerCase() === String(k).toLowerCase()));
     wrap.append(
       h('div', { class: 'mark-row', dataset: tone ? { tone } : {} },
         h('div', {},
@@ -78,8 +88,11 @@ export function marksStrip(criteria, scores, { flagKeys = [] } = {}) {
             h('div', { class: 'mark-fill', style: `width:${pct}%` })),
         ),
         h('div', { class: 'mark-score' },
-          got === null || got === undefined ? '—' : fmt(got),
-          h('span', { class: 'of' }, ` / ${fmt(c.points)}`)),
+          scored ? fmt(got) : '—',
+          h('span', { class: 'of' }, ` / ${fmt(c.points)}`),
+          flagged
+            ? h('span', { class: 'dot mark-flag', title: 'Needs a decision' })
+            : null),
       ),
     );
   }

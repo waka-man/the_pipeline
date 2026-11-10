@@ -2000,6 +2000,49 @@ await test('no handler threw while every button was clicked', () => {
     'the list is not marked as a listing');
   });
 
+  // The rubric bars are a scale, not decoration: green for a strong result,
+  // amber for a partial one, red for a failing one.
+  await test('the rubric bars carry the score hierarchy', async () => {
+    const { window } = await reboot();
+    await gotoOn(window, 'Review');
+    await tick(60);
+    await window.eval(`(() => {
+      window.pipeline.api.report = () => Promise.resolve({
+        markdown: '# Report',
+        student: 'Ada Lovelace',
+        scorecard: {
+          criterion_scores: [
+            { criterion: 'c1', points_earned: 9, rating_label: '', analysis: '',
+              justification: '', evidence: [], confidence: 'high' },
+            { criterion: 'c2', points_earned: 6, rating_label: '', analysis: '',
+              justification: '', evidence: [], confidence: 'high' },
+            { criterion: 'c3', points_earned: 2, rating_label: '', analysis: '',
+              justification: '', evidence: [], confidence: 'high' },
+          ],
+          summary: '', flags: [{ code: 'c2', severity: 'block' }],
+          test_results: {}, model: 'm1', agent_session_id: 's1',
+          prompt_version: 'v1', created_at: '2026-01-01T00:00:00Z',
+        },
+      });
+    })()`);
+    await window.eval(`(() => {
+      const row = [...document.querySelectorAll('.review-list .row:not(.row-head)')][0];
+      if (row) row.click();
+    })()`);
+    await tick(80);
+    const shape = await window.eval(`(() => {
+      const rows = [...document.querySelectorAll('#aside-extra .mark-row')];
+      return {
+        tones: rows.map((r) => r.dataset.tone || ''),
+        flags: rows.map((r) => r.querySelectorAll('.mark-flag').length),
+      };
+    })()`);
+    assert.strictEqual(JSON.stringify(shape.tones), JSON.stringify(['ok', 'warn', 'bad']),
+      `the bars do not follow the score: ${JSON.stringify(shape.tones)}`);
+    assert.strictEqual(JSON.stringify(shape.flags), JSON.stringify([0, 1, 0]),
+      'the criterion flagged for a human is not marked');
+  });
+
   // The save button used to stretch to the height of the view switch beside
   // it and tower over it.
   await test('the save button is sized with the view switch, not beside it', async () => {
