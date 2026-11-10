@@ -1598,6 +1598,30 @@ await test('no handler threw while every button was clicked', () => {
     assert.deepStrictEqual(base.consoleErrors, [], base.consoleErrors.join('\n'));
   });
 
+  // The save button used to stretch to the height of the view switch beside
+  // it and tower over it.
+  await test('the save button is sized with the view switch, not beside it', async () => {
+    const { window } = await reboot();
+    await gotoOn(window, 'Review');
+    await tick(80);
+    const actions = window.document.querySelector('.reader-actions');
+    assert.ok(actions, 'the reader has no actions cluster');
+    assert.ok(actions.querySelector('.tabs'),
+      'the view switch is not in the actions cluster');
+    await window.eval(`(() => {
+      const t = [...document.querySelectorAll('.tab')]
+        .find((x) => x.textContent.trim() === 'Edit source');
+      if (t) t.click();
+    })()`);
+    await tick(60);
+    // The whole view is rebuilt on the switch, so the earlier reference is
+    // stale and has to be looked up again.
+    const save = window.document.querySelector('.reader-actions .btn');
+    assert.ok(save, 'there is no save button in edit mode');
+    assert.strictEqual(save.dataset.size, 'sm',
+      'the save button is not the small size and will tower over the switch');
+  });
+
   // Clicking a course used to do nothing visible until its assignments came
   // back, which reads as a frozen window.
   await test('the assignment panel opens at once and says it is loading', async () => {

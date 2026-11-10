@@ -1385,7 +1385,7 @@ function reportPane() {
       }, md);
 
   const saving = S.tab === 'edit' ? h('button', {
-    class: 'btn', 'data-variant': 'primary',
+    class: 'btn', 'data-size': 'sm', 'data-variant': 'primary',
     onclick: async () => {
       const res = await guard(() => api.saveReport(rowId, S.current.markdown), 'Could not save');
       if (res) toast('Report saved.');
@@ -1403,7 +1403,7 @@ function reportPane() {
           (scorecard?.flags || []).map((f) => chip(f.code, f.severity === 'block' ? 'flag' : null)),
           h('button', { class: 'rowlink',
             onclick: () => bridge.revealPath(S.current.path) }, 'show file'))),
-      h('div', { style: 'display:flex;gap:8px' },
+      h('div', { class: 'reader-actions' },
         tabs,
         saving)),
     h('div', { class: 'editor-wrap' }, body));
