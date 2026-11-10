@@ -7,7 +7,7 @@
 
 import {
   h, mount, clear, fmt, clock, chip, statusChip, marksStrip, markdown,
-  empty, notice, field, card,
+  empty, notice, field, card, icon,
 } from './ui.js';
 
 /* Error handling is registered first, before anything touches the preload
@@ -198,6 +198,11 @@ const S = {
   // Model for the next run only. Empty means 'use the saved default'.
   runModel: '',
   savedRuns: [],
+  // The session being renamed in the saved-sessions panel, and the name
+  // being typed. Renaming used to open a browser prompt, which looked like
+  // another program's dialog in the middle of this one.
+  renamingRun: null,
+  renameDraft: '',
   // The launcher shows until a session is chosen.
   launching: true,
   editing: false,
@@ -435,17 +440,29 @@ async function loadRuntime() {
   render();
 }
 
+/** The runtime's version, without the tool's name in front of it.
+ *
+ *  `opencode --version` answers "opencode v2.2.6", and the card was showing
+ *  that whole string with a "v" of its own in front: "vopencode v2.2.6".
+ */
+function versionLabel(version) {
+  return String(version || '')
+    .replace(/^opencode\s+/i, '')
+    .replace(/^v/i, '')
+    .trim();
+}
+
 function runtimeCard() {
   const rt = S.runtime;
   const downloading = rt && rt.downloading;
-  const active = rt?.active_version;
-  const latest = rt?.latest_version;
-  const staged = rt?.pending_version;
+  const active = versionLabel(rt?.active_version);
+  const latest = versionLabel(rt?.latest_version);
+  const staged = versionLabel(rt?.pending_version);
   const updatable = !!(rt?.update_available && latest) && !downloading && !staged;
 
   return card('Agent runtime',
     S.runtimeChecking ? 'checking…'
-      : rt?.checked ? `v${active || 'unknown'}`
+      : rt?.checked ? (active ? `v${active}` : 'unknown')
         : rt ? 'not checked yet' : 'unknown',
     h('div', { class: 'runtime-bar' },
       h('span', { class: 'runtime-state' },
@@ -459,7 +476,10 @@ function runtimeCard() {
         downloading ? h('span', { class: 'dim' }, 'Downloading…') : null),
       h('div', { class: 'runtime-actions' },
         updatable ? h('button', {
-          class: 'btn', 'data-size': 'sm', 'data-variant': 'primary',
+          // Not the accent. The page's accent belongs to "Choose an
+          // assignment", and two filled buttons of different sizes next to
+          // each other do not read as one page.
+          class: 'btn', 'data-size': 'sm',
           onclick: () => guard(async () => {
             const r = await api.updateRuntime();
             if (r) {
@@ -640,15 +660,17 @@ function viewSetup() {
 }
 
 /** A panel that slides in from the right. Used for assignments and the log. */
-function slideover(title, subtitle, body, foot, wide) {
+function slideover(title, subtitle, body, foot, wide, narrow) {
   return h('div', {
     class: 'slideover',
     onclick: (e) => { if (e.target.classList.contains('slideover')) closePanel(); },
   },
     h('div', {
       // The log gets more width: agent output lines are long and a 760px
-      // terminal wraps them into something hard to follow.
-      class: wide ? 'slideover-panel slideover--wide' : 'slideover-panel',
+      // terminal wraps them into something hard to follow. A short list gets
+      // less: a row of three words does not need 760px.
+      class: wide ? 'slideover-panel slideover--wide'
+        : narrow ? 'slideover-panel slideover--narrow' : 'slideover-panel',
       role: 'dialog', 'aria-label': title,
     },
       h('div', { class: 'slideover-head' },
@@ -660,6 +682,19 @@ function slideover(title, subtitle, body, foot, wide) {
       h('div', { class: 'slideover-body' }, body),
       foot ? h('div', { class: 'slideover-foot' }, foot) : null));
 }
+
+/* The icon set. One stroke, one weight, one grid: a pencil, a play, a bin.
+   Drawn rather than typed, so a row of actions is three small marks instead
+   of three boxes shouting at each other. */
+const ICONS = {
+  resume: [{ d: 'M6 3.8l6.1 4.2L6 12.2z', fill: true }],
+  rename: [{ d: 'M11.1 2.9l2 2-6.8 6.8-2.5.5.5-2.5z' }],
+  delete: [
+    { d: 'M3.4 4.6h9.2' },
+    { d: 'M6.6 4.6v-1.2h2.8v1.2' },
+    { d: 'M4.7 4.6l.5 8a1 1 0 00.95.9h3.7a1 1 0 00.95-.9l.5-8' },
+  ],
+};
 
 function closePanel() {
   if (S.logTimer) { clearInterval(S.logTimer); S.logTimer = null; }
@@ -817,68 +852,17 @@ function renderPanel() {
 
   if (panel.kind === 'runs') {
     const runs = S.savedRuns;
+    const resume = (r) => { closePanel(); resumeRun(r); };
+    const rerender = () => renderPanel();
     mount(el, slideover(
       'Saved sessions',
-      runs.length ? `${runs.length} resumable` : null,
+      runs.length ? `${runs.length} session${runs.length === 1 ? '' : 's'}` : null,
       runs.length
-        ? h('div', {}, runs.map((r) => h('div', {
-            class: 'pick', style: 'cursor:default',
-          },
-            h('div', {},
-              h('div', { class: 'pick-title' }, r.label || r.title),
-              h('div', { class: 'pick-sub' },
-                h('span', {}, `course ${r.course_id} · assignment ${r.assignment_id}`),
-                h('span', {}, `${r.graded || 0}/${r.total || 0} graded`),
-                h('span', {}, r.published ? `${r.published} published` : null),
-                h('span', {}, statusChip(r.status)),
-                r.model ? h('span', {}, r.model) : null)),
-            h('div', { class: 'pick-meta', style: 'display:flex;gap:6px;align-items:center' },
-              h('button', {
-                class: 'btn', 'data-size': 'sm', 'data-variant': 'primary',
-                onclick: () => { closePanel(); resumeRun(r); },
-              }, 'Resume'),
-              h('button', {
-                class: 'btn', 'data-size': 'sm', 'data-variant': 'ghost',
-                onclick: async () => {
-                  const next = window.prompt('Name this session', r.label || r.title || '');
-                  if (next === null) return;
-                  await guard(async () => {
-                    await api.labelRun(r.id, next);
-                    await loadRuns();
-                    renderPanel();
-                  }, 'Could not rename');
-                },
-              }, r.label ? 'Rename' : 'Name'),
-              r.label ? h('button', {
-                class: 'btn', 'data-size': 'sm', 'data-variant': 'ghost',
-                onclick: () => guard(async () => {
-                  await api.labelRun(r.id, '');
-                  await loadRuns();
-                  renderPanel();
-                }, 'Could not clear the name'),
-              }, 'Clear') : null,
-              h('button', {
-                class: 'btn', 'data-size': 'sm', 'data-variant': 'danger',
-                onclick: async () => {
-                  const ok = window.confirm(
-                    `Delete "${r.label || r.title}" and all its collected work and scores? `
-                    + 'This cannot be undone.');
-                  if (!ok) return;
-                  await guard(async () => {
-                    await api.deleteRun(r.id);
-                    await loadRuns();
-                    renderPanel();
-                    toast('Session deleted.');
-                  }, 'Could not delete');
-                },
-              }, 'Delete')))))
-        : h('div', { style: 'color:var(--ink-3);font-size:12px;padding:10px 0' },
+        ? h('div', { class: 'session-list' }, runs.map((r) => sessionRow(r, resume, rerender)))
+        : h('div', { class: 'session-empty' },
             'Nothing saved yet. A session appears here once you start one, and '
             + 'you can come back to it later from any machine.'),
-      h('button', {
-        class: 'btn', 'data-size': 'sm',
-        onclick: () => guard(async () => { await loadRuns(); renderPanel(); }, 'Could not refresh'),
-      }, 'Refresh')));
+      null, false, true));
     return;
   }
 
@@ -1725,23 +1709,23 @@ function renderAside() {
   if (run && S.stage === 'collect') {
     title.textContent = 'Activity';
     const p = run.progress || {};
-    extra.push(h('div', { class: 'stats' },
-      h('div', { class: 'stat' }, h('div', { class: 'stat-v' }, p.total || 0), h('div', { class: 'stat-k' }, 'submissions')),
-      h('div', { class: 'stat' }, h('div', { class: 'stat-v' }, p.collected || 0), h('div', { class: 'stat-k' }, 'collected')),
-      h('div', { class: 'stat' }, h('div', { class: 'stat-v' }, p.no_submission || 0), h('div', { class: 'stat-k' }, 'no submission')),
-      h('div', { class: 'stat' }, h('div', { class: 'stat-v' }, p.collect_failed || 0), h('div', { class: 'stat-k' }, 'failed'))));
+    extra.push(h('div', { class: 'stats stats--rail' },
+      h('div', { class: 'stat' }, h('div', { class: 'stat-k' }, 'submissions'), h('div', { class: 'stat-v' }, p.total || 0)),
+      h('div', { class: 'stat' }, h('div', { class: 'stat-k' }, 'collected'), h('div', { class: 'stat-v' }, p.collected || 0)),
+      h('div', { class: 'stat' }, h('div', { class: 'stat-k' }, 'no submission'), h('div', { class: 'stat-v' }, p.no_submission || 0)),
+      h('div', { class: 'stat' }, h('div', { class: 'stat-k' }, 'failed'), h('div', { class: 'stat-v' }, p.collect_failed || 0))));
   } else if (run && S.stage === 'grade') {
     title.textContent = 'Activity';
     // The same three figures the Run grading card shows, counted the same
     // way. Two panels that disagree are worse than one panel.
     const graded = S.submissions.filter((s) => s.score !== null).length;
     const flagged = S.submissions.filter((s) => (s.flags || []).length).length;
-    extra.push(h('div', { class: 'stats' },
-      h('div', { class: 'stat' }, h('div', { class: 'stat-v' }, graded), h('div', { class: 'stat-k' }, 'graded')),
-      h('div', { class: 'stat' }, h('div', { class: 'stat-v' }, S.submissions.length), h('div', { class: 'stat-k' }, 'collected')),
+    extra.push(h('div', { class: 'stats stats--rail' },
+      h('div', { class: 'stat' }, h('div', { class: 'stat-k' }, 'graded'), h('div', { class: 'stat-v' }, graded)),
+      h('div', { class: 'stat' }, h('div', { class: 'stat-k' }, 'collected'), h('div', { class: 'stat-v' }, S.submissions.length)),
       h('div', { class: 'stat' },
-        h('div', { class: 'stat-v', style: flagged ? 'color:var(--flag)' : '' }, flagged),
-        h('div', { class: 'stat-k' }, 'needs attention'))));
+        h('div', { class: 'stat-k' }, 'needs attention'),
+        h('div', { class: 'stat-v', style: flagged ? 'color:var(--flag)' : '' }, flagged))));
   } else if (run && S.stage === 'review') {
     title.textContent = 'Rubric';
     // The marks belong to the report that is open. Showing the last report's
@@ -1886,51 +1870,160 @@ function resumeStage(run, submissions) {
   return 'collect';
 }
 
+/** The three actions a saved session offers, as drawn marks.
+ *
+ *  Icons, one stroke and one weight: three boxes of text in a row of a
+ *  session list were louder than the sessions they belonged to.
+ */
+function sessionActions(r, resume, rerender) {
+  if (S.renamingRun === r.id) {
+    return [
+      h('button', {
+        class: 'btn', 'data-size': 'sm', 'data-variant': 'primary',
+        onclick: () => saveRunName(r, rerender),
+      }, 'Save'),
+      h('button', {
+        class: 'btn', 'data-size': 'sm',
+        onclick: () => {
+          S.renamingRun = null;
+          S.renameDraft = '';
+          rerender();
+        },
+      }, 'Cancel'),
+    ];
+  }
+  return [
+    h('button', {
+      class: 'icon-btn', title: 'Resume this session',
+      onclick: () => resume(r),
+    }, icon(ICONS.resume)),
+    h('button', {
+      class: 'icon-btn', title: 'Name this session',
+      onclick: () => {
+        S.renamingRun = r.id;
+        S.renameDraft = r.label || '';
+        rerender();
+        const input = document.getElementById('run-rename');
+        if (input) { input.focus(); input.select(); }
+      },
+    }, icon(ICONS.rename)),
+    h('button', {
+      class: 'icon-btn icon-btn--danger', title: 'Delete this session',
+      onclick: async () => {
+        const ok = window.confirm(
+          `Delete "${r.label || r.title}" and all its collected work and scores? `
+          + 'This cannot be undone.');
+        if (!ok) return;
+        await guard(async () => {
+          await api.deleteRun(r.id);
+          await loadRuns();
+        }, 'Could not delete');
+        rerender();
+        toast('Session deleted.');
+      },
+    }, icon(ICONS.delete)),
+  ];
+}
+
+async function saveRunName(r, rerender) {
+  const name = (S.renameDraft || '').trim();
+  S.renamingRun = null;
+  S.renameDraft = '';
+  await guard(async () => {
+    await api.labelRun(r.id, name);
+    await loadRuns();
+  }, 'Could not rename');
+  rerender();
+}
+
+/** One saved session: what it is, how far it got, and what can be done with
+ *  it. The launcher and the all-sessions panel show the same thing, so they
+ *  are the same row. */
+function sessionRow(r, resume, rerender) {
+  const renaming = S.renamingRun === r.id;
+  // The model is only worth naming when it is not the one that is configured
+  // now. Otherwise every row repeated the same string.
+  const oddModel = r.model && r.model !== S.model?.selected;
+  return h('div', {
+    class: 'session-row',
+    // The whole row resumes the session. The buttons inside it keep their own
+    // meaning, and a row being renamed does nothing when it is clicked.
+    onclick: (e) => {
+      if (renaming) return;
+      if (e.target.closest('button, input')) return;
+      resume(r);
+    },
+  },
+    h('div', { class: 'session-main' },
+      renaming
+        ? h('input', {
+            class: 'input', id: 'run-rename',
+            value: S.renameDraft,
+            placeholder: 'Name this session',
+            oninput: (e) => { S.renameDraft = e.target.value; },
+            onkeydown: (e) => {
+              if (e.key === 'Enter') { e.preventDefault(); saveRunName(r, rerender); }
+              if (e.key === 'Escape') {
+                e.preventDefault();
+                S.renamingRun = null;
+                S.renameDraft = '';
+                rerender();
+              }
+            },
+          })
+        : h('button', {
+            class: 'session-title', type: 'button',
+            title: 'Resume this session',
+            onclick: (e) => { e.stopPropagation(); resume(r); },
+          }, r.label || r.title),
+      h('div', { class: 'session-meta' },
+        h('span', {}, `course ${r.course_id} · assignment ${r.assignment_id}`),
+        r.published ? h('span', {}, `${r.published} published`) : null,
+        statusChip(r.status),
+        h('span', { class: 'session-resume' }, `resume at ${resumeStage(r)}`),
+        oddModel ? h('span', { class: 'session-model' }, r.model) : null)),
+    h('div', { class: 'session-progress' },
+      h('span', { class: 'session-count' }, `${r.graded || 0}/${r.total || 0}`),
+      h('span', { class: 'session-count-label' }, 'graded')),
+    h('div', { class: 'session-actions' }, sessionActions(r, resume, rerender)));
+}
+
 /** The launcher: recent gradings, pick one. */
 function viewLauncher() {
   const runs = S.savedRuns;
   const recent = runs.slice(0, 8);
+  const resume = (r) => { S.launching = false; resumeRun(r); };
+  const rerender = () => render();
   return h('div', {},
     h('div', { class: 'head' },
       h('h1', {}, 'Grading Pipeline'),
       h('p', {}, 'Pick up where you left off, or start something new.')),
     runs.length
-      ? card('Recent sessions', `${runs.length} saved`,
-          h('div', { class: 'picklist' }, recent.map((r) => h('button', {
-            class: 'pick',
-            onclick: () => { S.launching = false; resumeRun(r); },
-          },
-            h('div', {},
-              h('div', { class: 'pick-title' }, r.label || r.title),
-              h('div', { class: 'pick-sub' },
-                h('span', {}, `course ${r.course_id} · assignment ${r.assignment_id}`),
-                h('span', {}, `${r.graded || 0}/${r.total || 0} graded`),
-                h('span', {}, statusChip(r.status)),
-                r.label ? null : h('span', {}, 'rename it on the select step'))),
-            h('div', { class: 'pick-meta' }, `Resume at ${resumeStage(r)}`)))),
+      ? h('div', { class: 'card card--listing' },
+          h('div', { class: 'card-head' },
+            h('h2', {}, 'Recent sessions'),
+            h('div', { class: 'note' }, `${runs.length} saved`)),
+          h('div', { class: 'session-list' }, recent.map((r) => sessionRow(r, resume, rerender))))
+      : card('No saved sessions yet', null,
+          h('p', { class: 'hint' }, 'Sessions appear here automatically once you '
+            + 'start one. There is nothing to save.')),
+    runs.length
+      ? h('div', { class: 'page-foot page-foot--end', style: 'gap:8px' },
           runs.length > recent.length
             ? h('button', {
-                class: 'btn', style: 'margin-top:12px',
+                class: 'btn',
                 onclick: () => { S.launching = false; S.panel = { kind: 'runs', rowId: null }; render(); },
               }, `All ${runs.length} sessions`)
             : null,
-          h('div', { style: 'display:flex;gap:8px;margin-top:16px' },
-            h('button', {
-              class: 'btn', 'data-variant': 'primary',
-              onclick: () => { S.launching = false; render(); },
-            }, 'Start something new'),
-            h('button', {
-              class: 'btn',
-              onclick: () => guard(loadRuns, 'Could not refresh sessions'),
-            }, 'Refresh')))
-      : card('No saved sessions yet', null,
-          h('p', { class: 'hint' }, 'Sessions appear here automatically once you '
-            + 'start one. There is nothing to save.'),
-          h('div', { style: 'margin-top:14px' },
-            h('button', {
-              class: 'btn', 'data-variant': 'primary',
-              onclick: () => { S.launching = false; render(); },
-            }, 'Start something new'))));
+          h('button', {
+            class: 'btn', 'data-variant': 'primary',
+            onclick: () => { S.launching = false; render(); },
+          }, 'Start something new'))
+      : h('div', { class: 'page-foot page-foot--end' },
+          h('button', {
+            class: 'btn', 'data-variant': 'primary',
+            onclick: () => { S.launching = false; render(); },
+          }, 'Start something new')));
 }
 
 async function resumeRun(run) {

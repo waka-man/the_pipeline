@@ -206,3 +206,35 @@ export function card(title, note, ...body) {
       note ? (typeof note === 'string' ? h('div', { class: 'note' }, note) : note) : null) : null,
     ...body);
 }
+
+/**
+ * A drawn icon.
+ *
+ * One set, one stroke, one weight: the icons have to look like they belong
+ * to the same hand as the type. A filled shape is filled; everything else is
+ * stroked.
+ */
+export function icon(shapes, size = 15) {
+  const ns = 'http://www.w3.org/2000/svg';
+  const svg = document.createElementNS(ns, 'svg');
+  svg.setAttribute('viewBox', '0 0 16 16');
+  svg.setAttribute('width', String(size));
+  svg.setAttribute('height', String(size));
+  svg.setAttribute('fill', 'none');
+  svg.setAttribute('stroke', 'currentColor');
+  svg.setAttribute('stroke-width', '1.5');
+  svg.setAttribute('stroke-linecap', 'round');
+  svg.setAttribute('stroke-linejoin', 'round');
+  svg.setAttribute('aria-hidden', 'true');
+  svg.setAttribute('focusable', 'false');
+  for (const shape of shapes) {
+    const p = document.createElementNS(ns, 'path');
+    p.setAttribute('d', shape.d);
+    if (shape.fill) {
+      p.setAttribute('fill', 'currentColor');
+      p.setAttribute('stroke', 'none');
+    }
+    svg.append(p);
+  }
+  return svg;
+}

@@ -592,15 +592,22 @@ async function run() {
     const head = await window.eval("document.getElementById('main').textContent");
     assert.match(head, /Grading Pipeline/, 'no launcher heading');
     assert.match(head, /Essay marking, week 3/, 'a recent session is missing');
-    assert.match(head, /22\/151 graded/, 'progress is missing');
-    assert.match(head, /Resume at review/, 'it does not say where it would resume');
+    assert.match(head, /22\/151/, 'progress is missing');
+    assert.match(head, /graded/, 'the progress is not labelled');
+    assert.match(head, /resume at review/, 'it does not say where it would resume');
     assert.strictEqual(await window.eval(
       "document.querySelectorAll('.stage-btn').length"), 0,
       'the stage rail should not be in front of the launcher');
 
     // Resuming lands on the stage that run had reached, not always on collect.
     c.length = 0;
-    assert.strictEqual(await clickIn(window, '#main .pick', 'Essay marking'), 'clicked');
+    assert.strictEqual(await window.eval(`(() => {
+      const b = [...document.querySelectorAll('#main button')]
+        .find((x) => x.title === 'Resume this session');
+      if (!b) return 'missing';
+      b.click();
+      return 'clicked';
+    })()`), 'clicked', 'no way to resume a session');
     await tick(150);
     assert.ok(c.some((x) => x.startsWith('run(1)')), `did not open the run: ${c.join(', ')}`);
     assert.match(await window.eval("document.getElementById('main').textContent"),
@@ -629,25 +636,44 @@ async function run() {
     const text = await window.eval("document.querySelector('.slideover').textContent");
     // Where each one got to, which is the question this exists to answer.
     assert.match(text, /Essay marking, week 3/, 'a named session is missing');
-    assert.match(text, /22\/151 graded/, 'progress is missing');
+    assert.match(text, /22\/151/, 'progress is missing');
+    assert.match(text, /graded/, 'the progress is not labelled');
     assert.match(text, /Lab report/, 'an unnamed session should fall back to its title');
 
     // Resume switches to that run.
     c.length = 0;
-    assert.strictEqual(await clickIn(window, '.slideover button', 'Resume'), 'clicked');
+    assert.strictEqual(await window.eval(`(() => {
+      const b = [...document.querySelectorAll('.slideover button')]
+        .find((x) => x.title === 'Resume this session');
+      if (!b) return 'missing';
+      b.click();
+      return 'clicked';
+    })()`), 'clicked', 'no way to resume a session');
     await tick(120);
     assert.ok(c.some((x) => x.startsWith('run(1)')), `Resume did not open the run: ${c.join(', ')}`);
     assert.strictEqual(await window.eval(
       "document.querySelectorAll('.slideover').length"), 0, 'the panel stayed open');
 
     // Naming one is possible, because a bare assignment title is not enough
-    // to tell three marking sessions apart.
+    // to tell three marking sessions apart. The name is typed into the row
+    // itself: a browser prompt in the middle of this app looked like another
+    // program's dialog.
     await gotoOn(window, 'Select');
     await clickIn(window, '#main button', 'Saved sessions');
     await tick(80);
-    await window.eval("window.prompt = () => 'Essay marking, week 4'");
-    assert.strictEqual(await clickIn(window, '.slideover button', 'Rename'), 'clicked');
+    await window.eval(`(() => {
+      const b = [...document.querySelectorAll('.slideover button')]
+        .find((x) => x.title === 'Name this session');
+      if (b) b.click();
+    })()`);
     await tick(60);
+    await window.eval(`(() => {
+      const el = document.querySelector('#run-rename');
+      el.value = 'Essay marking, week 4';
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+    })()`);
+    assert.strictEqual(await clickIn(window, '.slideover button', 'Save'), 'clicked');
+    await tick(80);
     assert.ok(c.some((x) => x.startsWith('labelRun(')), `Rename did not save: ${c.join(', ')}`);
   });
 
@@ -1807,6 +1833,26 @@ await test('no handler threw while every button was clicked', () => {
       'the panel and the card beside it disagree');
   });
 
+  // Four figures do not fit across a rail. Laid out as a row they wrapped and
+  // left the last one stranded; as a ledger they line up down the edge.
+  await test('the rail figures are a ledger, one line each', async () => {
+    const { window } = await reboot();
+    await gotoOn(window, 'Collect');
+    const shape = await window.eval(`(() => {
+      const stats = document.querySelector('#aside-extra .stats');
+      const first = stats.children[0];
+      return {
+        rail: stats.classList.contains('stats--rail'),
+        labelFirst: first.children[0].textContent.trim(),
+        rows: stats.children.length,
+      };
+    })()`);
+    assert.ok(shape.rail, 'the figures are still laid out as a row across the rail');
+    assert.strictEqual(shape.labelFirst, 'submissions',
+      'the label does not come before the figure');
+    assert.strictEqual(shape.rows, 4, 'a figure is missing from the ledger');
+  });
+
   await test('the runtime card does not claim to be checking when it is not', async () => {
     const { window } = await reboot();
     await gotoOn(window, 'Setup');
@@ -1819,6 +1865,31 @@ await test('no handler threw while every button was clicked', () => {
     assert.notStrictEqual(note, 'checking…',
       'the card says it is checking for a version nobody asked it to check');
     assert.match(note, /^v\d/, `the card does not say which version is in use: ${note}`);
+  });
+
+  // The version string came back as "opencode v2.2.6" and the card put a "v"
+  // in front of it, and the install button was filled like the page's primary
+  // action while being half its size.
+  await test('the runtime version reads as a version and the install stays quiet', async () => {
+    const { window } = await reboot();
+    await gotoOn(window, 'Setup');
+    await tick(80);
+    const shape = await window.eval(`(() => {
+      const card = [...document.querySelectorAll('#main .card')]
+        .find((c) => /Agent runtime/.test(c.textContent));
+      const install = [...card.querySelectorAll('button')]
+        .find((b) => b.textContent.trim().startsWith('Install v'));
+      return {
+        note: card.querySelector('.card-head .note').textContent.trim(),
+        install: install ? install.textContent.trim() : null,
+        filled: install ? install.dataset.variant === 'primary' : null,
+      };
+    })()`);
+    assert.match(shape.note, /^v\d+\.\d+/,
+      `the version does not read as a version: ${shape.note}`);
+    assert.ok(shape.install, 'there is no way to install the newer runtime');
+    assert.strictEqual(shape.filled, false,
+      'the install button is filled like the page\'s primary action');
   });
 
   await test('the assignment name appears once in the header', async () => {
@@ -1853,6 +1924,59 @@ await test('no handler threw while every button was clicked', () => {
     })()`);
     assert.ok(shape.grouped, 'the field and its button are still two separate controls');
     assert.ok(shape.sameRow, 'the field and its button are on different rows');
+  });
+
+  // Every row carried the same three actions but they drifted sideways with
+  // the width of their labels, and every row repeated the model.
+  await test('every saved session row carries the same actions', async () => {
+    const { window } = await reboot();
+    await gotoOn(window, 'Select');
+    await clickIn(window, '#main button', 'Load courses');
+    await tick(60);
+    await clickIn(window, '#main button', 'Saved sessions');
+    await tick(80);
+    const shape = await window.eval(`(() => {
+      const rows = [...document.querySelectorAll('.session-row')];
+      return {
+        rows: rows.length,
+        actions: rows.map((r) => [...r.querySelectorAll('.session-actions button')]
+          .map((b) => b.title).join(',')),
+        models: rows.map((r) => r.querySelectorAll('.session-model').length),
+      };
+    })()`);
+    assert.ok(shape.rows > 0, 'the panel lists no sessions');
+    // Compared as text: an array built inside the jsdom realm is not the
+    // same object as one built here, and deepStrictEqual says so.
+    assert.strictEqual(JSON.stringify(shape.actions), JSON.stringify([
+      'Resume this session,Name this session,Delete this session',
+      'Resume this session,Name this session,Delete this session',
+    ]), 'the rows do not carry the same actions');
+    assert.strictEqual(JSON.stringify(shape.models), JSON.stringify([1, 0]),
+      'the model is repeated on rows that use the one already configured');
+  });
+
+  // A session is picked by clicking it, not by aiming at a small button.
+  await test('a session row resumes when any of it is clicked', async () => {
+    const { window, calls: c } = await reboot();
+    await tick(120);
+    c.length = 0;
+    await window.eval(`(() => {
+      const row = [...document.querySelectorAll('#main .session-row')]
+        .find((r) => r.textContent.includes('Essay marking'));
+      const meta = row.querySelector('.session-meta');
+      if (meta) meta.click();
+    })()`);
+    await tick(150);
+    assert.ok(c.some((x) => x.startsWith('run(1)')), `the row did not resume: ${c.join(', ')}`);
+  });
+
+  // The list is separated from the heading it sits under.
+  await test('the recent sessions list is ruled off from its heading', async () => {
+    const { window } = await reboot();
+    await tick(120);
+    assert.ok(await window.eval(
+      "!!document.querySelector('#main .card--listing .session-list')"),
+    'the list is not marked as a listing');
   });
 
   // The save button used to stretch to the height of the view switch beside
