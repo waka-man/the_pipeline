@@ -1,17 +1,27 @@
 /* ==========================================================================
    Grading Pipeline — a marking instrument.
 
-   The subject is annotated paper: ink for what we decided, highlighter for
-   what a human must still look at. Colour is therefore semantic, not
-   decorative — amber appears only when attention is required, never as
-   ornament. Everything else is quiet on purpose so the marks read first.
-
-   Monospace carries chrome, marks, paths and every number, because this is a
-   tool for reading exact quantities. Long-form grading prose falls back to the
-   proportional sibling of the same family, which is easier to read at length
-   without abandoning the system.
+   Annotated paper: ink for decisions, highlighter for what still needs a
+   person. Colour is semantic — amber only when attention is required.
+   Interface text is set in a clean sans for clarity; monospace is kept for
+   code, paths, and the live agent log where exact detail matters.
    ========================================================================== */
 
+@font-face {
+  font-family: 'Inter';
+  src: url('fonts/Inter-400.woff2') format('woff2');
+  font-weight: 400; font-style: normal; font-display: swap;
+}
+@font-face {
+  font-family: 'Inter';
+  src: url('fonts/Inter-500.woff2') format('woff2');
+  font-weight: 500; font-style: normal; font-display: swap;
+}
+@font-face {
+  font-family: 'Inter';
+  src: url('fonts/Inter-600.woff2') format('woff2');
+  font-weight: 600; font-style: normal; font-display: swap;
+}
 @font-face {
   font-family: 'Plex Mono';
   src: url('fonts/IBMPlexMono-400.woff2') format('woff2');
@@ -42,7 +52,7 @@
 
 :root {
   --mono: 'Plex Mono', ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
-  --sans: 'Plex Sans', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --sans: 'Inter', 'Plex Sans', system-ui, -apple-system, 'Segoe UI', sans-serif;
 
   --desk: #0e0f11;
   --surface: #15171a;
@@ -119,11 +129,12 @@ html, body {
 body {
   background: var(--desk);
   color: var(--ink);
-  font-family: var(--mono);
-  font-size: 13px;
-  line-height: 1.55;
+  font-family: var(--sans);
+  font-size: 14px;
+  line-height: 1.5;
   font-variant-numeric: tabular-nums;
   -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
   overflow: hidden;
 }
 
@@ -195,12 +206,12 @@ body {
 
 .wordmark {
   font-weight: 600;
-  font-size: 12px;
-  letter-spacing: 0.04em;
+  font-size: 13px;
+  letter-spacing: -0.01em;
   color: var(--ink);
   white-space: nowrap;
 }
-.wordmark .dim { color: var(--ink-3); font-weight: 400; }
+.wordmark .dim { color: var(--ink-3); font-weight: 500; }
 
 .topbar-run {
   display: flex;
@@ -208,7 +219,7 @@ body {
   gap: 9px;
   min-width: 0;
   flex: 1;
-  font-size: 12px;
+  font-size: 13px;
   color: var(--ink-2);
 }
 .topbar-run .name {
@@ -235,10 +246,11 @@ body {
 
 .spine-label {
   padding: 0 18px 12px;
-  font-size: 10px;
-  letter-spacing: 0.13em;
+  font-size: 11px;
+  letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--ink-3);
+  font-weight: 500;
 }
 
 /* The stages are genuinely a sequence, so a vertical rule with a node per
@@ -263,13 +275,13 @@ body {
   grid-template-columns: 16px 1fr auto;
   align-items: center;
   gap: 10px;
-  padding: 9px 10px 9px 15px;
+  padding: 10px 10px 10px 15px;
   background: none;
   border: 0;
   border-radius: var(--r);
   color: var(--ink-2);
   font: inherit;
-  font-size: 12.5px;
+  font-size: 13px;
   text-align: left;
   cursor: default;
   transition: background var(--t-fast), color var(--t-fast);
@@ -343,15 +355,17 @@ body {
 
 .head { margin-bottom: 22px; }
 .head h1 {
-  margin: 0 0 5px;
-  font-size: 19px;
-  font-weight: 500;
-  letter-spacing: -0.01em;
+  margin: 0 0 6px;
+  font-size: 24px;
+  font-weight: 600;
+  letter-spacing: -0.025em;
+  line-height: 1.2;
 }
 .head p {
   margin: 0;
   color: var(--ink-2);
-  font-size: 12.5px;
+  font-size: 14px;
+  line-height: 1.6;
   max-width: 68ch;
 }
 
@@ -361,16 +375,17 @@ body {
   display: inline-flex;
   align-items: center;
   gap: 7px;
-  padding: 7px 13px;
+  padding: 8px 14px;
   background: var(--surface-2);
   border: 1px solid var(--rule);
   border-radius: var(--r);
   color: var(--ink);
   font: inherit;
-  font-size: 12px;
+  font-size: 13px;
+  font-weight: 500;
   cursor: pointer;
   white-space: nowrap;
-  transition: background var(--t-fast), border-color var(--t-fast), opacity var(--t-fast);
+  transition: background var(--t-fast), border-color var(--t-fast), color var(--t-fast), opacity var(--t-fast);
 }
 .btn:hover:not(:disabled) { background: var(--surface-3); border-color: var(--ink-3); }
 .btn:disabled { opacity: 0.4; cursor: not-allowed; }
@@ -389,7 +404,7 @@ body {
 .btn[data-variant='ghost']:hover:not(:disabled) { background: var(--surface-2); color: var(--ink); }
 .btn[data-variant='danger'] { border-color: var(--bad); color: var(--bad); }
 .btn[data-variant='danger']:hover:not(:disabled) { background: var(--bad-wash); }
-.btn[data-size='sm'] { padding: 4px 9px; font-size: 11.5px; }
+.btn[data-size='sm'] { padding: 5px 10px; font-size: 12px; font-weight: 500; }
 
 .field { margin-bottom: 16px; }
 .field > label {
@@ -428,7 +443,7 @@ body {
   background: var(--surface);
   border: 1px solid var(--rule);
   border-radius: var(--r-lg);
-  padding: 18px;
+  padding: 20px;
   min-width: 0;
 }
 .card + .card { margin-top: 14px; }
@@ -616,7 +631,7 @@ body {
   justify-content: space-between;
   gap: 10px;
 }
-.aside-head h2 { margin: 0; font-size: 11px; letter-spacing: 0.12em;
+.aside-head h2 { margin: 0; font-size: 12px; letter-spacing: 0.06em;
                  text-transform: uppercase; color: var(--ink-3); font-weight: 500; }
 
 .aside-body { flex: 1; overflow-y: auto; padding: 14px 16px; min-height: 0; min-width: 0; }
@@ -624,11 +639,11 @@ body {
 .aside-body > * + * { margin-top: 14px; }
 
 .console {
-  font-size: 11.5px;
-  line-height: 1.65;
+  font-size: 12.5px;
+  line-height: 1.6;
   display: flex;
   flex-direction: column;
-  gap: 7px;
+  gap: 8px;
 }
 .log-line { display: grid; grid-template-columns: 52px 1fr; gap: 10px; }
 .log-time { color: var(--ink-3); }
@@ -747,13 +762,13 @@ body {
   max-width: 74ch;
 }
 .prose > *:first-child { margin-top: 0; }
-.prose h1 { font-family: var(--mono); font-size: 15px; font-weight: 600; margin: 26px 0 12px; }
+.prose h1 { font-family: var(--sans); font-size: 20px; font-weight: 600; letter-spacing: -0.02em; margin: 26px 0 12px; }
 .prose h2 {
-  font-family: var(--mono); font-size: 11px; letter-spacing: 0.13em;
-  text-transform: uppercase; color: var(--ink-3); font-weight: 500;
+  font-family: var(--sans); font-size: 12px; letter-spacing: 0.08em;
+  text-transform: uppercase; color: var(--ink-3); font-weight: 600;
   margin: 26px 0 10px; padding-bottom: 6px; border-bottom: 1px solid var(--rule-soft);
 }
-.prose h3 { font-family: var(--mono); font-size: 13px; font-weight: 500; margin: 20px 0 8px; }
+.prose h3 { font-family: var(--sans); font-size: 15px; font-weight: 600; letter-spacing: -0.01em; margin: 20px 0 8px; }
 .prose p { margin: 0 0 11px; }
 .prose ul { margin: 0 0 11px; padding-left: 20px; }
 .prose li { margin-bottom: 4px; }
@@ -771,11 +786,11 @@ body {
 .prose strong { font-weight: 600; }
 .prose em { color: var(--ink-2); }
 .prose hr { border: 0; border-top: 1px solid var(--rule-soft); margin: 20px 0; }
-.prose table { border-collapse: collapse; width: 100%; margin: 0 0 14px; font-family: var(--mono);
-               font-size: 12px; }
-.prose th, .prose td { border: 1px solid var(--rule); padding: 6px 9px; text-align: left; }
-.prose th { background: var(--surface-2); color: var(--ink-3); font-weight: 500;
-            font-size: 10.5px; letter-spacing: 0.06em; text-transform: uppercase; }
+.prose table { border-collapse: collapse; width: 100%; margin: 0 0 14px; font-family: var(--sans);
+               font-size: 13px; }
+.prose th, .prose td { border: 1px solid var(--rule); padding: 8px 10px; text-align: left; }
+.prose th { background: var(--surface-2); color: var(--ink-3); font-weight: 600;
+            font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; }
 .prose blockquote { margin: 0 0 11px; padding-left: 12px; border-left: 2px solid var(--rule);
                     color: var(--ink-2); }
 
@@ -948,8 +963,8 @@ body {
   border-bottom: 1px solid var(--rule);
 }
 
-.slideover-head h2 { margin: 0 0 2px; font-size: 15px; }
-.slideover-head .dim { font-size: 11px; }
+.slideover-head h2 { margin: 0 0 4px; font-size: 17px; font-weight: 600; letter-spacing: -0.02em; }
+.slideover-head .dim { font-size: 12px; color: var(--ink-3); }
 
 .slideover-body {
   flex: 1;

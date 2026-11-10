@@ -1464,7 +1464,6 @@ function submissionTable(compact) {
   // re-grading (Grade Selected) and resetting (Reset Selected) reach it.
   // Hiding the control on graded rows made stub-graded cohorts impossible
   // to fix one student at a time.
-  const gradeable = S.submissions.filter((s) => s.score === null);
   const allSelected = S.submissions.length > 0
     && S.submissions.every((s) => S.selected.has(s.row_id));
   // A selected row keeps its checkbox even after it gains a score, so it
