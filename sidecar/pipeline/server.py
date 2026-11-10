@@ -714,9 +714,11 @@ def op_courses(state: AppState) -> dict[str, Any]:
         # gateways and proxies; accept either rather than raising mid-list.
         raw_term = c.get("term")
         term = raw_term.get("name") if isinstance(raw_term, dict) else raw_term
+        term_start = (raw_term.get("start_at") if isinstance(raw_term, dict) else None)
         out.append({"id": c.get("id"), "name": c.get("name"),
                     "term": term, "code": c.get("course_code"),
-                    "workflow_state": c.get("workflow_state")})
+                    "workflow_state": c.get("workflow_state"),
+                    "start_at": c.get("start_at") or term_start})
     return {"courses": out}
 
 

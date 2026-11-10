@@ -987,10 +987,18 @@ function viewSelect() {
         : empty('No courses loaded yet', 'Load your Canvas courses to begin.'));
   }
 
-  // Most recently active first, so the courses a lecturer actually teaches this
-  // term are the ones that fit above the fold.
-  const active = courses.filter((c) => c.workflow_state === 'available');
-  const ordered = [...active, ...courses.filter((c) => c.workflow_state !== 'available')];
+  // Most recent first, so the courses a lecturer actually teaches this term
+  // are the ones that fit above the fold. Fall back to id (Canvas assigns
+  // higher ids to newer courses) when start dates are missing.
+  const byRecency = (a, b) => {
+    const aDate = a.start_at ? new Date(a.start_at).getTime() : 0;
+    const bDate = b.start_at ? new Date(b.start_at).getTime() : 0;
+    if (aDate !== bDate) return bDate - aDate;
+    return (b.id || 0) - (a.id || 0);
+  };
+  const active = courses.filter((c) => c.workflow_state === 'available').sort(byRecency);
+  const inactive = courses.filter((c) => c.workflow_state !== 'available').sort(byRecency);
+  const ordered = [...active, ...inactive];
   const shown = ordered.slice(0, S.coursesShown);
 
   const rows = shown.map((c) => h('button', {
