@@ -1784,6 +1784,77 @@ await test('no handler threw while every button was clicked', () => {
     assert.strictEqual(closes, 1, `the panel offers Close ${closes} times`);
   });
 
+  // The marks in the rubric panel belong to the report that is open. Left
+  // over from a reviewed student, they said the marks were about the
+  // assignment.
+  await test('the rubric panel holds no marks when no report is open', async () => {
+    const { window } = await reboot();
+    await gotoOn(window, 'Setup');
+    const shown = await window.eval(
+      "document.querySelector('#aside-extra').textContent.trim()");
+    assert.strictEqual(shown, '',
+      `the setup page still shows a report's marks: ${shown}`);
+  });
+
+  await test('the aside and the run grading card count the same rows', async () => {
+    const { window } = await reboot();
+    await gotoOn(window, 'Grade');
+    const aside = await window.eval(
+      "[...document.querySelectorAll('#aside-extra .stat-v')].map((n) => n.textContent)");
+    const card = await window.eval(
+      "[...document.querySelectorAll('.sticky-acts .stat-v')].map((n) => n.textContent)");
+    assert.deepStrictEqual(aside, card,
+      'the panel and the card beside it disagree');
+  });
+
+  await test('the runtime card does not claim to be checking when it is not', async () => {
+    const { window } = await reboot();
+    await gotoOn(window, 'Setup');
+    await tick(80);
+    const note = await window.eval(`(() => {
+      const card = [...document.querySelectorAll('#main .card')]
+        .find((c) => /Agent runtime/.test(c.textContent));
+      return card.querySelector('.card-head .note').textContent.trim();
+    })()`);
+    assert.notStrictEqual(note, 'checking…',
+      'the card says it is checking for a version nobody asked it to check');
+    assert.match(note, /^v\d/, `the card does not say which version is in use: ${note}`);
+  });
+
+  await test('the assignment name appears once in the header', async () => {
+    const { window } = await reboot();
+    await gotoOn(window, 'Grade');
+    const bar = await window.eval("document.querySelector('.topbar').textContent");
+    const times = (bar.match(/Assignment/g) || []).length;
+    assert.strictEqual(times, 1, `the assignment name appears ${times} times: ${bar}`);
+    assert.strictEqual(await window.eval(
+      "!!document.getElementById('model-chip')"), false,
+    'the title bar still carries a model name beside the one on the card');
+  });
+
+  await test('the steer field and its button are one control', async () => {
+    const { window } = await reboot();
+    await gotoOn(window, 'Grade');
+    await window.eval(`(() => {
+      const rows = [...document.querySelectorAll('.rows .row:not(.row-head)')];
+      const row = rows.find((r) => r.textContent.includes('Alan Turing'));
+      [...row.querySelectorAll('button')].find((b) => b.textContent.trim() === 'agent log').click();
+    })()`);
+    await tick(80);
+    const shape = await window.eval(`(() => {
+      const input = document.querySelector('#steer-input');
+      const send = [...document.querySelectorAll('.slideover-foot button')]
+        .find((b) => b.textContent.trim() === 'Send');
+      return {
+        grouped: !!(input && send && input.closest('.steer-group') === send.closest('.steer-group')),
+        sameRow: !!(input && send
+          && input.closest('.panel-foot') === send.closest('.panel-foot')),
+      };
+    })()`);
+    assert.ok(shape.grouped, 'the field and its button are still two separate controls');
+    assert.ok(shape.sameRow, 'the field and its button are on different rows');
+  });
+
   // The save button used to stretch to the height of the view switch beside
   // it and tower over it.
   await test('the save button is sized with the view switch, not beside it', async () => {

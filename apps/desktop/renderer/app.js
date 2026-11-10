@@ -173,6 +173,9 @@ const S = {
   // happening while the app is still starting.
   runtime: null,
   runtimeRequested: false,
+  // True while a version check is in flight, so the card can say so instead
+  // of claiming to be checking for ever.
+  runtimeChecking: false,
   assignmentsShown: ASSIGNMENT_PAGE,
   // True while a course's assignments are being fetched, so the panel can
   // say so. Without it the click on a course did nothing visible until the
@@ -220,7 +223,6 @@ const els = {
   extra: document.getElementById('aside-extra'),
   topRun: document.getElementById('topbar-run'),
   runLabel: document.getElementById('run-label'),
-  modelChip: document.getElementById('model-chip'),
   modal: document.getElementById('modal-root'),
   spineMeta: document.getElementById('spine-meta'),
 };
@@ -406,7 +408,33 @@ function modelNote() {
 
 /* ------------------------------------------------------------------ views */
 
-/** What version of the agent runtime is installed, and whether one is newer. */
+/** What version of the agent runtime is installed, and whether one is newer.
+ *
+ *  The sidecar starts its probe in the background the first time anyone asks,
+ *  so the first answer says "not checked yet" and the real one arrives a
+ *  moment later. Reading it once left the card claiming to be checking for
+ *  ever, which it was not.
+ */
+async function loadRuntime() {
+  S.runtimeChecking = true;
+  render();
+  try {
+    S.runtime = await api.runtime();
+  } catch (_) {
+    S.runtime = null;
+  }
+  for (let tries = 0; tries < 30 && S.runtime && !S.runtime.checked; tries += 1) {
+    await new Promise((r) => setTimeout(r, 1000));
+    try {
+      S.runtime = await api.runtime();
+    } catch (_) {
+      break;
+    }
+  }
+  S.runtimeChecking = false;
+  render();
+}
+
 function runtimeCard() {
   const rt = S.runtime;
   const downloading = rt && rt.downloading;
@@ -415,7 +443,10 @@ function runtimeCard() {
   const staged = rt?.pending_version;
   const updatable = !!(rt?.update_available && latest) && !downloading && !staged;
 
-  return card('Agent runtime', rt?.checked ? `v${active || 'unknown'}` : 'checking…',
+  return card('Agent runtime',
+    S.runtimeChecking ? 'checking…'
+      : rt?.checked ? `v${active || 'unknown'}`
+        : rt ? 'not checked yet' : 'unknown',
     h('div', { class: 'runtime-bar' },
       h('span', { class: 'runtime-state' },
         staged
@@ -437,13 +468,18 @@ function runtimeCard() {
             }
           }, 'Could not start the update'),
         }, `Install v${latest}`) : null,
-        h('button', {
-          class: 'btn', 'data-size': 'sm', 'data-variant': 'ghost', disabled: downloading,
-          onclick: () => guard(async () => {
-            const r = await api.checkRuntime();
-            if (r) S.runtime = r;
+        busyButton('Check for updates', 'Checking…', S.runtimeChecking,
+          () => guard(async () => {
+            S.runtimeChecking = true;
+            render();
+            try {
+              const r = await api.checkRuntime();
+              if (r) S.runtime = r;
+            } finally {
+              S.runtimeChecking = false;
+            }
           }, 'Could not check for updates'),
-        }, 'Check for updates'))),
+          { 'data-size': 'sm', 'data-variant': 'ghost', disabled: downloading }))),
     rt?.active_source === 'managed'
       ? h('div', { class: 'hint', style: 'margin-top:10px' },
           `Running an updated runtime (v${active}) rather than the one this app `
@@ -455,7 +491,7 @@ function viewSetup() {
   const st = S.status || {};
   if (!S.runtimeRequested) {
     S.runtimeRequested = true;
-    api.runtime().then((r) => { if (r) { S.runtime = r; render(); } }).catch(() => {});
+    loadRuntime();
   }
   const connected = st.canvas_configured;
   // These three keep their contents in S, not in the DOM node. render() throws
@@ -871,8 +907,11 @@ function renderPanel() {
       row ? (row.student || row.student_name || 'Student') : 'Grading agent',
       'Live agent output',
       logView(S.logEntries),
-      h('div', {},
-        running ? h('div', { class: 'steer-row' },
+      h('div', { class: 'panel-foot' },
+        // The instruction and its button are one object: a field with a
+        // button inside its frame, not two controls that happen to sit near
+        // each other.
+        running ? h('div', { class: 'steer-group' },
           h('input', {
             class: 'input', id: 'steer-input',
             placeholder: 'Steer the agent…', value: S.steerDraft[panel.rowId] || '',
@@ -882,7 +921,7 @@ function renderPanel() {
             onkeydown: (e) => { if (e.key === 'Enter') { e.preventDefault(); sendSteer(); } },
           }),
           h('button', {
-            class: 'btn', 'data-size': 'sm', 'data-variant': 'primary',
+            class: 'btn steer-send', 'data-variant': 'primary',
             onclick: sendSteer,
           }, 'Send')) : null,
         // The panel header already carries Close. The foot carries the action
@@ -1663,44 +1702,63 @@ function renderTopbar() {
   if (S.launching) {
     clear(els.topRun);
     els.runLabel.textContent = 'sessions';
-    mount(els.modelChip, S.model?.selected
-      ? chip(S.model.selected, S.model.tier === 'free' ? 'accent' : null) : h('span'));
     return;
   }
+  // The breadcrumb says where you are; the run beside it says what you are
+  // working on. The assignment's name used to be in both.
+  els.runLabel.textContent = S.run
+    ? (STAGES.find((s) => s.id === S.stage) || { label: 'setup' }).label
+    : 'setup';
   if (S.run) {
     mount(els.topRun, h('span', { class: 'name' }, S.run.title),
       h('span', {}, `${S.run.criteria.length} criteria · ${fmt(S.run.points_possible)} pts`));
-    els.runLabel.textContent = S.run.title;
   } else {
     clear(els.topRun);
-    els.runLabel.textContent = 'setup';
   }
-  mount(els.modelChip, S.model?.selected
-    ? chip(S.model.selected, S.model.tier === 'free' ? 'accent' : null) : h('span'));
 }
 
 function renderAside() {
   const run = S.run;
   const extra = [];
-  document.getElementById('aside-title').textContent =
-    ['collect', 'grade'].includes(S.stage) ? 'Activity' : 'Rubric';
+  const title = document.getElementById('aside-title');
 
-  if (run && !['collect', 'grade'].includes(S.stage)) {
-    const scores = S.current?.scorecard
-      ? Object.fromEntries(S.current.scorecard.criterion_scores.map((c) => [c.criterion, c.points_earned]))
-      : null;
-    extra.push(card(null, null, marksStrip(run.criteria, scores,
-      { flagKeys: (S.current?.scorecard?.flags || []).map((f) => f.code) })));
-    if (S.current?.scorecard?.model) {
-      extra.push(h('div', { style: 'font-size:11px;color:var(--ink-3);line-height:1.7' },
-        `Graded by ${S.current.scorecard.model} · prompt ${S.current.scorecard.prompt_version}`));
-    }
-  } else if (run) {
+  if (run && S.stage === 'collect') {
+    title.textContent = 'Activity';
     const p = run.progress || {};
     extra.push(h('div', { class: 'stats' },
-      h('div', { class: 'stat' }, h('div', { class: 'stat-v' }, p.graded || 0), h('div', { class: 'stat-k' }, 'graded')),
-      h('div', { class: 'stat' }, h('div', { class: 'stat-v' }, p.needs_review || 0), h('div', { class: 'stat-k' }, 'flagged')),
-      h('div', { class: 'stat' }, h('div', { class: 'stat-v' }, p.collected || 0), h('div', { class: 'stat-k' }, 'collected'))));
+      h('div', { class: 'stat' }, h('div', { class: 'stat-v' }, p.total || 0), h('div', { class: 'stat-k' }, 'submissions')),
+      h('div', { class: 'stat' }, h('div', { class: 'stat-v' }, p.collected || 0), h('div', { class: 'stat-k' }, 'collected')),
+      h('div', { class: 'stat' }, h('div', { class: 'stat-v' }, p.no_submission || 0), h('div', { class: 'stat-k' }, 'no submission')),
+      h('div', { class: 'stat' }, h('div', { class: 'stat-v' }, p.collect_failed || 0), h('div', { class: 'stat-k' }, 'failed'))));
+  } else if (run && S.stage === 'grade') {
+    title.textContent = 'Activity';
+    // The same three figures the Run grading card shows, counted the same
+    // way. Two panels that disagree are worse than one panel.
+    const graded = S.submissions.filter((s) => s.score !== null).length;
+    const flagged = S.submissions.filter((s) => (s.flags || []).length).length;
+    extra.push(h('div', { class: 'stats' },
+      h('div', { class: 'stat' }, h('div', { class: 'stat-v' }, graded), h('div', { class: 'stat-k' }, 'graded')),
+      h('div', { class: 'stat' }, h('div', { class: 'stat-v' }, S.submissions.length), h('div', { class: 'stat-k' }, 'collected')),
+      h('div', { class: 'stat' },
+        h('div', { class: 'stat-v', style: flagged ? 'color:var(--flag)' : '' }, flagged),
+        h('div', { class: 'stat-k' }, 'needs attention'))));
+  } else if (run && S.stage === 'review') {
+    title.textContent = 'Rubric';
+    // The marks belong to the report that is open. Showing the last report's
+    // scores on the setup page said the marks were about the assignment when
+    // they were about one student.
+    const scorecard = S.current?.scorecard;
+    const scores = scorecard
+      ? Object.fromEntries(scorecard.criterion_scores.map((c) => [c.criterion, c.points_earned]))
+      : null;
+    extra.push(card(null, null, marksStrip(run.criteria, scores,
+      { flagKeys: (scorecard?.flags || []).map((f) => f.code) })));
+    if (scorecard?.model) {
+      extra.push(h('div', { style: 'font-size:11px;color:var(--ink-3);line-height:1.7' },
+        `Graded by ${scorecard.model} · prompt ${scorecard.prompt_version}`));
+    }
+  } else {
+    title.textContent = '';
   }
   mount(els.extra, ...extra);
 }
@@ -1895,10 +1953,11 @@ function loadingCoursesButton(label) {
 /** A button whose work is slow. It spins and says what it is doing, rather
  *  than sitting inert through the wait. */
 function busyButton(label, busyLabel, busy, onclick, attrs = {}) {
+  const { disabled, ...rest } = attrs;
   return h('button', {
     class: 'btn',
-    ...attrs,
-    disabled: busy,
+    ...rest,
+    disabled: busy || disabled,
     onclick,
   },
     busy ? h('span', { class: 'spinner', 'aria-hidden': 'true' }) : null,

@@ -1253,18 +1253,49 @@ body {
 }
 .explain li { margin-bottom: 2px; }
 
-/* The instruction box in the agent log panel, and the actions under it. */
-.steer-row {
+/* The instruction box in the agent log panel, and the actions beside it.
+   The field and its button share one frame: the button sits inside the
+   field's edge rather than next to it, so the pair reads as one control. */
+.panel-foot {
   display: flex;
-  gap: 8px;
   align-items: center;
-  margin-bottom: 10px;
+  justify-content: space-between;
+  gap: 12px;
 }
-.steer-row .input { flex: 1; }
+.steer-group {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: stretch;
+  background: var(--surface);
+  border: 1px solid var(--rule-strong);
+  border-radius: var(--r);
+  overflow: hidden;
+  transition: border-color var(--t-fast);
+}
+.steer-group:focus-within { border-color: var(--accent); }
+.steer-group .input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  background: none;
+  padding-right: 6px;
+}
+.steer-group .input:focus { outline: none; }
+.steer-send {
+  border: 0;
+  border-left: 1px solid var(--rule);
+  border-radius: 0;
+  background: var(--surface-2);
+  padding-left: 14px;
+  padding-right: 14px;
+}
+.steer-send:hover:not(:disabled) { background: var(--surface-3); }
 .panel-foot-actions {
   display: flex;
   gap: 8px;
   align-items: center;
+  flex: none;
 }
 
 /* Agent log. Not a terminal: it is a timeline, and the point is to read the
