@@ -1648,6 +1648,56 @@ await test('no handler threw while every button was clicked', () => {
     }
   });
 
+  // The setup fields used to break the column: the ones with a reveal button
+  // were narrower than the ones without, and the reveal next to the Canvas URL
+  // revealed the API token instead.
+  await test('the setup fields keep one width and each reveal shows its own field', async () => {
+    const { window } = await reboot();
+    await gotoOn(window, 'Setup');
+    const shape = await window.eval(`(() => {
+      const fields = [...document.querySelectorAll('#main .field')];
+      const controls = [...document.querySelectorAll('#main .field-control')];
+      return {
+        outside: fields.filter((f) => [...f.children].some((c) => c.tagName === 'BUTTON')).length,
+        controls: controls.length,
+        withToggle: controls.filter((c) => c.querySelector('.field-trailing')).length,
+      };
+    })()`);
+    assert.strictEqual(shape.outside, 0,
+      'a control sits outside its field and narrows the column');
+    assert.strictEqual(shape.controls, 2,
+      'the secret fields are not framed, so their widths differ');
+    assert.strictEqual(shape.withToggle, 2, 'a framed field has no reveal');
+    await window.eval(`(() => {
+      const c = document.querySelector('#or-key').closest('.field-control');
+      c.querySelector('.field-trailing').click();
+    })()`);
+    const types = await window.eval(`(() => ({
+      key: document.querySelector('#or-key').type,
+      token: document.querySelector('#cf-token').type,
+    }))()`);
+    assert.strictEqual(types.key, 'text', 'the key field did not reveal');
+    assert.strictEqual(types.token, 'password',
+      'the reveal reached a field other than its own');
+  });
+
+  // The outcome of saving the Canvas token is a fact, not a panel.
+  await test('a connected canvas is confirmed in a line, not a panel', async () => {
+    const { window } = await reboot();
+    await gotoOn(window, 'Setup');
+    const shape = await window.eval(`(() => {
+      const confirm = document.querySelector('#main .confirm');
+      return {
+        confirm: confirm ? confirm.textContent : '',
+        notices: [...document.querySelectorAll('#main .notice')]
+          .filter((n) => /Connected/.test(n.textContent)).length,
+      };
+    })()`);
+    assert.match(shape.confirm, /Connected\. You can move on to choosing a course/);
+    assert.strictEqual(shape.notices, 0,
+      'the confirmation is still a panel');
+  });
+
   // The save button used to stretch to the height of the view switch beside
   // it and tower over it.
   await test('the save button is sized with the view switch, not beside it', async () => {

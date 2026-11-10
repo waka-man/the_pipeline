@@ -468,29 +468,8 @@ function viewSetup() {
     value: S.form.canvasBase,
     oninput: (e) => { S.form.canvasBase = e.target.value; },
   });
-  const token = h('input', {
-    class: 'input', id: 'cf-token', type: 'password', placeholder: 'Canvas API token',
-    value: S.form.canvasToken,
-    oninput: (e) => { S.form.canvasToken = e.target.value; },
-  });
-  const show = h('button', {
-    class: 'btn', 'data-size': 'sm', 'data-variant': 'ghost',
-    onclick: () => { token.type = token.type === 'password' ? 'text' : 'password'; },
-  }, 'show');
 
   const hasKey = !!st.model_key_configured;
-  const orKey = h('input', {
-    class: 'input', id: 'or-key', type: 'password',
-    placeholder: hasKey ? 'A key is already saved' : 'sk-or-v1-...',
-    // Never prefilled with the saved key: it is not sent to the renderer, so
-    // this field only ever holds a newly typed one, and clearing it removes it.
-    value: S.form.openrouterKey,
-    oninput: (e) => { S.form.openrouterKey = e.target.value; },
-  });
-  const showOr = h('button', {
-    class: 'btn', 'data-size': 'sm', 'data-variant': 'ghost',
-    onclick: () => { orKey.type = orKey.type === 'password' ? 'text' : 'password'; },
-  }, 'show');
 
   return h('div', {},
     h('div', { class: 'head' },
@@ -500,9 +479,10 @@ function viewSetup() {
 
     card('Canvas',
       connected ? 'connected' : 'not connected',
-      field('Canvas URL', h('div', { style: 'display:flex;gap:8px' },
-        h('div', { style: 'flex:1' }, base), show)),
-      field('API token', token,
+      field('Canvas URL', base),
+      field('API token',
+        secretField('cf-token', 'Canvas API token', S.form.canvasToken,
+          (v) => { S.form.canvasToken = v; }),
         h('span', {}, 'Account → Settings → Approved Integrations → New Access Token. ',
           'The token is stored in your system keychain, never in the project.')),
 
@@ -532,19 +512,24 @@ function viewSetup() {
           },
         }, 'Save and connect')),
 
-      connected ? h('div', { style: 'margin-top:14px' },
-        notice('Connected. You can move on to choosing a course.', 'ok')) : null),
+      // A quiet line, not a panel. The outcome of the action is stated where
+      // the action happened, and a bordered box here read as one more thing
+      // to deal with.
+      connected ? h('div', { class: 'confirm' },
+        h('span', { class: 'dot' }),
+        'Connected. You can move on to choosing a course.') : null),
 
     card('OpenRouter key', hasKey ? 'saved' : 'not set',
-      field('API key', h('div', { style: 'display:flex;gap:8px' },
-        h('div', { style: 'flex:1' }, orKey), showOr)),
+      field('API key',
+        secretField('or-key', hasKey ? 'A key is already saved' : 'sk-or-v1-...',
+          S.form.openrouterKey, (v) => { S.form.openrouterKey = v; })),
       h('div', { class: 'hint', style: 'margin-top:8px' },
         'Used to authenticate the bundled agent runtime. Free OpenRouter models '
         + 'work without one, so this is only needed for paid models. Clearing the '
         + 'field and saving removes the stored key.'),
       h('div', { style: 'display:flex;gap:8px;margin-top:10px' },
         h('button', {
-          class: 'btn', 'data-variant': hasKey ? 'ghost' : 'primary',
+          class: 'btn', 'data-variant': hasKey ? null : 'primary',
           disabled: S.savingKey,
           onclick: async () => {
             S.savingKey = true;
@@ -571,13 +556,15 @@ function viewSetup() {
         }, S.savingKey ? 'Saving…' : 'Save'))),
 
     card('Grading model', S.model ? S.model.selected : 'not chosen',
-      h('div', { style: 'display:flex;gap:8px;align-items:center;flex-wrap:wrap' },
-        h('button', {
-          class: 'btn', disabled: S.loadingModels,
-          onclick: () => loadModels(true),
-        }, S.loadingModels ? 'Loading models…' : 'Refresh models'),
-        S.model ? h('span', { class: 'chip', dataset: { tone: 'accent' } },
-          `${S.model.selected} · ${S.model.tier} · ${S.model.output_budget} tokens`) : null),
+      // The card header already names the model, so the row below carries only
+      // what the header does not: what it costs, and the way to ask again.
+      h('div', { class: 'model-bar' },
+        h('span', { class: 'model-meta' },
+          S.model
+            ? `${S.model.tier} · ${fmt(S.model.output_budget)} token budget`
+            : 'No model chosen yet'),
+        busyButton('Refresh models', 'Reading models…', S.loadingModels,
+          () => loadModels(true), { 'data-size': 'sm', 'data-variant': 'ghost' })),
       h('div', { class: 'hint', style: 'margin-top:10px' },
         'Models are read from the bundled agent runtime, which holds the API key. ',
         'Free OpenRouter models are tried first, then low-cost models, then the strongest available.'),
@@ -1889,14 +1876,47 @@ async function resumeRun(run) {
 
 /** The Load courses button, with its busy state built in. */
 function loadingCoursesButton(label) {
-  const busy = S.loadingCourses;
+  return busyButton(label, `${label.replace(/^Load/, 'Loading')}…`, S.loadingCourses,
+    () => guard(loadCourses, 'Could not load courses'));
+}
+
+/** A button whose work is slow. It spins and says what it is doing, rather
+ *  than sitting inert through the wait. */
+function busyButton(label, busyLabel, busy, onclick, attrs = {}) {
   return h('button', {
     class: 'btn',
+    ...attrs,
     disabled: busy,
-    onclick: () => guard(loadCourses, 'Could not load courses'),
+    onclick,
   },
     busy ? h('span', { class: 'spinner', 'aria-hidden': 'true' }) : null,
-    busy ? `${label.replace(/^Load/, 'Loading')}…` : label);
+    busy ? busyLabel : label);
+}
+
+/** A secret field with its reveal control inside the field's own frame.
+ *
+ *  The control sits over the input's right edge rather than beside it. A
+ *  button beside the field made the field narrower than its neighbours, and
+ *  the column of inputs lost its right edge. The reveal also belonged to the
+ *  field it reveals: it used to sit next to the Canvas URL and toggled the
+ *  API token instead.
+ */
+function secretField(id, placeholder, value, onInput) {
+  const input = h('input', {
+    class: 'input', id, type: 'password', placeholder,
+    value,
+    oninput: (e) => onInput(e.target.value),
+  });
+  const toggle = h('button', {
+    class: 'field-trailing', type: 'button', 'aria-pressed': 'false',
+    onclick: () => {
+      const hidden = input.type === 'password';
+      input.type = hidden ? 'text' : 'password';
+      toggle.textContent = hidden ? 'hide' : 'show';
+      toggle.setAttribute('aria-pressed', String(hidden));
+    },
+  }, 'show');
+  return h('div', { class: 'field-control' }, input, toggle);
 }
 
 async function loadCourses() {

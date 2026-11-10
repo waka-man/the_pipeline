@@ -446,6 +446,52 @@ body {
 }
 .field .hint a { color: var(--accent-ink); }
 
+/* A field with a control inside its frame. The control lies over the input's
+   right edge instead of beside it, so every input on a card is the same width
+   and the column keeps one right edge. */
+.field-control { position: relative; width: 100%; }
+.field-control .input { padding-right: 58px; }
+.field-trailing {
+  position: absolute;
+  right: 5px;
+  top: 50%;
+  transform: translateY(-50%);
+  background: none;
+  border: 0;
+  border-radius: var(--r-sm);
+  padding: 4px 8px;
+  color: var(--ink-3);
+  font: inherit;
+  font-size: 11.5px;
+  cursor: pointer;
+  transition: color var(--t-fast), background var(--t-fast);
+}
+.field-trailing:hover { color: var(--ink); background: var(--surface-2); }
+.field-trailing:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+/* A quiet confirmation of what just happened. Stated in one line, not in a
+   panel: the outcome of an action belongs beside the action, and a bordered
+   box reads as one more thing to deal with. */
+.confirm {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin-top: 14px;
+  color: var(--ok);
+  font-size: 12.5px;
+}
+
+/* The model's own facts on the left, the way to ask again on the right. The
+   card header already names the model. */
+.model-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.model-meta { color: var(--ink-2); font-size: 12.5px; }
+
 .input, .select {
   width: 100%;
   padding: 8px 10px;
@@ -621,7 +667,16 @@ body {
   margin-bottom: 14px;
 }
 .card-head h2 { margin: 0; font-size: 13px; font-weight: 500; flex: 0 0 auto; }
-.card-head .note { font-size: 11.5px; color: var(--ink-3); }
+.card-head .note {
+  font-size: 11.5px;
+  color: var(--ink-3);
+  /* A note that wraps pushes the card title onto two lines; a model id is
+     long enough to do that on a narrow window. */
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 
 /* ------------------------------------------------------------ pick lists */
 
