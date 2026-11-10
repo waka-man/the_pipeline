@@ -91,6 +91,8 @@ const stubState = {
   // state a faculty member is in between choosing an assignment and bootstrap
   // finishing.
   noRunYet: false,
+  // Whether a key is stored. The setup card offers to remove it when one is.
+  keySaved: false,
   progress: { total: 3, collected: 1, pending: 1, collecting: 1, no_submission: 0,
               collect_failed: 0, graded: 1, needs_review: 0 },
 };
@@ -150,11 +152,17 @@ function stubApi() {
     return Promise.resolve(typeof value === 'function' ? value(...args) : value);
   };
   return {
-    status: rec('status', () => ({ canvas_configured: true, model_key_configured: false,
+    status: rec('status', () => ({ canvas_configured: true,
+                                   model_key_configured: stubState.keySaved,
                                    jobs: stubState.jobs, model: { selected: 'm1' } })),
-    saveSettings: rec('saveSettings', { ok: true }),
+    // Saving returns the whole status, the way the sidecar does, so the
+    // cards can react to what was actually stored.
+    saveSettings: rec('saveSettings', { ok: true, canvas_configured: true,
+                                       model_key_configured: true }),
     models: rec('models', {
       selected: 'm1',
+      tier: 'free',
+      output_budget: 4096,
       // Two candidates, so "pick a different model for this run" is testable.
       candidates: [
         { id: 'm1', name: 'cheap', provider: 'openrouter', tier: 'free' },
@@ -1291,7 +1299,7 @@ await test('saving a key refreshes the model list without another click', async 
     el.dispatchEvent(new Event('input', { bubbles: true }));
   })()`);
   await window.eval(
-    "[...document.querySelectorAll('#main button')].find((b) => b.textContent.trim() === 'Save').click()");
+    "[...document.querySelectorAll('#main button')].find((b) => b.textContent.trim() === 'Save key').click()");
   await tick(150);
   const after = await window.eval('window.__modelCalls');
   assert.ok(after > before,
@@ -1480,7 +1488,7 @@ await test('the setup page reports the runtime version and offers the update', a
     const texts = await buttonTexts(window);
     assert.ok(texts.some((t) => t.startsWith('Install v')),
       `no way to install the newer runtime: ${texts.join(' | ')}`);
-    assert.ok(texts.some((t) => t === 'Check now'),
+    assert.ok(texts.some((t) => t === 'Check for updates'),
       'no way to re-check for a new version');
 
     // Installing asks the sidecar to stage it; it does not swap anything live.
@@ -1696,6 +1704,53 @@ await test('no handler threw while every button was clicked', () => {
     assert.match(shape.confirm, /Connected\. You can move on to choosing a course/);
     assert.strictEqual(shape.notices, 0,
       'the confirmation is still a panel');
+  });
+
+  // A saved key used to be removed by clearing the field and pressing Save.
+  // The button now says what it will do.
+  await test('a saved key offers to remove it, and says so', async () => {
+    const { window } = await reboot();
+    await gotoOn(window, 'Setup');
+    const before = await window.eval(
+      "[...document.querySelectorAll('#main button')].map((b) => b.textContent.trim())");
+    assert.ok(before.includes('Save key'),
+      `no way to save a key: ${before.join(' | ')}`);
+    // Saving a key puts one in the keychain, and the card says so.
+    await window.eval(`(() => {
+      const el = document.getElementById('or-key');
+      el.value = 'sk-or-v1-new';
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+    })()`);
+    await window.eval(
+      "[...document.querySelectorAll('#main button')].find((b) => b.textContent.trim() === 'Save key').click()");
+    await tick(150);
+    const after = await window.eval(
+      "[...document.querySelectorAll('#main button')].map((b) => b.textContent.trim())");
+    assert.ok(after.includes('Remove key'),
+      `a saved key does not offer to remove it: ${after.join(' | ')}`);
+  });
+
+  // The chosen model is marked in the list; the card header no longer repeats
+  // its name on top of it.
+  await test('the chosen model is marked in the list, not repeated above it', async () => {
+    const { window } = await reboot();
+    await gotoOn(window, 'Setup');
+    const shape = await window.eval(`(() => {
+      const cards = [...document.querySelectorAll('#main .card')];
+      const card = cards.find((c) => /Grading model/.test(c.textContent));
+      const head = card.querySelector('.card-head');
+      return {
+        head: head.textContent,
+        current: [...card.querySelectorAll('.chip')]
+          .filter((c) => c.textContent === 'current').length,
+        selected: [...card.querySelectorAll('.pick[aria-selected="true"]')].length,
+      };
+    })()`);
+    assert.equal(shape.current, 1, 'the chosen model is not marked');
+    assert.equal(shape.selected, 1, 'the chosen model is not marked in the list');
+    assert.ok(!/m1/.test(shape.head),
+      `the card header still names the model: ${shape.head}`);
+    assert.match(shape.head, /2 available/);
   });
 
   // The save button used to stretch to the height of the view switch beside

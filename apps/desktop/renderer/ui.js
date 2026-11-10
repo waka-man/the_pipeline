@@ -200,6 +200,9 @@ export function card(title, note, ...body) {
   return h('div', { class: 'card' },
     title ? h('div', { class: 'card-head' },
       h('h2', {}, title),
-      note ? h('div', { class: 'note' }, note) : null) : null,
+      // A note that is a plain string is a fact about the card. A note that is
+      // a node carries its own layout — it may hold a control as well as a
+      // fact — so it goes in as it is.
+      note ? (typeof note === 'string' ? h('div', { class: 'note' }, note) : note) : null) : null,
     ...body);
 }

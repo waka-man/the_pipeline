@@ -416,35 +416,34 @@ function runtimeCard() {
   const updatable = !!(rt?.update_available && latest) && !downloading && !staged;
 
   return card('Agent runtime', rt?.checked ? `v${active || 'unknown'}` : 'checking…',
-    h('div', { class: 'hint' },
-      'The grading harness this app ships with. Everything the agent does to '
-      + 'decide a score goes through it, so it is worth knowing which build you are on.'),
-    h('div', { style: 'display:flex;gap:8px;margin-top:12px;align-items:center;flex-wrap:wrap' },
-      staged
-        ? h('span', { class: 'chip', dataset: { tone: 'flag' } }, `v${staged} will be used next launch`)
-        : rt?.update_available && latest
-          ? h('span', { class: 'chip', dataset: { tone: 'flag' } }, `v${latest} available`)
-          : rt?.checked
-            ? h('span', { class: 'chip', dataset: { tone: 'ok' } }, 'up to date')
-            : null,
-      downloading ? h('span', {}, 'Downloading…') : null,
-      updatable ? h('button', {
-        class: 'btn', 'data-size': 'sm',
-        onclick: () => guard(async () => {
-          const r = await api.updateRuntime();
-          if (r) {
-            S.runtime = { ...S.runtime, pending_version: r.staging, downloading: true };
-            toast('Downloading. Restart the app to start using it.');
-          }
-        }, 'Could not start the update'),
-      }, `Install v${latest}`) : null,
-      h('button', {
-        class: 'btn', 'data-size': 'sm', 'data-variant': 'ghost', disabled: downloading,
-        onclick: () => guard(async () => {
-          const r = await api.checkRuntime();
-          if (r) S.runtime = r;
-        }, 'Could not check for updates'),
-      }, 'Check now')),
+    h('div', { class: 'runtime-bar' },
+      h('span', { class: 'runtime-state' },
+        staged
+          ? h('span', { class: 'chip', dataset: { tone: 'flag' } }, `v${staged} will be used next launch`)
+          : rt?.update_available && latest
+            ? h('span', { class: 'chip', dataset: { tone: 'flag' } }, `v${latest} available`)
+            : rt?.checked
+              ? h('span', { class: 'chip', dataset: { tone: 'ok' } }, 'up to date')
+              : null,
+        downloading ? h('span', { class: 'dim' }, 'Downloading…') : null),
+      h('div', { class: 'runtime-actions' },
+        updatable ? h('button', {
+          class: 'btn', 'data-size': 'sm', 'data-variant': 'primary',
+          onclick: () => guard(async () => {
+            const r = await api.updateRuntime();
+            if (r) {
+              S.runtime = { ...S.runtime, pending_version: r.staging, downloading: true };
+              toast('Downloading. Restart the app to start using it.');
+            }
+          }, 'Could not start the update'),
+        }, `Install v${latest}`) : null,
+        h('button', {
+          class: 'btn', 'data-size': 'sm', 'data-variant': 'ghost', disabled: downloading,
+          onclick: () => guard(async () => {
+            const r = await api.checkRuntime();
+            if (r) S.runtime = r;
+          }, 'Could not check for updates'),
+        }, 'Check for updates'))),
     rt?.active_source === 'managed'
       ? h('div', { class: 'hint', style: 'margin-top:10px' },
           `Running an updated runtime (v${active}) rather than the one this app `
@@ -470,6 +469,9 @@ function viewSetup() {
   });
 
   const hasKey = !!st.model_key_configured;
+  // A saved key with an empty field is a request to remove it, and the
+  // button says so rather than hiding it behind a cleared field.
+  const removing = hasKey && !S.form.openrouterKey.trim();
 
   return h('div', {},
     h('div', { class: 'head' },
@@ -524,12 +526,13 @@ function viewSetup() {
         secretField('or-key', hasKey ? 'A key is already saved' : 'sk-or-v1-...',
           S.form.openrouterKey, (v) => { S.form.openrouterKey = v; })),
       h('div', { class: 'hint', style: 'margin-top:8px' },
-        'Used to authenticate the bundled agent runtime. Free OpenRouter models '
-        + 'work without one, so this is only needed for paid models. Clearing the '
-        + 'field and saving removes the stored key.'),
+        'Only needed for paid models — free models work without a key.'),
       h('div', { style: 'display:flex;gap:8px;margin-top:10px' },
         h('button', {
-          class: 'btn', 'data-variant': hasKey ? null : 'primary',
+          // One button, two honest states. A saved key with an empty field
+          // removes it; anything else saves. "Clear the field and press Save
+          // to remove" was a trick, and the label said neither.
+          class: 'btn', 'data-variant': removing ? 'danger' : 'primary',
           disabled: S.savingKey,
           onclick: async () => {
             S.savingKey = true;
@@ -553,21 +556,15 @@ function viewSetup() {
                 : 'Key removed.');
             }
           },
-        }, S.savingKey ? 'Saving…' : 'Save'))),
+        }, S.savingKey ? 'Saving…' : (removing ? 'Remove key' : 'Save key')))),
 
-    card('Grading model', S.model ? S.model.selected : 'not chosen',
-      // The card header already names the model, so the row below carries only
-      // what the header does not: what it costs, and the way to ask again.
-      h('div', { class: 'model-bar' },
-        h('span', { class: 'model-meta' },
-          S.model
-            ? `${S.model.tier} · ${fmt(S.model.output_budget)} token budget`
-            : 'No model chosen yet'),
+    card('Grading model',
+      h('div', { class: 'head-note' },
+        h('span', {}, S.model?.candidates?.length
+          ? `${S.model.candidates.length} available`
+          : 'none yet'),
         busyButton('Refresh models', 'Reading models…', S.loadingModels,
           () => loadModels(true), { 'data-size': 'sm', 'data-variant': 'ghost' })),
-      h('div', { class: 'hint', style: 'margin-top:10px' },
-        'Models are read from the bundled agent runtime, which holds the API key. ',
-        'Free OpenRouter models are tried first, then low-cost models, then the strongest available.'),
       S.modelError
         ? notice(`Could not read models: ${S.modelError}`, 'bad')
         : !S.model?.candidates?.length
@@ -575,17 +572,25 @@ function viewSetup() {
           : null,
       S.model?.candidates?.length
         ? h('div', { class: 'picklist', style: 'margin-top:12px' },
-            S.model.candidates.slice(0, 8).map((c) => h('button', {
-              class: 'pick', 'aria-selected': String(c.id === S.model.selected),
-              onclick: async () => {
-                const r = await guard(() => api.selectModel({ model: c.id }), 'Could not select model');
-                if (r) { S.model = { ...S.model, ...r }; toast(`Grading model set to ${r.selected}.`); }
+            S.model.candidates.slice(0, 8).map((c) => {
+              const current = c.id === S.model.selected;
+              return h('button', {
+                class: 'pick', 'aria-selected': String(current),
+                onclick: async () => {
+                  const r = await guard(() => api.selectModel({ model: c.id }), 'Could not select model');
+                  if (r) { S.model = { ...S.model, ...r }; toast(`Grading model set to ${r.selected}.`); }
+                },
               },
-            },
-              h('div', {},
-                h('div', { class: 'pick-title' }, c.id),
-                h('div', { class: 'pick-sub' }, h('span', {}, c.provider))),
-              h('div', { class: 'pick-meta' }, chip(c.tier, c.tier === 'free' ? 'accent' : null)))))
+                h('div', {},
+                  h('div', { class: 'pick-title' }, c.id),
+                  h('div', { class: 'pick-sub' },
+                    h('span', {}, c.provider),
+                    current && S.model.output_budget
+                      ? h('span', {}, `${fmt(S.model.output_budget)} token budget`) : null)),
+                h('div', { class: 'pick-meta' },
+                  current ? chip('current', 'ok') : null,
+                  chip(c.tier, c.tier === 'free' ? 'accent' : null)));
+            }))
         : null),
 
     runtimeCard(),

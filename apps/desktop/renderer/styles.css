@@ -152,6 +152,10 @@ body {
   font-variant-numeric: tabular-nums;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  /* The caret and the selection are the browser's, not the system's: they
+     have to belong to this surface like everything else on it. */
+  caret-color: var(--accent);
+  accent-color: var(--accent);
   overflow: hidden;
 }
 
@@ -492,6 +496,22 @@ body {
 }
 .model-meta { color: var(--ink-2); font-size: 12.5px; }
 
+/* The runtime's state on the left, its actions on the right. */
+.runtime-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.runtime-state {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  flex-wrap: wrap;
+}
+.runtime-actions { display: flex; align-items: center; gap: 8px; }
+
 .input, .select {
   width: 100%;
   padding: 8px 10px;
@@ -651,7 +671,10 @@ body {
   /* Sheer on purpose: the rows behind stay visible through the surface while
      the labels on it stay readable. */
   background: color-mix(in srgb, var(--surface) 65%, transparent);
-  border-color: var(--rule);
+  /* Elevation is declared once. At rest the card is a bordered surface;
+     floating over the list it is a shadow, and a border under a wide soft
+     shadow would make it a ghost card. */
+  border-color: transparent;
   box-shadow: 0 12px 34px rgba(0, 0, 0, 0.38);
   backdrop-filter: blur(16px) saturate(1.15);
   -webkit-backdrop-filter: blur(16px) saturate(1.15);
@@ -676,6 +699,24 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+/* A note that carries a control as well as a fact: the row holds them
+   side by side, and the control must not be clipped by the note. */
+.card-head .note--row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  overflow: visible;
+  white-space: normal;
+}
+
+/* The count of what a card holds, and the action that refills it. */
+.head-note {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 11.5px;
+  color: var(--ink-3);
 }
 
 /* ------------------------------------------------------------ pick lists */
