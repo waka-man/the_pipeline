@@ -1360,7 +1360,8 @@ function viewReview() {
             },
           }, 'Next flagged')) : null,
         list),
-      h('div', { class: 'review-pane' }, reportPane())));
+      h('div', { class: 'review-pane' + (S.tab === 'edit' ? ' review-pane--editing' : '') },
+        reportPane())));
 }
 
 function reportPane() {

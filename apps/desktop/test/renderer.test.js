@@ -1622,6 +1622,24 @@ await test('no handler threw while every button was clicked', () => {
       'the save button is not the small size and will tower over the switch');
   });
 
+  // Editing a long report needs room: the source pane takes the height of
+  // the cohort list beside it.
+  await test('the report pane grows to the full height in edit mode', async () => {
+    const { window } = await reboot();
+    await gotoOn(window, 'Review');
+    await tick(80);
+    assert.ok(!window.document.querySelector('.review-pane--editing'),
+      'the reading pane is marked as editing');
+    await window.eval(`(() => {
+      const t = [...document.querySelectorAll('.tab')]
+        .find((x) => x.textContent.trim() === 'Edit source');
+      if (t) t.click();
+    })()`);
+    await tick(60);
+    assert.ok(window.document.querySelector('.review-pane--editing'),
+      'the editing pane does not take the full height');
+  });
+
   // Clicking a course used to do nothing visible until its assignments came
   // back, which reads as a frozen window.
   await test('the assignment panel opens at once and says it is loading', async () => {
