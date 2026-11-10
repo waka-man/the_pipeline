@@ -1494,9 +1494,9 @@ function submissionTable(compact) {
     h('span', { class: 'row-score' }, s.score === null ? '—' : fmt(s.score)),
     h('span', {}, statusChip(s.status)),
     h('span', { class: 'row-act', style: 'display:flex;gap:6px;justify-content:flex-end' },
-      // While a row is being graded the agent output is the only way to see
-      // what it is doing, so that row gets a way in.
-      (s.score !== null || ['grading', 'collected'].includes(s.status))
+      // The agent output is how you see what happened - especially when a
+      // run finished without a scorecard and was flagged for review.
+      (s.score !== null || ['grading', 'collected', 'needs_review', 'failed', 'reviewed'].includes(s.status))
         ? h('button', {
             class: 'btn', 'data-size': 'sm', 'data-variant': 'ghost',
             onclick: () => openAgentLog(s.row_id),
