@@ -266,6 +266,10 @@ class AppState:
                 value = raw.get(key)
                 if isinstance(value, str) and value.strip():
                     return " ".join(value.split())[:140]
+            if not raw:
+                # An empty argument object says nothing. "{}" in the log said
+                # less than the tool name alone.
+                return ""
             return " ".join(json.dumps(raw, sort_keys=True)[:140].split())
         return ""
 

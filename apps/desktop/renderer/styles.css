@@ -1222,6 +1222,51 @@ body {
   flex-wrap: wrap;
 }
 
+/* The foot of a stage: the way back on the left, the way forward on the
+   right. One row, one alignment, on every stage. */
+.page-foot {
+  margin-top: 16px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.page-foot--end { justify-content: flex-end; }
+.page-foot-note { color: var(--ink-3); font-size: 12.5px; }
+
+/* Reference material under a stage. What the other side receives, not
+   another thing to do — so it is a footnote, not a card. */
+.explain { margin-top: 18px; }
+.explain h3 {
+  margin: 0 0 5px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ink-2);
+}
+.explain ul {
+  margin: 0;
+  padding-left: 18px;
+  color: var(--ink-2);
+  font-size: 12.5px;
+  line-height: 1.7;
+}
+.explain li { margin-bottom: 2px; }
+
+/* The instruction box in the agent log panel, and the actions under it. */
+.steer-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 10px;
+}
+.steer-row .input { flex: 1; }
+.panel-foot-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
 /* Agent log. Not a terminal: it is a timeline, and the point is to read the
    reasoning, so time, kind and call arguments are all shown. Tool calls are
    collapsed by the renderer rather than here, because collapsing needs the
@@ -1244,6 +1289,10 @@ body {
   padding: 4px 10px;
   border-radius: 6px;
 }
+/* A grid track is sized by its content unless told otherwise, so one long
+   unbreakable line — a path, a command — pushed the log sideways and gave
+   the panel a horizontal scrollbar. */
+.log-row > * { min-width: 0; }
 
 .log-t {
   color: var(--ink-3);

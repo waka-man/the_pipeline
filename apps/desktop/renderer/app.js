@@ -595,7 +595,7 @@ function viewSetup() {
 
     runtimeCard(),
 
-    h('div', { style: 'margin-top:16px;display:flex;justify-content:flex-end' },
+    h('div', { class: 'page-foot page-foot--end' },
       h('button', {
         class: 'btn', 'data-variant': 'primary', disabled: !connected,
         onclick: () => go('select'),
@@ -872,7 +872,7 @@ function renderPanel() {
       'Live agent output',
       logView(S.logEntries),
       h('div', {},
-        running ? h('div', { style: 'display:flex;gap:8px;align-items:center;margin-bottom:8px' },
+        running ? h('div', { class: 'steer-row' },
           h('input', {
             class: 'input', id: 'steer-input',
             placeholder: 'Steer the agent…', value: S.steerDraft[panel.rowId] || '',
@@ -885,7 +885,9 @@ function renderPanel() {
             class: 'btn', 'data-size': 'sm', 'data-variant': 'primary',
             onclick: sendSteer,
           }, 'Send')) : null,
-        h('div', { style: 'display:flex;gap:8px;align-items:center' },
+        // The panel header already carries Close. The foot carries the action
+        // you take while watching.
+        h('div', { class: 'panel-foot-actions' },
           running && !stopping ? h('button', {
             class: 'btn', 'data-size': 'sm', 'data-variant': 'danger',
             onclick: () => guard(async () => {
@@ -895,11 +897,7 @@ function renderPanel() {
               toast('Stopped. This one can be graded again.');
             }, 'Could not stop this submission'),
           }, 'Stop') : null,
-          stopping ? h('span', { class: 'chip', dataset: { tone: 'flag' } }, 'stopping…') : null,
-          h('button', {
-            class: 'btn', 'data-size': 'sm', 'data-variant': 'ghost',
-            onclick: closePanel,
-          }, 'Close')))));
+          stopping ? h('span', { class: 'chip', dataset: { tone: 'flag' } }, 'stopping…') : null))));
     restoreLogScroll(el, stick, kept);
     if (S.steerFocused) {
       const input = el.querySelector('#steer-input');
@@ -1014,10 +1012,13 @@ function viewSelect() {
       h('div', { class: 'head' }, h('h1', {}, 'Choose an assignment')),
       card('Courses', null,
         loadingCoursesButton('Load courses')),
+      // One box, not two. The button already says the load is in flight; the
+      // note below it only says how long it might take.
       S.loadingCourses
-        ? notice('Reading every course on your Canvas account. With a hundred '
-                 + 'or so this can take a moment.', null)
-        : empty('No courses loaded yet', 'Load your Canvas courses to begin.'));
+        ? h('div', { class: 'hint', style: 'margin-top:10px' },
+            'Reading every course on your Canvas account. With a hundred '
+            + 'or so this can take a moment.')
+        : null);
   }
 
   // Most recent first, so the courses a lecturer actually teaches this term
@@ -1080,9 +1081,8 @@ function viewSelect() {
   return h('div', {},
     h('div', { class: 'head' },
       h('h1', {}, 'Choose an assignment'),
-      h('p', {}, 'Pick a course, then choose an assignment from the panel. The rubric and '
-               + 'instructions come straight from Canvas — the pipeline derives its criteria, '
-               + 'point values and report structure from it.')),
+      h('p', {}, 'Pick a course, then choose an assignment from the panel. '
+               + 'The rubric and instructions come straight from Canvas.')),
 
     h('div', { style: 'margin-bottom:16px' },
       h('button', {
@@ -1101,15 +1101,17 @@ function viewSelect() {
             }, `Load more (${ordered.length - S.coursesShown} remaining)`))
         : null),
 
-    h('div', { style: 'margin-top:16px;display:flex;justify-content:space-between;gap:8px' },
-      h('button', { class: 'btn', onclick: () => go('setup') }, 'Back'),
+    h('div', { class: 'page-foot' },
+      h('button', { class: 'btn', 'data-variant': 'ghost', onclick: () => go('setup') }, 'Back'),
       S.assignment
         ? h('button', {
             class: 'btn', 'data-variant': 'primary',
             disabled: !S.assignment.has_rubric,
             onclick: startRun,
           }, `Use ${S.assignment.name}`)
-        : h('button', { class: 'btn', disabled: true }, 'Choose an assignment first')));
+        // A disabled button says "this is a control you may not use yet". A
+        // line of text says what to do instead.
+        : h('span', { class: 'page-foot-note' }, 'Choose an assignment first.')));
 }
 
 function waiting(title, detail) {
@@ -1172,7 +1174,7 @@ function viewCollect() {
             'Could not change the collection'),
         }, paused ? 'Resume' : 'Pause') : null,
         collecting ? h('button', {
-          class: 'btn', 'data-variant': 'ghost',
+          class: 'btn', 'data-variant': 'danger',
           onclick: () => guard(
             () => api.control(run.run_id, { job: 'collect', action: 'stop' }),
             'Could not stop the collection'),
@@ -1199,8 +1201,8 @@ function viewGrade() {
     h('div', { class: 'head' },
       h('h1', {}, 'Grade'),
       h('p', {}, 'Each submission is graded in its own agent session, so no student\'s work '
-               + 'can influence another\'s. Scores arrive as structured data and are rendered '
-               + 'into a report — the agent never formats the page itself.')),
+               + 'can influence another\'s. The agent returns structured scores; the report '
+               + 'is rendered from them.')),
 
     // Sticky, so the controls stay reachable from the bottom of a long list.
     h('div', { class: 'sticky-acts', dataset: { scrolled: String(mainScrolled) } },
@@ -1274,8 +1276,10 @@ function viewGrade() {
         }, `Reset Selected (${S.selected.size})`)))),
 
     // Outside the sticky block on purpose: it is advice, not a control, and
-    // pinning it costs a screenful of rows on a long cohort.
-    notice('Posting is always optional. If a run does not hold up you can grade from the reports in your own words.', null),
+    // pinning it costs a screenful of rows on a long cohort. A line of text,
+    // not a boxed notice — it explains nothing you cannot read.
+    h('p', { class: 'page-foot-note', style: 'margin:12px 0 0' },
+      'Posting is optional. If a run does not hold up, grade from the reports yourself.'),
 
     S.submissions.length ? submissionTable(false) : null);
 }
@@ -1475,13 +1479,16 @@ function viewPublish() {
             showPublishPlan(plan);
           }, 'Could not plan publish'),
         }, 'Review what will be written'),
-        h('button', { class: 'btn', onclick: () => go('review') }, 'Back to reports'))),
+        h('button', { class: 'btn', 'data-variant': 'ghost', onclick: () => go('review') }, 'Back to reports'))),
 
-    card('What Canvas receives', null,
-      h('div', { style: 'font-size:12px;color:var(--ink-2);line-height:1.7' },
-        h('div', {}, 'Per criterion: the awarded points, and the grader\'s justification plus evidence as the criterion comment.'),
-        h('div', {}, 'Overall: the sum of the criteria as the posted grade.'),
-        h('div', {}, 'Group assignments: one write per group, which Canvas propagates to every member.'))));
+    // Reference material, not another thing to do: a card would make it look
+    // like a panel of controls, so it sits under the stage as a footnote.
+    h('div', { class: 'explain' },
+      h('h3', {}, 'What Canvas receives'),
+      h('ul', {},
+        h('li', {}, 'Per criterion: the awarded points, and the grader’s justification plus evidence as the criterion comment.'),
+        h('li', {}, 'Overall: the sum of the criteria as the posted grade.'),
+        h('li', {}, 'Group assignments: one write per group, which Canvas propagates to every member.'))));
 }
 
 function showPublishPlan(plan) {

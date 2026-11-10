@@ -1753,6 +1753,37 @@ await test('no handler threw while every button was clicked', () => {
     assert.match(shape.head, /2 available/);
   });
 
+  // Reference material belongs under a stage as a footnote. A card made it
+  // look like another panel of controls.
+  await test('what Canvas receives is a footnote, not another panel', async () => {
+    const { window } = await reboot();
+    await gotoOn(window, 'Publish');
+    const shape = await window.eval(`(() => ({
+      explain: !!document.querySelector('#main .explain'),
+      cards: [...document.querySelectorAll('#main .card')]
+        .filter((c) => /What Canvas receives/.test(c.textContent)).length,
+    }))()`);
+    assert.ok(shape.explain, 'the reference material is not a footnote');
+    assert.strictEqual(shape.cards, 0, 'the reference material is still a card');
+  });
+
+  // The panel header already closes it. A second Close in the foot beside a
+  // red Stop button read as two different kinds of button.
+  await test('the agent log panel closes from its header, once', async () => {
+    const { window } = await reboot();
+    await gotoOn(window, 'Grade');
+    await window.eval(`(() => {
+      const rows = [...document.querySelectorAll('.rows .row:not(.row-head)')];
+      const row = rows.find((r) => r.textContent.includes('Alan Turing'));
+      [...row.querySelectorAll('button')].find((b) => b.textContent.trim() === 'agent log').click();
+    })()`);
+    await tick(80);
+    const closes = await window.eval(
+      "[...document.querySelectorAll('.slideover button')]"
+      + ".filter((b) => b.textContent.trim() === 'Close').length");
+    assert.strictEqual(closes, 1, `the panel offers Close ${closes} times`);
+  });
+
   // The save button used to stretch to the height of the view switch beside
   // it and tower over it.
   await test('the save button is sized with the view switch, not beside it', async () => {
