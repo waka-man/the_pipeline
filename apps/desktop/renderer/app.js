@@ -1747,7 +1747,20 @@ async function loadRuns() {
 }
 
 /** Where the run had got to, so resuming lands somewhere sensible. */
-function resumeStage(run) {
+function resumeStage(run, submissions) {
+  if (submissions) {
+    const readable = submissions.some((s) => s.score !== null);
+    const total = submissions.length;
+    const finished = submissions.filter((s) => ['graded', 'needs_review', 'reviewed', 'no_submission'].includes(s.status)).length;
+    if (readable) {
+      if (total && finished >= total) return 'publish';
+      return 'review';
+    }
+    // No readable reports yet: don't land on review even if rows are flagged.
+    const hasWork = submissions.some((s) => !['no_submission'].includes(s.status));
+    if (run.status === 'collected' || hasWork) return 'grade';
+    return 'collect';
+  }
   if (run.total && run.graded >= run.total) return 'publish';
   if (run.graded) return 'review';
   if (run.status === 'collected') return 'grade';
@@ -1807,7 +1820,7 @@ async function resumeRun(run) {
     await refreshSubmissions();
     S.runModel = run.model || '';
     S.launching = false;
-    go(resumeStage(run));
+    go(resumeStage(run, S.submissions));
     toast(`Resumed ${run.label || run.title}.`);
   }, 'Could not open that run');
 }
