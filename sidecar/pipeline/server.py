@@ -728,17 +728,44 @@ def op_assignments(state: AppState, course_id: int) -> dict[str, Any]:
     for a in client.request(
             "GET", f"/courses/{course_id}/assignments?per_page=100&include[]=rubric"):
         rubric = a.get("rubric") or []
+        criteria = len([c for c in rubric if not c.get("ignore_for_scoring")])
+        needs_grading = a.get("needs_grading_count")
         out.append({
             "id": a.get("id"), "name": a.get("name"),
             "points_possible": a.get("points_possible"),
             "published": a.get("published"),
             "due_at": a.get("due_at"),
-            "criteria": len([c for c in rubric if not c.get("ignore_for_scoring")]),
+            "criteria": criteria,
             "has_rubric": bool(rubric),
-            "needs_grading": a.get("needs_grading_count"),
+            "needs_grading": needs_grading,
             "group": bool(a.get("group_category_id")),
             "submission_types": a.get("submission_types") or [],
         })
+    # Ungraded work with a rubric comes first so it's ready to grade now.
+    def tier(a: dict[str, Any]):
+        has_rubric = bool(a.get("has_rubric") or (a.get("criteria") or 0) > 0)
+        needs = (a.get("needs_grading") or 0) > 0
+        return (
+            0 if (needs and has_rubric) else 1,
+            0 if needs else 1,
+            -(a.get("needs_grading") or 0),
+            0 if a.get("due_at") else 1,
+        )
+
+    out.sort(key=lambda a: (*tier(a), a.get("due_at") or "", a.get("name") or ""))
+    # Recent due dates first within each tier.
+    i = 0
+    while i < len(out):
+        j = i + 1
+        while j < len(out) and tier(out[j]) == tier(out[i]):
+            j += 1
+        group = out[i:j]
+        if group[0].get("due_at"):
+            group.sort(key=lambda a: a.get("due_at") or "", reverse=True)
+        else:
+            group.sort(key=lambda a: a.get("name") or "")
+        out[i:j] = group
+        i = j
     return {"assignments": out}
 
 
