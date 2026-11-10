@@ -1678,8 +1678,13 @@ function renderSpine() {
         h('span', { class: 'stage-count' }, running ? '···' : '')));
   }));
 
+  // A run that has not been fetched yet has no title and no criteria, so
+  // nothing here may assume they are there.
   els.spineMeta.textContent = S.run
-    ? `${S.run.title}\n${S.run.criteria.length} criteria`
+    ? [
+        S.run.title,
+        S.run.criteria?.length ? `${S.run.criteria.length} criteria` : null,
+      ].filter(Boolean).join('\n')
     : 'No assignment selected';
   els.spineMeta.style.whiteSpace = 'pre-line';
 }
@@ -1697,7 +1702,9 @@ function renderTopbar() {
     : 'setup';
   if (S.run) {
     mount(els.topRun, h('span', { class: 'name' }, S.run.title),
-      h('span', {}, `${S.run.criteria.length} criteria · ${fmt(S.run.points_possible)} pts`));
+      S.run.criteria?.length
+        ? h('span', {}, `${S.run.criteria.length} criteria · ${fmt(S.run.points_possible)} pts`)
+        : null);
   } else {
     clear(els.topRun);
   }
@@ -2133,8 +2140,11 @@ bridge.events(
     log(msg.event, msg.data);
     if (msg.event === 'run.ready') {
       S.bootstrapping = false;
-      S.run = { run_id: msg.data.run_id };
-      refreshRun();
+      // The id is enough to fetch the run from. It is deliberately not put
+      // into S.run: a run with nothing but an id has no title and no
+      // criteria, and the spine reads both, so a repaint in the moment
+      // between the event and the fetch threw.
+      refreshRun(msg.data.run_id);
     }
     if (msg.event === 'job.start' && msg.data.job === 'bootstrap') {
       S.bootstrapping = true;
@@ -2165,9 +2175,17 @@ bridge.events(
   () => log('error', { message: 'Lost connection to the service; retrying.' }),
 );
 
-async function refreshRun() {
-  if (!S.run?.run_id) return;
-  S.run = await api.run(S.run.run_id).catch(() => null);
+async function refreshRun(runId) {
+  const id = runId || S.run?.run_id;
+  if (!id) return;
+  const run = await api.run(id).catch(() => null);
+  if (!run) {
+    // The run could not be read. Leaving the previous one in place is
+    // better than showing one with no title and no criteria.
+    render();
+    return;
+  }
+  S.run = run;
   await refreshSubmissions();
   render();
 }

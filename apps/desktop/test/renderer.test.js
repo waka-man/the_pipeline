@@ -2043,6 +2043,24 @@ await test('no handler threw while every button was clicked', () => {
       'the criterion flagged for a human is not marked');
   });
 
+  // A run that had only just been created was put into the state as an id
+  // with no title and no criteria, and the next repaint read the criteria
+  // of a run that had none and threw.
+  await test('a run that is being fetched does not break the repaint', async () => {
+    const { window } = await reboot();
+    // Past the launcher, so the stage rail is drawn and reads the run.
+    await gotoOn(window, 'Select');
+    await tick(60);
+    await window.eval(`(() => {
+      window.__emit({ event: 'run.ready', data: { run_id: 99 } });
+      // A repaint in the same tick, while the run is still being fetched.
+      window.__emit({ event: 'grade.progress', data: { progress: { total: 1 } } });
+    })()`);
+    await tick(80);
+    assert.deepStrictEqual(window.__errs, [],
+      `the repaint threw: ${window.__errs.join(' | ')}`);
+  });
+
   // The save button used to stretch to the height of the view switch beside
   // it and tower over it.
   await test('the save button is sized with the view switch, not beside it', async () => {
