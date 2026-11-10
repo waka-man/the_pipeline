@@ -1639,6 +1639,14 @@ await test('no handler threw while every button was clicked', () => {
   await test('both themes keep their text above 4.5:1', () => {
     const css = fs.readFileSync(path.join(RENDERER, 'styles.css'), 'utf8');
     const rgb = (hex) => [0, 2, 4].map((i) => parseInt(hex.replace('#', '').slice(i, i + 2), 16));
+    const color = (value) => {
+      const m = value.match(/rgba?\(([^)]+)\)/);
+      if (m) {
+        const p = m[1].split(',').map((x) => parseFloat(x.trim()));
+        return { rgb: [p[0], p[1], p[2]], a: p.length > 3 ? p[3] : 1 };
+      }
+      return { rgb: rgb(value), a: 1 };
+    };
     const lum = (c) => {
       const f = c.map((v) => {
         v /= 255;
@@ -1679,6 +1687,19 @@ await test('no handler threw while every button was clicked', () => {
       const boundary = ratio(rgb(tokens['rule-strong']), surface);
       assert.ok(boundary >= 3,
         `${theme}: an input boundary is ${boundary.toFixed(2)}:1, under 3`);
+
+      // The figure a person has to look at: its number in the flag colour
+      // and its label tinted from the same hue. No panel behind it — the
+      // figures beside it are the same kind of thing.
+      const flag = color(tokens.flag);
+      const ink3 = rgb(tokens['ink-3']);
+      const label = flag.rgb.map((c, i) => Math.round(0.66 * c + 0.34 * ink3[i]));
+      const flagged = ratio(label, surface);
+      assert.ok(flagged >= 4.5,
+        `${theme}: the flagged label is ${flagged.toFixed(2)}:1, under 4.5`);
+      const figure = ratio(flag.rgb, surface);
+      assert.ok(figure >= 4.5,
+        `${theme}: the flagged figure is ${figure.toFixed(2)}:1, under 4.5`);
     }
   });
 

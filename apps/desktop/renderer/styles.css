@@ -124,9 +124,9 @@
      is only 3.3:1 — too little for a button label. */
   --on-accent: #ffffff;
 
-  --flag: #855a08;
-  --flag-wash: rgba(154, 106, 8, 0.11);
-  --flag-line: rgba(154, 106, 8, 0.32);
+  --flag: #995400;
+  --flag-wash: rgba(153, 84, 0, 0.08);
+  --flag-line: rgba(153, 84, 0, 0.32);
 
   --ok: #256848;
   --ok-wash: rgba(37, 104, 72, 0.10);
@@ -903,6 +903,15 @@ body {
 .stat-k { font-size: 10.5px; color: var(--ink-3); letter-spacing: 0.07em;
           text-transform: uppercase; }
 
+/* The figure a person has to look at is marked by its colour, not by a box
+   around it: the number in the flag colour and its label tinted from the
+   same hue rather than left grey. A panel behind it would have disturbed the
+   figures beside it, which are the same kind of thing. */
+.stat[data-tone='flag'] .stat-v { color: var(--flag); }
+.stat[data-tone='flag'] .stat-k {
+  color: color-mix(in srgb, var(--flag) 66%, var(--ink-3));
+}
+
 /* The figures in the rail. A narrow column cannot hold four figures across,
    and a row of them wrapped and left the last one stranded on a line of its
    own. Here they are a ledger: the label on the left, the figure on the
@@ -1510,13 +1519,20 @@ body {
   font-size: 11px;
 }
 
-/* A failure has to be the thing you notice. */
+/* A failure has to be the thing you notice. It is red, like the failed
+   chips; a turn that is being retried is not a failure yet, so it is amber. */
 .log-bad {
+  background: color-mix(in srgb, var(--bad) 13%, transparent);
+  outline: 1px solid color-mix(in srgb, var(--bad) 38%, transparent);
+  padding: 7px 10px;
+}
+.log-bad .log-tag { color: var(--bad); }
+.log-warn {
   background: color-mix(in srgb, var(--flag) 13%, transparent);
   outline: 1px solid color-mix(in srgb, var(--flag) 38%, transparent);
   padding: 7px 10px;
 }
-.log-bad .log-tag { color: var(--flag); }
+.log-warn .log-tag { color: var(--flag); }
 
 .log-count {
   color: var(--ink-3);

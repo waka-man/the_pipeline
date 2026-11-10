@@ -951,7 +951,9 @@ function logRow(entry) {
     // Tag, text and detail as siblings of the clock, matching the other rows.
     // Wrapped in one div they became inline spans with no gap between them and
     // the line read "stoppedthe agent finished without calling ...".
-    return h('div', { class: 'log-row log-bad' },
+    // A failure is red; a turn being retried is amber, because it has not
+    // failed yet.
+    return h('div', { class: `log-row ${entry.retryable ? 'log-warn' : 'log-bad'}` },
       time,
       h('span', { class: 'log-tag' }, entry.retryable ? 'retrying' : 'failed'),
       h('span', { class: 'log-text' }, entry.text),
@@ -1233,8 +1235,8 @@ function viewGrade() {
       h('div', { class: 'stats', style: 'margin-bottom:16px' },
         h('div', { class: 'stat' }, h('div', { class: 'stat-v' }, graded), h('div', { class: 'stat-k' }, 'graded')),
         h('div', { class: 'stat' }, h('div', { class: 'stat-v' }, S.submissions.length), h('div', { class: 'stat-k' }, 'collected')),
-        h('div', { class: 'stat' },
-          h('div', { class: 'stat-v', style: flagged ? 'color:var(--flag)' : '' }, flagged),
+        h('div', { class: 'stat', dataset: flagged ? { tone: 'flag' } : {} },
+          h('div', { class: 'stat-v' }, flagged),
           h('div', { class: 'stat-k' }, 'needs attention'))),
 
       h('div', { style: 'display:flex;gap:8px;flex-wrap:wrap' },
@@ -1723,9 +1725,9 @@ function renderAside() {
     extra.push(h('div', { class: 'stats stats--rail' },
       h('div', { class: 'stat' }, h('div', { class: 'stat-k' }, 'graded'), h('div', { class: 'stat-v' }, graded)),
       h('div', { class: 'stat' }, h('div', { class: 'stat-k' }, 'collected'), h('div', { class: 'stat-v' }, S.submissions.length)),
-      h('div', { class: 'stat' },
+      h('div', { class: 'stat', dataset: flagged ? { tone: 'flag' } : {} },
         h('div', { class: 'stat-k' }, 'needs attention'),
-        h('div', { class: 'stat-v', style: flagged ? 'color:var(--flag)' : '' }, flagged))));
+        h('div', { class: 'stat-v' }, flagged))));
   } else if (run && S.stage === 'review') {
     title.textContent = 'Rubric';
     // The marks belong to the report that is open. Showing the last report's
