@@ -1598,6 +1598,50 @@ await test('no handler threw while every button was clicked', () => {
     assert.deepStrictEqual(base.consoleErrors, [], base.consoleErrors.join('\n'));
   });
 
+  // The light theme is a printed sheet: its ink has to be darker than the
+  // dark theme's, and the quietest level still has to be readable, because it
+  // carries labels, hints and timestamps at 11px.
+  await test('the light theme keeps its text above 4.5:1', () => {
+    const css = fs.readFileSync(path.join(RENDERER, 'styles.css'), 'utf8');
+    const block = css.match(/:root\[data-theme='light'\]\s*\{([\s\S]*?)\n\}/);
+    assert.ok(block, 'no light theme block in styles.css');
+    const tokens = {};
+    for (const m of block[1].matchAll(/--([a-z0-9-]+):\s*([^;]+);/g)) {
+      tokens[m[1]] = m[2].trim();
+    }
+    const rgb = (hex) => [0, 2, 4].map((i) => parseInt(hex.replace('#', '').slice(i, i + 2), 16));
+    const lum = (c) => {
+      const f = c.map((v) => {
+        v /= 255;
+        return v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4;
+      });
+      return 0.2126 * f[0] + 0.7152 * f[1] + 0.0722 * f[2];
+    };
+    const ratio = (a, b) => {
+      const l1 = lum(a);
+      const l2 = lum(b);
+      return (Math.max(l1, l2) + 0.05) / (Math.min(l1, l2) + 0.05);
+    };
+    const surface = rgb(tokens.surface);
+    const surface2 = rgb(tokens['surface-2']);
+    const surface3 = rgb(tokens['surface-3']);
+    const desk = rgb(tokens.desk);
+    for (const ink of ['ink', 'ink-2', 'ink-3']) {
+      for (const [name, bg] of [['surface', surface], ['surface-2', surface2],
+        ['surface-3', surface3], ['desk', desk]]) {
+        const r = ratio(rgb(tokens[ink]), bg);
+        assert.ok(r >= 4.5,
+          `${ink} on ${name} is ${r.toFixed(2)}:1, under 4.5`);
+      }
+    }
+    const onAccent = ratio(rgb(tokens['on-accent']), rgb(tokens.accent));
+    assert.ok(onAccent >= 4.5,
+      `the button label on the accent is ${onAccent.toFixed(2)}:1, under 4.5`);
+    const boundary = ratio(rgb(tokens['rule-strong']), surface);
+    assert.ok(boundary >= 3,
+      `an input boundary is ${boundary.toFixed(2)}:1, under 3`);
+  });
+
   // The save button used to stretch to the height of the view switch beside
   // it and tower over it.
   await test('the save button is sized with the view switch, not beside it', async () => {
