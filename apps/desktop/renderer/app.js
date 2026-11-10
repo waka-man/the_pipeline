@@ -174,6 +174,11 @@ const S = {
   runtime: null,
   runtimeRequested: false,
   assignmentsShown: ASSIGNMENT_PAGE,
+  // True while a course's assignments are being fetched, so the panel can
+  // say so. Without it the click on a course did nothing visible until the
+  // request came back, which reads as a frozen window.
+  loadingAssignments: false,
+  assignmentsError: null,
   logEntries: [],
   logShown: 0,
   logTimer: null,
@@ -224,6 +229,10 @@ const els = {
    The sticky control bar answers this by turning translucent, so the rows
    underneath stay visible while it is pinned over them. */
 let mainScrolled = false;
+
+/* Which assignment request is the current one. A course clicked while another
+   is still loading supersedes it, and the older response is discarded. */
+let assignToken = 0;
 
 function syncSticky() {
   const bar = document.querySelector('.sticky-acts');
@@ -702,36 +711,43 @@ function renderPanel() {
     const course = S.course;
     const shown = S.assignments.slice(0, S.assignmentsShown);
     const remaining = S.assignments.length - S.assignmentsShown;
+    const list = h('div', {},
+      h('div', { class: 'picklist' }, shown.length ? shown.map((a) => h('button', {
+        class: 'pick', 'aria-selected': String(S.assignment?.id === a.id),
+        disabled: !a.published,
+        onclick: () => {
+          S.assignment = a;
+          closePanel();
+          toast(`Selected ${a.name}.`);
+        },
+      },
+        h('div', {},
+          h('div', { class: 'pick-title' }, a.name),
+          h('div', { class: 'pick-sub' },
+            h('span', {}, `${a.criteria} criteria`),
+            h('span', {}, `${fmt(a.points_possible)} points`),
+            a.group ? h('span', {}, 'group') : null)),
+        h('div', { class: 'pick-meta' },
+          a.needs_grading != null ? h('span', {}, `${a.needs_grading} ungraded`) : null,
+          a.has_rubric ? null : chip('no rubric', 'flag'))))
+        : h('div', { style: 'padding:12px;color:var(--ink-3)' }, 'No assignments returned.')),
+      remaining > 0
+        ? h('div', { style: 'margin-top:14px' },
+            h('button', {
+              class: 'btn',
+              onclick: () => { S.assignmentsShown += ASSIGNMENT_PAGE; renderPanel(); },
+            }, `Load more (${remaining} remaining)`))
+        : null);
     mount(el, slideover(
       course ? course.name : 'Assignments',
       course ? `course ${course.id}` : null,
-      h('div', {},
-        h('div', { class: 'picklist' }, shown.length ? shown.map((a) => h('button', {
-          class: 'pick', 'aria-selected': String(S.assignment?.id === a.id),
-          disabled: !a.published,
-          onclick: () => {
-            S.assignment = a;
-            closePanel();
-            toast(`Selected ${a.name}.`);
-          },
-        },
-          h('div', {},
-            h('div', { class: 'pick-title' }, a.name),
-            h('div', { class: 'pick-sub' },
-              h('span', {}, `${a.criteria} criteria`),
-              h('span', {}, `${fmt(a.points_possible)} points`),
-              a.group ? h('span', {}, 'group') : null)),
-          h('div', { class: 'pick-meta' },
-            a.needs_grading != null ? h('span', {}, `${a.needs_grading} ungraded`) : null,
-            a.has_rubric ? null : chip('no rubric', 'flag'))))
-          : h('div', { style: 'padding:12px;color:var(--ink-3)' }, 'No assignments returned.')),
-        remaining > 0
-          ? h('div', { style: 'margin-top:14px' },
-              h('button', {
-                class: 'btn',
-                onclick: () => { S.assignmentsShown += ASSIGNMENT_PAGE; renderPanel(); },
-              }, `Load more (${remaining} remaining)`))
-          : null),
+      S.loadingAssignments
+        ? h('div', { class: 'loading-note' },
+            h('span', { class: 'spinner', 'aria-hidden': 'true' }),
+            h('span', {}, 'Reading assignments from Canvas…'))
+        : S.assignmentsError
+          ? h('div', { class: 'notice', dataset: { tone: 'bad' } }, S.assignmentsError)
+          : list,
       h('button', {
         class: 'btn', 'data-variant': 'primary',
         disabled: !S.assignment || !S.assignment.has_rubric,
@@ -1032,15 +1048,27 @@ function viewSelect() {
       S.assignment = null;
       S.assignments = [];
       S.assignmentsShown = ASSIGNMENT_PAGE;
-      await guard(async () => {
-        S.course = c;
-        S.coursesShown = Math.max(S.coursesShown, COURSE_PAGE);
+      S.assignmentsError = null;
+      S.course = c;
+      S.coursesShown = Math.max(S.coursesShown, COURSE_PAGE);
+      S.loadingAssignments = true;
+      // The panel opens straight away. Reading a course's assignments takes a
+      // moment, and until it comes back the screen gave no sign that the
+      // click had landed at all.
+      S.panel = { kind: 'assign', rowId: null };
+      render();
+      // A second course clicked while the first is still loading wins; the
+      // older response must not land on top of it.
+      const token = ++assignToken;
+      const ok = await guard(async () => {
         const data = await api.assignments(c.id);
+        if (token !== assignToken) return false;
         S.assignments = data.assignments || [];
-        // Assignments open in a panel rather than below the course list, so
-        // picking a course never pushes the page around under the user.
-        S.panel = { kind: 'assign', rowId: null };
+        return true;
       }, 'Could not load assignments');
+      if (token !== assignToken) return;
+      S.loadingAssignments = false;
+      if (ok !== true) S.assignmentsError = 'Canvas did not return this course’s assignments.';
       render();
     },
   },
@@ -1052,7 +1080,10 @@ function viewSelect() {
         c.term ? h('span', {}, c.term) : null)),
     h('div', { class: 'pick-meta' },
       c.workflow_state === 'available' ? chip('available') : null,
-      h('span', {}, 'open assignments'))));
+      S.loadingAssignments && S.course?.id === c.id
+        ? h('span', { class: 'loading-inline' },
+            h('span', { class: 'spinner', 'aria-hidden': 'true' }), 'loading…')
+        : h('span', {}, 'open assignments'))));
 
   return h('div', {},
     h('div', { class: 'head' },

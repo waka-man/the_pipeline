@@ -1206,6 +1206,24 @@ body {
 .spinner-list { display: flex; flex-direction: column; gap: 10px; }
 .spinner-row { height: 44px; border-radius: 6px; background: var(--rule); opacity: 0.45; }
 
+/* Waiting for something. Used where the work is real but slow — reading a
+   course's assignments — so the screen never looks frozen. */
+.loading-note {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 18px 4px;
+  color: var(--ink-2);
+  font-size: 13px;
+}
+
+.loading-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--ink-3);
+}
+
 
 /* ---------------------------------------------------------- checkboxes
    The platform default is a 1997 widget, and it does not match the rest of

@@ -1598,6 +1598,35 @@ await test('no handler threw while every button was clicked', () => {
     assert.deepStrictEqual(base.consoleErrors, [], base.consoleErrors.join('\n'));
   });
 
+  // Clicking a course used to do nothing visible until its assignments came
+  // back, which reads as a frozen window.
+  await test('the assignment panel opens at once and says it is loading', async () => {
+    const { window } = await reboot();
+    await gotoOn(window, 'Select');
+    await clickIn(window, '#main button', 'Load courses');
+    await tick(80);
+    // Hold the request open so the loading state can be observed.
+    let release = null;
+    window.pipeline.api.assignments = () => new Promise((res) => { release = res; });
+    const state = await window.eval(`(() => {
+      const b = document.querySelector('.pick');
+      if (!b) return 'missing';
+      b.click();
+      return 'clicked';
+    })()`);
+    assert.strictEqual(state, 'clicked', 'no course row to click');
+    await tick(40);
+    const panel = window.document.querySelector('.slideover-panel');
+    assert.ok(panel, 'the assignment panel did not open');
+    const note = panel.querySelector('.loading-note');
+    assert.ok(note, 'the panel does not say it is loading');
+    assert.match(note.textContent, /Reading assignments/);
+    release({ assignments: [] });
+    await tick(80);
+    assert.ok(!window.document.querySelector('.loading-note'),
+      'the loading note is still there after the assignments arrived');
+  });
+
   // The model name is one long unbreakable token. Wrapped inside the button
   // it broke mid-name and pushed the card wider than the window, so the saved
   // default was moved out of the button and the name got its own element.
