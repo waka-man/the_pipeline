@@ -475,10 +475,23 @@ body {
   .spinner { animation-duration: 2.4s; }
 }
 
+/* The model name is a single unbreakable token: a provider, a slash and a
+   long id. Wrapping it mid-name is unreadable, so it shortens with an
+   ellipsis instead and the full id stays in the tooltip. */
+.model-note {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+  min-width: 0;
+}
+
 .model-pick {
   display: inline-flex;
   align-items: center;
   gap: 7px;
+  max-width: 100%;
+  min-width: 0;
   background: none;
   border: 1px solid transparent;
   border-radius: var(--r);
@@ -491,8 +504,40 @@ body {
 }
 .model-pick:hover { color: var(--ink); background: var(--surface-2); border-color: var(--rule); }
 .model-pick:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
-.model-pick-label { font-size: 11.5px; }
-.model-pick-hint { font-size: 11px; opacity: 0.7; }
+.model-pick-label {
+  font-size: 11.5px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.model-pick .chip { flex: none; }
+.model-pick-hint {
+  font-size: 11px;
+  opacity: 0.7;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* On a narrow window the card title and the model name cannot share a line
+   without both being squeezed, so the note drops to its own line under it. */
+@media (max-width: 860px) {
+  .card-head { flex-wrap: wrap; }
+  .model-note { align-items: flex-start; width: 100%; }
+}
+
+/* The model id in the title bar is long. It gives up space rather than
+   pushing the theme control off the edge of the window. */
+#model-chip .chip {
+  display: inline-block;
+  max-width: min(300px, 28vw);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: middle;
+}
 
 /* Keeps the grading controls on screen while you work down the list.
    A cohort of 150 means selecting a student at the bottom and scrolling back
@@ -558,7 +603,7 @@ body {
   gap: 12px;
   margin-bottom: 14px;
 }
-.card-head h2 { margin: 0; font-size: 13px; font-weight: 500; }
+.card-head h2 { margin: 0; font-size: 13px; font-weight: 500; flex: 0 0 auto; }
 .card-head .note { font-size: 11.5px; color: var(--ink-3); }
 
 /* ------------------------------------------------------------ pick lists */

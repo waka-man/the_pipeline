@@ -1598,6 +1598,23 @@ await test('no handler threw while every button was clicked', () => {
     assert.deepStrictEqual(base.consoleErrors, [], base.consoleErrors.join('\n'));
   });
 
+  // The model name is one long unbreakable token. Wrapped inside the button
+  // it broke mid-name and pushed the card wider than the window, so the saved
+  // default was moved out of the button and the name got its own element.
+  await test('the model name is one element and the saved default is outside it', async () => {
+    const { window } = await reboot();
+    await gotoOn(window, 'Grade');
+    const button = window.document.querySelector('.model-pick');
+    assert.ok(button, 'the grade card has no model picker');
+    const label = button.querySelector('.model-pick-label');
+    assert.ok(label, 'the model name is not in its own element');
+    assert.match(label.textContent, /m1/, label.textContent);
+    assert.ok(!button.textContent.includes('saved default'),
+      'the saved default sits inside the button and will wrap it');
+    assert.ok(button.getAttribute('title').includes('m1'),
+      'the tooltip does not carry the full model name');
+  });
+
   // The sticky control bar used to be an opaque wall pinned over the rows.
   // It now turns translucent once the page has scrolled, so the rows behind
   // stay visible through it.

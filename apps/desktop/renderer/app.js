@@ -372,9 +372,11 @@ function modelNote() {
   const chosen = S.runModel || S.model?.selected || null;
   const label = chosen || 'no model selected';
   const differs = !!S.runModel && S.runModel !== S.model?.selected;
-  return h('button', {
+  const button = h('button', {
     class: 'model-pick',
-    title: 'Choose the model this run grades with',
+    // The full id is in the tooltip because the label is allowed to be
+    // shortened when the window is narrow.
+    title: `${label} — choose the model this run grades with`,
     onclick: () => guard(async () => {
       await loadModels();
       S.panel = { kind: 'model', rowId: null };
@@ -382,9 +384,15 @@ function modelNote() {
     }, 'Could not read models'),
   },
     h('span', { class: 'model-pick-label' }, label),
-    differs ? h('span', { class: 'chip', dataset: { tone: 'accent' } }, 'this run') : null,
-    differs ? h('span', { class: 'model-pick-hint' }, '· saved default is '
-      + (S.model ? S.model.selected : 'none saved')) : null);
+    differs ? h('span', { class: 'chip', dataset: { tone: 'accent' } }, 'this run') : null);
+  if (!differs) return button;
+  // The saved default is context, not part of the control, so it sits on its
+  // own line. Inside the button it used to wrap mid-model-name and push the
+  // card wider than the window.
+  return h('div', { class: 'model-note' },
+    button,
+    h('div', { class: 'model-pick-hint' },
+      'saved default: ' + (S.model ? S.model.selected : 'none saved')));
 }
 
 /* ------------------------------------------------------------------ views */
