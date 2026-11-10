@@ -343,12 +343,27 @@ class OpenCodeServer:
                      and (m.get("time") or {}).get("completed")]
             if fresh:
                 assistant = fresh[-1]
-                error = assistant.get("error") or {}
-                info: dict[str, Any] = {}
-                if error:
-                    info["error"] = {"message": error.get("message") or "",
-                                     "name": error.get("type") or "error"}
-                return {"info": info, "parts": self.parts(session_id)}
+                # A completed assistant message that requested tool calls is
+                # not the end of the turn: opencode executes the tools and
+                # the model continues in a later assistant message. Treating
+                # it as finished made the pipeline declare "no scorecard"
+                # while the agent was still working.
+                finish = (assistant.get("finish") or "").lower()
+                if finish in ("tool-calls", "tool_use", "tool-call"):
+                    # More work follows; keep polling for the next message.
+                    pass
+                elif self._session_busy(session_id):
+                    # The message completed but the session has not gone
+                    # idle yet (tools running / next step queued). Wait for
+                    # the session to settle so we don't read mid-turn.
+                    pass
+                else:
+                    error = assistant.get("error") or {}
+                    info: dict[str, Any] = {}
+                    if error:
+                        info["error"] = {"message": error.get("message") or "",
+                                         "name": error.get("type") or "error"}
+                    return {"info": info, "parts": self.parts(session_id)}
             time.sleep(2)
         raise RunnerError("timed out waiting for the agent turn to finish")
 
@@ -372,6 +387,44 @@ class OpenCodeServer:
         """The provider's own error message, if the turn failed."""
         err = ((response or {}).get("info") or {}).get("error") or {}
         return err.get("message") or err.get("name")
+
+    def _session_busy(self, session_id: str) -> bool:
+        """Whether the session still has work in progress.
+
+        A prompt turn can emit a completed assistant message (for example
+        one that requested tool calls) while the session continues running.
+        We only treat the turn as finished once the session is no longer
+        busy, so a mid-turn step is not mistaken for "ended without a
+        scorecard". On any doubt we report not-busy to avoid hanging.
+        """
+        try:
+            r = self._request("GET", f"/session/{session_id}", timeout=15)
+            if not r.ok:
+                return False
+            data = self._data(r)
+        except Exception:
+            return False
+        if not isinstance(data, dict):
+            return False
+        # A resolved outcome or an idle timestamp means the session settled.
+        if data.get("outcome") or data.get("error"):
+            return False
+        t = data.get("time") or {}
+        idle = t.get("idle")
+        busy = t.get("busy")
+        if idle and (not busy or idle >= busy):
+            return False
+        if busy and not idle:
+            return True
+        # Some shapes expose a status string instead of/alongside times.
+        status = (data.get("status") or "").lower()
+        if status in {"idle", "completed", "done", "error", "failed"}:
+            return False
+        if status in {"busy", "running", "working", "pending"}:
+            return True
+        # If the endpoint returned something unexpected (e.g. a message
+        # list shape mismatch), don't block completion on it.
+        return False
 
     def _messages(self, session_id: str) -> list[dict[str, Any]]:
         try:

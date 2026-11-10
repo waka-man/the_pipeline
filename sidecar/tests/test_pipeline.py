@@ -554,7 +554,7 @@ def test_prompt_waits_for_the_completed_assistant_turn(monkeypatch):
     """v2 accepts the prompt and runs the turn in the background.
 
     Recorded shape: POST returns the user message immediately; completion
-    is an assistant message with time.completed set.
+    is an assistant message with time.completed set and the session idle.
     """
     from pipeline.grading import runner
 
@@ -567,6 +567,9 @@ def test_prompt_waits_for_the_completed_assistant_turn(monkeypatch):
             return _Response(True, {"data": {
                 "id": "msg_u1", "type": "user",
                 "payload": {"text": "hi"}, "delivery": "steer"}})
+        if path == "/session/ses_1":
+            return _Response(True, {"data": {"id": "ses_1",
+                                             "time": {"idle": 5}}})
         # Message list: first poll still empty, second completes the turn.
         if not hasattr(fake_request, "seen"):
             fake_request.seen = 0
@@ -602,6 +605,9 @@ def test_prompt_surfaces_the_provider_error(monkeypatch):
         if path.endswith("/prompt"):
             state["posted"] = True
             return _Response(True, {"data": {"id": "msg_u1", "type": "user"}})
+        if path == "/session/ses_1":
+            return _Response(True, {"data": {"id": "ses_1",
+                                             "time": {"idle": 5}}})
         if not state["posted"]:
             return _Response(True, {"data": []})
         return _Response(True, {"data": [
@@ -615,6 +621,58 @@ def test_prompt_surfaces_the_provider_error(monkeypatch):
     srv._request = fake_request
     result = srv.prompt("ses_1", "hi")
     assert srv.provider_error(result) == "out of credits"
+
+
+def test_prompt_does_not_end_on_a_tool_call_step(monkeypatch):
+    """A completed tool-call turn is mid-flight, not finished.
+
+    v2 completes the assistant message that requested tools, runs them,
+    then emits a later assistant message with the final answer. Returning
+    on the first completion made the pipeline treat an active session as
+    "finished without a scorecard".
+    """
+    from pipeline.grading import runner
+
+    srv, _Response = _v2_server(monkeypatch, iter([]))
+    polls = {"n": 0}
+
+    user = {"id": "msg_u1", "type": "user", "text": "hi",
+            "time": {"created": 1}}
+    tool_step = {
+        "id": "msg_a1", "type": "assistant",
+        "time": {"created": 2, "completed": 3},
+        "content": [{"type": "tool", "id": "call-1", "name": "shell",
+                     "state": {"status": "completed", "input": {},
+                               "content": [{"type": "text", "text": "ok"}]}}],
+        "finish": "tool-calls",
+    }
+    final = {
+        "id": "msg_a2", "type": "assistant",
+        "time": {"created": 4, "completed": 5},
+        "content": [{"type": "text", "text": "done"}],
+        "finish": "stop",
+    }
+
+    def fake_request(method, path, body=None, timeout=30):
+        if path.endswith("/prompt"):
+            return _Response(True, {"data": {"id": "msg_u1", "type": "user"}})
+        if path == "/session/ses_1":
+            # Busy during the tool step, idle once the final answer lands.
+            idle = polls["n"] >= 3
+            t = {"idle": 6} if idle else {"busy": 3}
+            return _Response(True, {"data": {"id": "ses_1", "time": t}})
+        polls["n"] += 1
+        if polls["n"] == 1:
+            return _Response(True, {"data": [user, tool_step]})
+        return _Response(True, {"data": [user, tool_step, final]})
+
+    srv._request = fake_request
+    result = srv.prompt("ses_1", "hi")
+    assert srv.provider_error(result) is None
+    # The final answer, not the intermediate tool-call step, is what we got.
+    texts = [p["text"] for p in result["parts"] if p["type"] == "text"]
+    assert "done" in texts
+    assert polls["n"] >= 2, "must keep polling past the tool-call step"
 
 
 def test_parts_map_v2_messages_onto_the_log_shape(monkeypatch):
