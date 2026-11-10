@@ -1598,6 +1598,23 @@ await test('no handler threw while every button was clicked', () => {
     assert.deepStrictEqual(base.consoleErrors, [], base.consoleErrors.join('\n'));
   });
 
+  // The sticky control bar used to be an opaque wall pinned over the rows.
+  // It now turns translucent once the page has scrolled, so the rows behind
+  // stay visible through it.
+  await test('the sticky control bar turns translucent once the page scrolls', async () => {
+    const { window } = await reboot();
+    await gotoOn(window, 'Grade');
+    const bar = window.document.querySelector('.sticky-acts');
+    assert.ok(bar, 'the grade view has no sticky control bar');
+    assert.strictEqual(bar.dataset.scrolled, 'false',
+      'the bar starts opaque');
+    const main = window.document.getElementById('main');
+    main.scrollTop = 120;
+    main.dispatchEvent(new window.Event('scroll'));
+    assert.strictEqual(bar.dataset.scrolled, 'true',
+      'the bar did not turn translucent on scroll');
+  });
+
   console.log('\nclicks per stage');
   for (const [stage, labels] of Object.entries(clicked)) {
     console.log(`  ${stage.padEnd(8)} ${labels.length}: ${labels.join(', ')}`);

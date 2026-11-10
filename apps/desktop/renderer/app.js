@@ -220,6 +220,23 @@ const els = {
   spineMeta: document.getElementById('spine-meta'),
 };
 
+/* Whether the main column has been scrolled past its first screenful.
+   The sticky control bar answers this by turning translucent, so the rows
+   underneath stay visible while it is pinned over them. */
+let mainScrolled = false;
+
+function syncSticky() {
+  const bar = document.querySelector('.sticky-acts');
+  if (bar) bar.dataset.scrolled = String(mainScrolled);
+}
+
+els.main.addEventListener('scroll', () => {
+  const next = els.main.scrollTop > 8;
+  if (next === mainScrolled) return;
+  mainScrolled = next;
+  syncSticky();
+}, { passive: true });
+
 /* ------------------------------------------------------------------ utils */
 
 function toast(message, tone) {
@@ -1155,7 +1172,7 @@ function viewGrade() {
                + 'into a report — the agent never formats the page itself.')),
 
     // Sticky, so the controls stay reachable from the bottom of a long list.
-    h('div', { class: 'sticky-acts' },
+    h('div', { class: 'sticky-acts', dataset: { scrolled: String(mainScrolled) } },
     card('Run grading', modelNote(),
       h('div', { class: 'stats', style: 'margin-bottom:16px' },
         h('div', { class: 'stat' }, h('div', { class: 'stat-v' }, graded), h('div', { class: 'stat-k' }, 'graded')),
@@ -1223,9 +1240,11 @@ function viewGrade() {
               toast(`Grades cleared for ${S.selected.size} selected.`);
             }, 'Could not reset grades');
           },
-        }, `Reset Selected (${S.selected.size})`))),
+        }, `Reset Selected (${S.selected.size})`)))),
 
-    notice('Posting is always optional. If a run does not hold up you can grade from the reports in your own words.', null)),
+    // Outside the sticky block on purpose: it is advice, not a control, and
+    // pinning it costs a screenful of rows on a long cohort.
+    notice('Posting is always optional. If a run does not hold up you can grade from the reports in your own words.', null),
 
     S.submissions.length ? submissionTable(false) : null);
 }
@@ -1684,6 +1703,10 @@ function render() {
     ? h('div', { style: 'margin-bottom:14px' }, notice(S.toast.message, S.toast.tone))
     : null;
   mount(els.main, banner, node);
+  // Re-mounting empties the scroll container, so the sticky bar has to be
+  // told the page is back at the top.
+  mainScrolled = els.main.scrollTop > 8;
+  syncSticky();
   restoreFocus(focusId, caret);
   // The slide-over lives outside #main so a stage re-render cannot wipe it
   // open, which means it has to be re-rendered explicitly on every paint.
