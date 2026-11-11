@@ -1081,6 +1081,16 @@ def test_the_agent_log_is_bounded(live):
     assert lines[-1]["text"] == f"line {srv.AGENT_LOG_LINES + 249}", "kept the wrong tail"
 
 
+def _model_facts(provider, model, **kw):
+    """One model in the shape the catalogue reports."""
+    base = dict(provider=provider, model=model, name=model,
+                input_price=0.0, output_price=0.0, context=100000,
+                output_limit=65536, tools=True, inputs=("text",),
+                outputs=("text",), released=0)
+    base.update(kw)
+    return config.ModelFacts(**base)
+
+
 def test_a_run_can_choose_its_own_model_without_changing_the_default(live):
     """The model on the setup page is a starting point, not a lock.
 
@@ -1089,9 +1099,10 @@ def test_a_run_can_choose_its_own_model_without_changing_the_default(live):
     default for everything afterwards.
     """
     _base, state, _fake, _spec = live
-    state.catalogue = {
-        "openrouter": ["vendor/cheap-small", "vendor/expensive-large"],
-    }
+    state.catalogue = [
+        _model_facts("openrouter", "vendor/cheap-small", output_price=0.0),
+        _model_facts("openrouter", "vendor/expensive-large", output_price=10.0),
+    ]
     original = config.pick_model(state.catalogue, None, prefer_free=True)
 
     choice, model, budget = srv.resolve_model(state, "openrouter/vendor/expensive-large")
@@ -1104,7 +1115,7 @@ def test_a_run_can_choose_its_own_model_without_changing_the_default(live):
 
 def test_a_run_model_that_does_not_exist_is_a_clear_error(live):
     _base, state, _fake, _spec = live
-    state.catalogue = {"openrouter": ["vendor/cheap-small"]}
+    state.catalogue = [_model_facts("openrouter", "vendor/cheap-small")]
     with pytest.raises(srv.ApiError) as e:
         srv.resolve_model(state, "openrouter/nope/missing")
     assert e.value.status == 400

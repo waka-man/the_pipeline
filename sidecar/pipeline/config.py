@@ -159,61 +159,155 @@ class ModelChoice:
         return f"{self.provider}/{self.model}"
 
 
-# Direct provider keys are a deliberate, paid commitment. If opencode reports
-# one of these as available it is used ahead of everything else.
-TIER_DIRECT: tuple[ModelChoice, ...] = (
-    ModelChoice("anthropic", "claude-opus-4-20250514", "premium"),
-    ModelChoice("openai", "gpt-5", "premium"),
-    ModelChoice("anthropic", "claude-sonnet-4-20250514", "premium"),
-)
-
-# Strong OpenRouter models, tried after the free tier so a key with credits
-# does not get downgraded unnecessarily.
-OPENROUTER_PREFERRED: tuple[str, ...] = (
-    "anthropic/claude-opus-4.5",
-    "anthropic/claude-sonnet-4.5",
-    "deepseek/deepseek-v4-pro",
-    "qwen/qwen3.8-max",
-    "z-ai/glm-5.3",
-    "moonshotai/kimi-k3",
-    "openai/gpt-4o-mini",
-)
-
-# Flash-tier models: cheap enough per token that a key with a small credit
-# ceiling can still reserve a usable output budget.
-OPENROUTER_CHEAP: tuple[str, ...] = (
-    "deepseek/deepseek-v4.1-flash",
-    "qwen/qwen3.8-flash",
-    "z-ai/glm-5.3-flash",
-    "moonshotai/kimi-k2.7-code",
-    "stepfun/step-3.7-flash",
-    "google/gemini-3.1-flash-lite",
-    "openai/gpt-4o-mini",
-    "google/gemini-2.5-flash-lite",
-)
-
-# Free-tier preference order. OpenRouter's free pool is small and churns, so
-# this is intersected with what opencode reports. Nemotron leads: the large
-# variants are the strongest free models currently offered.
-FREE_PREFERENCE: tuple[str, ...] = (
-    "nvidia/nemotron-3-ultra-550b-a55b:free",
-    "nvidia/nemotron-3-super-120b-a12b:free",
-    "nvidia/nemotron-3.5-lightning:free",
-    "thinkingmachines/inkling:free",
-    "thinkingmachines/inkling-small:free",
-    "dots-studio/dots-3-note-preview:free",
-    "google/gemma-4-31b-it:free",
-    "google/gemma-4-26b-a4b-it:free",
-    "apodex/apodex-1.1-mini:free",
-    "poolside/laguna-s-2.1:free",
-    "poolside/laguna-xs-2.1:free",
-    "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
-    "cohere/north-mini-code:free",
-    "liquid/lfm-2.5-2.6b:free",
-)
-
+# How many tokens the grader is allowed to spend on one turn.
 DEFAULT_OUTPUT_BUDGET = 4096
 MIN_OUTPUT_BUDGET = 1024
+
+
+@dataclass(frozen=True)
+class ModelFacts:
+    """What opencode reports about one model it can run.
+
+    The catalogue is whatever the user's credentials reach, so the pipeline
+    reads it rather than carrying a list of model names that goes stale. The
+    facts are the ones a choice needs: what it costs, how much it can hold,
+    and whether it can call a tool at all.
+    """
+
+    provider: str
+    model: str
+    name: str = ""
+    input_price: float | None = None      # per million tokens
+    output_price: float | None = None
+    context: int = 0
+    output_limit: int = 0
+    tools: bool = False
+    inputs: tuple[str, ...] = ()
+    outputs: tuple[str, ...] = ()
+    released: int = 0
+    family: str = ""
+
+    @property
+    def id(self) -> str:
+        return f"{self.provider}/{self.model}"
+
+    @property
+    def free(self) -> bool:
+        return self.output_price == 0
+
+
+def model_facts(entry: dict[str, Any]) -> ModelFacts | None:
+    """Read one entry of opencode's model catalogue.
+
+    Returns None for an entry that names no provider or no model: a model
+    that cannot be named cannot be run.
+    """
+    provider = str(entry.get("providerID") or "")
+    model = str(entry.get("modelID") or entry.get("id") or "")
+    if not provider or not model:
+        return None
+    # Some models are named with their provider already on the front
+    # ("openrouter/auto"), and the id is provider plus model, so the prefix
+    # would otherwise be doubled.
+    prefix = f"{provider}/"
+    if model.startswith(prefix):
+        model = model[len(prefix):]
+    if not model:
+        return None
+    caps = entry.get("capabilities") or {}
+    limit = entry.get("limit") or {}
+    # The cost is one entry per variant of the model (a reasoning effort, a
+    # provider variant); the cheapest one is what it costs to run it.
+    costs = [c for c in (entry.get("cost") or []) if isinstance(c, dict)]
+    outs = [c.get("output") for c in costs
+            if isinstance(c.get("output"), (int, float))]
+    ins = [c.get("input") for c in costs
+           if isinstance(c.get("input"), (int, float))]
+    released = (entry.get("time") or {}).get("released") or 0
+    family = str(entry.get("family") or "")
+    # A router is not a free model. The catalogue prices the router itself at
+    # nothing because the router chooses the model, and that model's price is
+    # what is actually paid. Its price is therefore unknown, and it does not
+    # belong in the free tier.
+    router = family == "auto" or model.endswith("/auto")
+    return ModelFacts(
+        provider=provider,
+        model=model,
+        name=str(entry.get("name") or model),
+        input_price=None if router else (min(ins) if ins else None),
+        output_price=None if router else (min(outs) if outs else None),
+        context=int(limit.get("context") or 0),
+        output_limit=int(limit.get("output") or 0),
+        tools=bool(caps.get("tools")),
+        inputs=tuple(caps.get("input") or ()),
+        outputs=tuple(caps.get("output") or ()),
+        released=int(released),
+        family=family,
+    )
+
+
+# What a model costs, per million output tokens, and what that makes it.
+# Bands rather than model names: the catalogue changes under us, a price does
+# not.
+TIER_ORDER: tuple[str, ...] = ("free", "other", "cheap", "standard", "premium")
+TIER_PREMIUM_FROM = 5.0
+TIER_STANDARD_FROM = 1.0
+
+
+def tier_of(facts: ModelFacts) -> str:
+    """Which price band a model falls in.
+
+    A model with no price listed is one the provider does not publish a
+    price for, which is not the same as it being free.
+    """
+    if facts.output_price is None:
+        return "other"
+    if facts.output_price <= 0:
+        return "free"
+    if facts.output_price >= TIER_PREMIUM_FROM:
+        return "premium"
+    if facts.output_price >= TIER_STANDARD_FROM:
+        return "standard"
+    return "cheap"
+
+
+def can_grade(facts: ModelFacts, budget: int) -> bool:
+    """Whether this model can actually do the grading.
+
+    The grader hands the scorecard over with a tool call, so a model without
+    tool support cannot finish at all — it reads the work and then stops, and
+    the row lands in needs_review with nothing to show for it. A model whose
+    output ceiling is below the budget would be cut off part-way through
+    writing the scorecard, which is the same failure wearing a different hat.
+    """
+    return (facts.tools
+            and "text" in facts.outputs
+            and facts.output_limit >= budget)
+
+
+def rank_models(facts: list[ModelFacts], budget: int = DEFAULT_OUTPUT_BUDGET,
+                prefer_free: bool = True) -> list[ModelFacts]:
+    """Order the models the grader can use.
+
+    Cheap first, because a grading run spends money and the free models are
+    good enough for most of it. Within a price band the biggest context
+    wins, then the model that can read what the student actually submitted
+    (a PDF, a screenshot), then the newest. The order is a pure function of
+    the catalogue, so it does not shuffle between refreshes.
+    """
+    usable = [f for f in facts if can_grade(f, budget)]
+
+    def key(f: ModelFacts) -> tuple[Any, ...]:
+        tier = tier_of(f)
+        order = TIER_ORDER.index(tier)
+        if not prefer_free and tier == "free":
+            order = len(TIER_ORDER)
+        rich = sum(1 for kind in ("pdf", "image") if kind in f.inputs)
+        return (order, -f.context, -rich, -f.released, f.model)
+
+    usable.sort(key=key)
+    return usable
+
 
 AFFORDABLE_RE = re.compile(r"can only afford ([\d,]+)", re.I)
 # Only a token-budget refusal should change the cap. A rate limit mentioning
@@ -244,68 +338,48 @@ def budget_from_error(message: str, current: int) -> int:
     return max(MIN_OUTPUT_BUDGET, current // 2)
 
 
-def rank_free_models(available: list[str]) -> list[str]:
-    """Order the live :free models by our preference for grading work."""
-    live = {m for m in available if m.endswith(":free")}
-    preferred = [m for m in FREE_PREFERENCE if m in live]
-    return preferred + sorted(live.difference(FREE_PREFERENCE))
 
 
-def candidates_from_catalogue(available: dict[str, list[str]],
-                              prefer_free: bool = True) -> list[ModelChoice]:
-    """Build the ordered candidate list from what opencode reports.
+def candidates_from_catalogue(available: list[ModelFacts],
+                              prefer_free: bool = True,
+                              budget: int = DEFAULT_OUTPUT_BUDGET) -> list[ModelChoice]:
+    """The ordered candidate list, built from what opencode reports.
 
-    Nothing here contacts a provider. `available` is the output of opencode's
-    `/config/providers`, so a model that is not in it cannot be run with the
+    Nothing here contacts a provider. `available` is what opencode's model
+    catalogue holds, so a model that is not in it cannot be run with the
     credentials opencode already holds.
+
+    The list used to come from a fixed list of model names — a handful of
+    direct keys and a few OpenRouter tiers. That list went stale the moment
+    the catalogue did, and it could not see a model the user's own
+    subscription reached. The tiers are now price bands and the order is
+    worked out from the facts.
     """
-    out: list[ModelChoice] = []
-    routers = available.get("openrouter", [])
-    seen: set[str] = set()
-
-    def add(model: str, tier: str) -> None:
-        if model in routers and model not in seen:
-            seen.add(model)
-            out.append(ModelChoice("openrouter", model, tier))
-
-    for choice in TIER_DIRECT:
-        if choice.model in available.get(choice.provider, []):
-            out.append(choice)
-
-    if routers and prefer_free:
-        for m in rank_free_models(routers):
-            add(m, "free")
-
-    for m in OPENROUTER_CHEAP:
-        add(m, "cheap")
-
-    for m in OPENROUTER_PREFERRED:
-        add(m, "standard")
-
-    if routers and not prefer_free:
-        for m in rank_free_models(routers):
-            add(m, "free")
-
-    return out
+    return [ModelChoice(f.provider, f.model, tier_of(f), budget)
+            for f in rank_models(available, budget=budget, prefer_free=prefer_free)]
 
 
-def pick_model(available: dict[str, list[str]], preferred: str | None = None,
-               prefer_free: bool = True) -> ModelChoice | None:
+def pick_model(available: list[ModelFacts], preferred: str | None = None,
+               prefer_free: bool = True,
+               budget: int = DEFAULT_OUTPUT_BUDGET) -> ModelChoice | None:
     """Choose a model from opencode's catalogue. No network, no raw keys."""
     if preferred:
         provider, _, model = preferred.partition("/")
         if not model:
             provider, model = "openrouter", preferred
-        if model in available.get(provider, []):
-            return ModelChoice(provider, model, "explicit")
-        for p, models in available.items():
-            if model in models:
-                return ModelChoice(p, model, "explicit")
+        for f in available:
+            if f.provider == provider and f.model == model:
+                return ModelChoice(provider, model, "explicit", budget)
+        # The same model under another provider is still the model they meant.
+        for f in available:
+            if f.model == model:
+                return ModelChoice(f.provider, f.model, "explicit", budget)
         raise RuntimeError(
             f"{preferred} is not available with the credentials opencode has. "
             "Add a key with `opencode auth login`, or choose another model."
         )
-    candidates = candidates_from_catalogue(available, prefer_free=prefer_free)
+    candidates = candidates_from_catalogue(available, prefer_free=prefer_free,
+                                          budget=budget)
     return candidates[0] if candidates else None
 
 

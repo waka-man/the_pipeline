@@ -2232,6 +2232,37 @@ await test('no handler threw while every button was clicked', () => {
       `the edit did not travel with the publish: ${sent}`);
   });
 
+  // The catalogue is whatever the credentials reach, so the picker groups it
+  // by price band and searches it rather than listing three hundred models.
+  await test('the model picker groups by tier and searches', async () => {
+    const { window } = await reboot();
+    await gotoOn(window, 'Setup');
+    const shape = await window.eval(`(() => ({
+      groups: [...document.querySelectorAll('#main .model-group-head')]
+        .map((g) => g.textContent.trim()),
+      search: !!document.querySelector('#main .model-search'),
+      inputs: [...document.querySelectorAll('#main input')]
+        .map((n) => n.id + '|' + n.className),
+    }))()`);
+    assert.ok(shape.groups.length > 0, 'the picker is not grouped by tier');
+    assert.match(shape.groups[0], /Free/i,
+      `the free tier is not first: ${shape.groups.join(' | ')}`);
+    assert.ok(shape.search,
+      `the picker cannot be searched: ${shape.inputs.join(' ~ ')}`);
+
+    // Searching narrows the list to what matches.
+    await window.eval(`(() => {
+      const el = document.querySelector('#main .model-search');
+      el.value = 'strong';
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+    })()`);
+    await tick(60);
+    const rows = await window.eval(
+      "[...document.querySelectorAll('#main .model-picker .pick')].map((n) => n.textContent)");
+    assert.ok(rows.length > 0, 'the search found nothing');
+    assert.ok(rows.every((t) => /strong/i.test(t)), `the search did not narrow: ${rows.join(' | ')}`);
+  });
+
   // The save button used to stretch to the height of the view switch beside
   // it and tower over it.
   await test('the save button is sized with the view switch, not beside it', async () => {

@@ -418,34 +418,84 @@ def test_budget_from_error(message, current, expected):
     assert config.budget_from_error(message, current) == expected
 
 
-def test_free_models_are_ranked_nemotron_first():
-    live = [
-        "google/gemma-4-31b-it:free",
-        "nvidia/nemotron-3-ultra-550b-a55b:free",
-        "some/unknown:free",
-        "anthropic/claude-opus-4.5",
+def _facts(provider, model, **kw):
+    """One model in the shape the catalogue reports."""
+    base = dict(provider=provider, model=model, name=model,
+                input_price=0.0, output_price=0.0, context=100000,
+                output_limit=65536, tools=True, inputs=("text",),
+                outputs=("text",), released=0)
+    base.update(kw)
+    return config.ModelFacts(**base)
+
+
+def test_the_model_list_is_read_from_the_catalogue():
+    """The list comes from what opencode reports, not from a fixed set.
+
+    A model the user's own subscription reaches has to be usable, and a
+    model that has quietly gone away must not be offered.
+    """
+    catalogue = [
+        _facts("openrouter", "nvidia/nemotron-3.5-lightning:free"),
+        _facts("github-copilot", "claude-sonnet-5", output_price=10.0),
     ]
-    ranked = config.rank_free_models(live)
-    assert ranked[0] == "nvidia/nemotron-3-ultra-550b-a55b:free"
-    assert "some/unknown:free" in ranked
-    assert "anthropic/claude-opus-4.5" not in ranked
+    ranked = config.rank_models(catalogue)
+    assert [f.model for f in ranked] == ["nvidia/nemotron-3.5-lightning:free",
+                                         "claude-sonnet-5"]
 
 
-def test_pick_model_prefers_free_when_asked():
-    catalogue = {"openrouter": ["anthropic/claude-opus-4.5",
-                                "nvidia/nemotron-3-ultra-550b-a55b:free"]}
-    assert config.pick_model(catalogue, prefer_free=True).tier == "free"
-    assert config.pick_model(catalogue, prefer_free=False).tier == "standard"
+def test_a_model_that_cannot_call_a_tool_is_never_offered():
+    """The grader hands the scorecard over with a tool call.
+
+    A model without tool support reads the work and then stops, and the row
+    lands in needs_review with nothing to show for it.
+    """
+    catalogue = [_facts("openrouter", "no-tools", tools=False)]
+    assert config.rank_models(catalogue) == []
+    assert config.pick_model(catalogue) is None
 
 
-def test_pick_model_uses_direct_provider_when_present():
-    catalogue = {"anthropic": ["claude-opus-4-20250514"], "openrouter": []}
-    assert str(config.pick_model(catalogue)) == "anthropic/claude-opus-4-20250514"
+def test_a_model_that_cannot_write_the_scorecard_in_full_is_not_offered():
+    """Its output ceiling is below the budget, so the scorecard is cut off."""
+    catalogue = [_facts("openrouter", "tiny", output_limit=1024)]
+    assert config.rank_models(catalogue, budget=4096) == []
+    assert config.rank_models(catalogue, budget=1024) != []
+
+
+def test_free_models_come_first_and_the_strong_ones_when_free_is_not_preferred():
+    catalogue = [
+        _facts("openrouter", "strong", output_price=10.0),
+        _facts("openrouter", "cheap-one", output_price=0.0),
+    ]
+    assert config.pick_model(catalogue, prefer_free=True).model == "cheap-one"
+    assert config.pick_model(catalogue, prefer_free=False).model == "strong"
+
+
+def test_the_tiers_are_price_bands():
+    assert config.tier_of(_facts("p", "m", output_price=0.0)) == "free"
+    assert config.tier_of(_facts("p", "m", output_price=0.25)) == "cheap"
+    assert config.tier_of(_facts("p", "m", output_price=2.0)) == "standard"
+    assert config.tier_of(_facts("p", "m", output_price=25.0)) == "premium"
+    # No price listed is not the same as free.
+    assert config.tier_of(_facts("p", "m", output_price=None)) == "other"
+
+
+def test_a_model_with_no_price_listed_is_not_called_free():
+    catalogue = [_facts("clinepass", "z-ai/glm-5.2", output_price=None)]
+    choice = config.pick_model(catalogue)
+    assert choice.tier == "other"
+    assert choice.model == "z-ai/glm-5.2"
 
 
 def test_pick_model_rejects_unavailable_explicit_model():
     with pytest.raises(RuntimeError, match="not available"):
-        config.pick_model({"openrouter": ["a/b"]}, preferred="nope/nope")
+        config.pick_model([_facts("openrouter", "a/b")], preferred="nope/nope")
+
+
+def test_pick_model_finds_an_explicit_model_under_another_provider():
+    """The user may name the model they saw in their own opencode."""
+    catalogue = [_facts("openrouter", "a/b"), _facts("github-copilot", "b")]
+    assert str(config.pick_model(catalogue, preferred="github-copilot/b")) == \
+        "github-copilot/b"
 
 
 def test_pick_model_returns_none_without_a_catalogue():
@@ -537,10 +587,11 @@ def test_the_model_list_tolerates_a_briefly_unready_runtime(monkeypatch):
     ])
     srv._request = lambda method, path, body=None, timeout=30: next(payloads)
 
-    assert srv.catalogue() == {
-        "openrouter": ["thinkingmachines/inkling-small"],
-        "ollama": ["mistral:7b-instruct-v0.3-q4_K_M"],
-    }
+    catalogue = srv.catalogue()
+    assert [f.id for f in catalogue] == [
+        "openrouter/thinkingmachines/inkling-small",
+        "ollama/mistral:7b-instruct-v0.3-q4_K_M",
+    ]
 
 
 def test_an_unreadable_model_list_says_what_happened(monkeypatch):

@@ -1516,6 +1516,24 @@ body {
   flex: none;
 }
 
+/* The model picker. The catalogue is whatever the user's credentials reach,
+   so it is grouped by price band and searched rather than listed. */
+.model-picker { display: flex; flex-direction: column; gap: 14px; }
+.model-search { width: 100%; }
+.model-group { display: flex; flex-direction: column; gap: 8px; }
+.model-group-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 11px;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+.model-group-name { color: var(--ink-2); font-weight: 600; }
+.model-group .btn { align-self: flex-start; }
+
 /* Agent log. Not a terminal: it is a timeline, and the point is to read the
    reasoning, so time, kind and call arguments are all shown. Tool calls are
    collapsed by the renderer rather than here, because collapsing needs the

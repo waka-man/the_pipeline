@@ -302,8 +302,18 @@ def test_workspace_dir_honours_an_explicit_override(monkeypatch, tmp_path):
 
 
 def test_model_selection_does_not_depend_on_the_platform():
-    """Free-model ranking is a pure function of the catalogue."""
-    catalogue = {"openrouter": ["x/y:free", "nvidia/nemotron-3-ultra-550b-a55b:free"]}
+    """Model ranking is a pure function of the catalogue."""
+    catalogue = [
+        config.ModelFacts(provider="openrouter", model="x/y:free",
+                          input_price=0.0, output_price=0.0, context=100000,
+                          output_limit=65536, tools=True,
+                          inputs=("text",), outputs=("text",)),
+        config.ModelFacts(provider="openrouter",
+                          model="nvidia/nemotron-3-ultra-550b-a55b:free",
+                          input_price=0.0, output_price=0.0, context=100000,
+                          output_limit=65536, tools=True,
+                          inputs=("text",), outputs=("text",)),
+    ]
     first = config.pick_model(catalogue, prefer_free=True)
     for _ in range(5):
         assert str(config.pick_model(catalogue, prefer_free=True)) == str(first)

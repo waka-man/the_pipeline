@@ -29,7 +29,8 @@ from typing import Any, Callable
 import requests
 
 from ..canvas.spec import manual_only_criteria
-from ..config import budget_from_error
+from ..config import budget_from_error, model_facts
+from ..config import ModelFacts
 from ..models import (
     AssignmentSpec,
     Scorecard,
@@ -592,19 +593,18 @@ class OpenCodeServer:
         t.start()
         return t
 
-    def catalogue(self) -> dict[str, list[str]]:
-        """Model ids opencode can currently run, grouped by provider.
+    def catalogue(self) -> list[ModelFacts]:
+        """Every model opencode can currently run, with the facts needed to
+        choose between them.
 
         This is the pipeline's only view of available models. Model
         credentials live in opencode's auth store and are never read here.
         """
-        payload = self._models_payload()
-        out: dict[str, list[str]] = {}
-        for entry in payload:
-            pid = entry.get("providerID") or ""
-            mid = entry.get("modelID") or entry.get("id") or ""
-            if pid and mid:
-                out.setdefault(pid, []).append(mid)
+        out: list[ModelFacts] = []
+        for entry in self._models_payload():
+            facts = model_facts(entry)
+            if facts is not None:
+                out.append(facts)
         return out
 
     def _models_payload(self, attempts: int = 3) -> list[dict[str, Any]]:

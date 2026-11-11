@@ -149,10 +149,11 @@ def cmd_grade(args: argparse.Namespace) -> int:
     finally:
         probe_server.stop()
 
-    available = sum(len(v) for v in catalogue.values())
-    free = len(config.rank_free_models(catalogue.get("openrouter", [])))
-    print(f"opencode offers  {available} models across {len(catalogue)} providers "
-          f"({free} free)")
+    providers = sorted({f.provider for f in catalogue})
+    free = sum(1 for f in catalogue if f.free)
+    usable = len(config.rank_models(catalogue))
+    print(f"opencode offers  {len(catalogue)} models across {len(providers)} providers "
+          f"({free} free, {usable} the grader can use)")
 
     choice = config.pick_model(catalogue, args.model, prefer_free=not args.no_prefer_free)
     if choice is None:

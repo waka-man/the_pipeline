@@ -198,6 +198,9 @@ const S = {
   // Model for the next run only. Empty means 'use the saved default'.
   runModel: '',
   savedRuns: [],
+  // The model picker's search and how much of each tier is shown.
+  modelQuery: '',
+  modelShown: {},
   // The session being renamed in the saved-sessions panel, and the name
   // being typed. Renaming used to open a browser prompt, which looked like
   // another program's dialog in the middle of this one.
@@ -675,25 +678,15 @@ function viewSetup() {
           ? notice('No models available yet. Save a key above, then Refresh models.', 'flag')
           : null,
       S.model?.candidates?.length
-        ? h('div', { class: 'picklist', style: 'margin-top:12px' },
-            S.model.candidates.slice(0, 8).map((c) => {
-              const current = c.id === S.model.selected;
-              return h('button', {
-                class: 'pick', 'aria-selected': String(current),
-                onclick: async () => {
-                  const r = await guard(() => api.selectModel({ model: c.id }), 'Could not select model');
-                  if (r) { S.model = { ...S.model, ...r }; toast(`Grading model set to ${r.selected}.`); }
-                },
+        ? h('div', { style: 'margin-top:12px' },
+            modelPicker({
+              current: S.model.selected,
+              emptyText: 'No models match.',
+              searchId: 'model-search',
+              onPick: async (c) => {
+                const r = await guard(() => api.selectModel({ model: c.id }), 'Could not select model');
+                if (r) { S.model = { ...S.model, ...r }; toast(`Grading model set to ${r.selected}.`); }
               },
-                h('div', {},
-                  h('div', { class: 'pick-title' }, c.id),
-                  h('div', { class: 'pick-sub' },
-                    h('span', {}, c.provider),
-                    current && S.model.output_budget
-                      ? h('span', {}, `${fmt(S.model.output_budget)} token budget`) : null)),
-                h('div', { class: 'pick-meta' },
-                  current ? chip('current', 'ok') : null,
-                  chip(c.tier, c.tier === 'free' ? 'accent' : null)));
             }))
         : null),
 
@@ -881,10 +874,11 @@ function renderPanel() {
       'Model for the next run',
       cands.length ? `${cands.length} available` : null,
       cands.length
-        ? h('div', { class: 'picklist' }, cands.slice(0, 40).map((c) => h('button', {
-            class: 'pick',
-            'aria-selected': String(c.id === (S.runModel || S.model?.selected)),
-            onclick: () => {
+        ? modelPicker({
+            current: S.runModel || S.model?.selected,
+            emptyText: 'No models match.',
+            searchId: 'model-search-panel',
+            onPick: (c) => {
               // Picking the saved default clears the override instead of
               // setting one, which is what the "Use the saved default" button
               // did before the note became the only control.
@@ -895,12 +889,7 @@ function renderPanel() {
                 ? `Using the saved default for the next run.`
                 : `Next run grades with ${c.id}.`);
             },
-          },
-            h('div', {},
-              h('div', { class: 'pick-title' }, c.id),
-              h('div', { class: 'pick-sub' }, h('span', {}, c.provider))),
-            h('div', { class: 'pick-meta' },
-              chip(c.tier, c.tier === 'free' ? 'accent' : null)))))
+          })
         : h('div', { style: 'color:var(--ink-3);font-size:12px' },
             'No models available. Add an OpenRouter key on the setup step.')));
     return;
@@ -2090,6 +2079,93 @@ function sessionRow(r, resume, rerender) {
       h('span', { class: 'session-count' }, `${r.graded || 0}/${r.total || 0}`),
       h('span', { class: 'session-count-label' }, 'graded')),
     h('div', { class: 'session-actions' }, sessionActions(r, resume, rerender)));
+}
+
+/* The model picker: grouped by price band, free first, searchable, and
+   paged so three hundred models do not arrive as one wall. */
+const MODEL_GROUP_SIZE = 6;
+const TIER_LABELS = {
+  free: 'Free',
+  other: 'No price listed',
+  cheap: 'Cheap',
+  standard: 'Standard',
+  premium: 'Premium',
+};
+const TIER_ORDER = ['free', 'other', 'cheap', 'standard', 'premium'];
+
+function modelGroups() {
+  const all = S.model?.candidates || [];
+  const q = (S.modelQuery || '').trim().toLowerCase();
+  const matches = q
+    ? all.filter((c) => (c.id || '').toLowerCase().includes(q)
+      || (c.name || '').toLowerCase().includes(q)
+      || (c.provider || '').toLowerCase().includes(q))
+    : all;
+  const groups = [];
+  for (const c of matches) {
+    const tier = TIER_ORDER.includes(c.tier) ? c.tier : 'other';
+    let g = groups.find((x) => x.tier === tier);
+    if (!g) { g = { tier, items: [] }; groups.push(g); }
+    g.items.push(c);
+  }
+  return groups;
+}
+
+function modelPrice(c) {
+  if (c.price_out === null || c.price_out === undefined) return '';
+  if (!c.price_out) return 'free';
+  const money = (n) => (n >= 1 ? `$${n}` : `$${n.toFixed(2)}`);
+  return c.price_in ? `${money(c.price_in)} / ${money(c.price_out)} per M` : '';
+}
+
+function modelRow(c, { current, onPick }) {
+  return h('button', {
+    class: 'pick', 'aria-selected': String(current),
+    onclick: () => onPick(c),
+  },
+    h('div', {},
+      h('div', { class: 'pick-title' }, c.id),
+      h('div', { class: 'pick-sub' },
+        c.name && c.name !== c.id ? h('span', {}, c.name) : null,
+        modelPrice(c) ? h('span', {}, modelPrice(c)) : null,
+        c.context ? h('span', {}, `${Math.round(c.context / 1000)}k ctx`) : null,
+        c.reads && c.reads.length
+          ? h('span', {}, `reads ${c.reads.join(', ')}`) : null)),
+    h('div', { class: 'pick-meta' },
+      current ? chip('current', 'ok') : null));
+}
+
+function modelPicker({ current, onPick, emptyText, searchId }) {
+  const groups = modelGroups();
+  if (!groups.length) {
+    return h('div', { class: 'hint', style: 'padding:10px 2px' }, emptyText);
+  }
+  return h('div', { class: 'model-picker' },
+    h('input', {
+      class: 'input model-search', id: searchId || 'model-search', type: 'search',
+      placeholder: 'Search models by name or provider…',
+      value: S.modelQuery || '',
+      oninput: (e) => { S.modelQuery = e.target.value; render(); },
+    }),
+    groups.map((g) => {
+      const shown = S.modelShown?.[g.tier] || MODEL_GROUP_SIZE;
+      const visible = g.items.slice(0, shown);
+      const rest = g.items.length - visible.length;
+      return h('div', { class: 'model-group' },
+        h('div', { class: 'model-group-head' },
+          h('span', { class: 'model-group-name' }, TIER_LABELS[g.tier] || g.tier),
+          h('span', { class: 'dim' }, `${g.items.length}`)),
+        h('div', { class: 'picklist' }, visible.map((c) => modelRow(c, { current: current === c.id, onPick }))),
+        rest > 0
+          ? h('button', {
+              class: 'btn', 'data-size': 'sm', 'data-variant': 'ghost',
+              onclick: () => {
+                S.modelShown = { ...(S.modelShown || {}), [g.tier]: shown + MODEL_GROUP_SIZE };
+                render();
+              },
+            }, `Show more (${rest} more)`)
+          : null);
+    }));
 }
 
 /** The launcher: recent gradings, pick one. */

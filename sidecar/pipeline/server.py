@@ -690,15 +690,36 @@ def op_models(state: AppState) -> dict[str, Any]:
     state.catalogue = catalogue
     candidates = config.candidates_from_catalogue(
         catalogue, prefer_free=state.settings.model != "no-prefer-free")
+    facts = {f.id: f for f in catalogue}
+    # Every model the grader could use, grouped by price band for the picker.
+    # The whole list goes out: the catalogue is large and the picker searches
+    # and pages through it.
+    listed = []
+    for c in candidates:
+        f = facts.get(f"{c.provider}/{c.model}")
+        listed.append({
+            "id": f"{c.provider}/{c.model}",
+            "provider": c.provider,
+            "model": c.model,
+            "name": f.name if f else c.model,
+            "tier": c.tier,
+            "price_in": f.input_price if f else None,
+            "price_out": f.output_price if f else None,
+            "context": f.context if f else 0,
+            "reads": list(f.inputs) if f else [],
+        })
+    by_provider: dict[str, int] = {}
+    for f in catalogue:
+        by_provider[f.provider] = by_provider.get(f.provider, 0) + 1
     return {
-        "providers": sorted(catalogue.keys()),
-        "counts": {k: len(v) for k, v in catalogue.items()},
-        "free_count": len(config.rank_free_models(catalogue.get("openrouter", []))),
+        "providers": sorted(by_provider),
+        "counts": by_provider,
+        "total": len(catalogue),
+        "usable": len(listed),
         "selected": str(state.choice) if state.choice else None,
         "tier": state.choice.tier if state.choice else None,
         "output_budget": state.choice.max_output_tokens if state.choice else None,
-        "candidates": [{"id": f"{c.provider}/{c.model}", "provider": c.provider,
-                        "model": c.model, "tier": c.tier} for c in candidates[:40]],
+        "candidates": listed,
     }
 
 
