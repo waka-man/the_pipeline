@@ -8,19 +8,47 @@ services:
     ports:
       - "127.0.0.1:8765:8765"
     volumes:
-      # Database, secrets, and collected workspaces live here and survive
-      # image rebuilds and container removal.
-      - grading-data:/data
+      # The desktop app's data directory. It holds the database with the
+      # saved sessions, the Canvas settings, the rendered reports and the
+      # opencode sessions, so sharing it is what lets this version pick up a
+      # session the installed app started, and the other way round.
+      #
+      # The default is the Linux path. macOS keeps it in
+      #   ~/Library/Application Support/Grading Pipeline
+      # and Windows in the AppData\Roaming\Grading Pipeline folder.
+      # Set GRADING_PIPELINE_HOST_DATA in .env for those two.
+      - type: bind
+        source: ${GRADING_PIPELINE_HOST_DATA:-~/.config/Grading Pipeline}
+        target: /data
+      # The workspace, mounted at the very same absolute path it has on the
+      # host. The database records absolute paths to the collected
+      # submissions and the rendered reports, so both versions have to agree
+      # on where those are.
+      - type: bind
+        source: ${GRADING_PIPELINE_HOST_WORKSPACE:-${HOME}/grading-pipeline-workspace}
+        target: ${GRADING_PIPELINE_HOST_WORKSPACE:-${HOME}/grading-pipeline-workspace}
     restart: unless-stopped
     environment:
+      # Where the collected submissions and reports are written. The same
+      # path as on the host, for the reason given above.
+      GRADING_PIPELINE_WORKSPACE: ${GRADING_PIPELINE_HOST_WORKSPACE:-${HOME}/grading-pipeline-workspace}
+      # The opencode runtime is a platform binary and stays in the container:
+      # the one the desktop app downloaded is not the one this container can
+      # run.
+      GRADING_PIPELINE_RUNTIME_HOME: /runtime
+      # opencode's own data directory, shared with the desktop app, so both
+      # versions see the same model credentials and the same agent sessions.
+      XDG_DATA_HOME: /data/opencode-home
       # Credentials. In the browser UI they can also be saved on the Setup
-      # step; env vars are the headless/Docker route and take precedence.
-      # Copy the values into a .env file next to this compose file, or
-      # export them before `docker compose up`. Free OpenRouter models
-      # work without a key.
+      # step; env vars are the headless/Docker route and are used when
+      # nothing is saved yet. Copy the values into a .env file next to this
+      # compose file, or export them before `docker compose up`. Free
+      # OpenRouter models work without a key.
+      #
+      # A Canvas token saved by the desktop app lives in the OS keychain,
+      # which a container cannot reach. When the host has no keychain the
+      # token is in the shared secrets.json and is picked up as it is; when
+      # it does, put the token here.
       GRADING_PIPELINE_CANVAS_BASE_URL: ${GRADING_PIPELINE_CANVAS_BASE_URL:-}
       GRADING_PIPELINE_CANVAS_API_TOKEN: ${GRADING_PIPELINE_CANVAS_API_TOKEN:-}
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
-
-volumes:
-  grading-data:

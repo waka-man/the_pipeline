@@ -31,6 +31,7 @@ import requests
 from ..canvas.spec import manual_only_criteria
 from ..config import budget_from_error, model_facts
 from ..config import ModelFacts
+from ..config import runtime_home
 from ..models import (
     AssignmentSpec,
     Scorecard,
@@ -195,8 +196,7 @@ class OpenCodeServer:
         # ever being rewritten on disk.
         try:
             from ..runtime import RuntimeLayout, resolve_binary
-            layout = RuntimeLayout(Path(
-                os.environ.get("GRADING_PIPELINE_HOME", Path.home())))
+            layout = RuntimeLayout(runtime_home())
             chosen, _source = resolve_binary(layout, override)
             self.binary = chosen
         except Exception:
@@ -725,6 +725,11 @@ class Grader:
         # time it lands the loop is inside an attempt and would otherwise go
         # straight on to the retry.
         self.should_stop = should_stop or (lambda _row_id: False)
+        # The attempts this grader made. The job settles the rows it was
+        # working on when it ends, and the list is what tells it which rows
+        # were its own: the database can be shared with another version of
+        # the app, which may be marking a row of the same run.
+        self.attempt_ids: list[int] = []
 
     # ------------------------------------------------------------ helpers
 
@@ -911,6 +916,7 @@ class Grader:
                 return GradeResult(submission_row_id, self._session_by_row.get(
                     submission_row_id, ""), attempt_no, "stopped")
             attempt_id = self.store.start_attempt(submission_row_id, self.model or None)
+            self.attempt_ids.append(attempt_id)
             # Each attempt starts with no scorecard on disk, so a leftover
             # from an earlier attempt cannot be mistaken for this one.
             for stale in (out_path, meta_path):

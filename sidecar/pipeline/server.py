@@ -152,6 +152,10 @@ class AppState:
     # before starting the next attempt for that row. Not a job-wide stop: the
     # rest of the cohort carries on.
     stopped_rows: set[int] = field(default_factory=set)
+    # The attempts the running grading job made, so that when it ends it can
+    # settle its own rows and leave the ones another version of the app is
+    # marking alone.
+    job_attempts: dict[str, list[int]] = field(default_factory=dict)
     # The bundled agent runtime: what is installed, what npm has, and staging a
     # newer one. None until serve() builds it, so the test suite never reaches
     # for the network on its own.
@@ -171,11 +175,12 @@ class AppState:
         job it is not happening any more.
         """
         run_id = self.job_runs.pop(name, None)
+        attempts = self.job_attempts.pop(name, None)
         if name != "grade" or run_id is None:
             return
         try:
             self.store.set_run_status(run_id, _settled_status(self.store, run_id))
-            self.store.finish_stale_grading(run_id)
+            self.store.finish_stale_grading(run_id, attempts)
         except Exception as exc:  # pragma: no cover - a stale marker is not fatal
             print(f"could not settle run {run_id}: {exc}", flush=True)
 
@@ -1050,6 +1055,9 @@ def op_grade(state: AppState, run_id: int, body: dict[str, Any]) -> dict[str, An
                         # Checked before every attempt, so Stop lands even when
                         # it arrives while a turn is already running.
                         should_stop=lambda rid: rid in state.stopped_rows)
+        # Which rows this job touched, so that settling them at the end does
+        # not disturb a row another version of the app is marking.
+        state.job_attempts["grade"] = grader.attempt_ids
         rows = store.submissions_with_status(
             run_id, ("collected", "failed", "needs_review", "grading"))
         if body.get("only_pending"):
@@ -1900,7 +1908,7 @@ def serve(port: int = 0, host: str = "127.0.0.1") -> tuple[ThreadingHTTPServer, 
     # only moment the version is allowed to change: nothing is mid-submission,
     # so two students of the same cohort cannot be graded by different builds.
     from .runtime import RuntimeManager
-    state.runtime = RuntimeManager(settings.data,
+    state.runtime = RuntimeManager(config.runtime_home(),
                                    os.environ.get("GRADING_PIPELINE_OPENCODE", "").strip())
     try:
         state.runtime.promote()

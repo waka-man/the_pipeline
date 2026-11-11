@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from contextlib import contextmanager
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -354,7 +355,7 @@ class Store:
             db.execute("UPDATE runs SET status=?, updated_at=? WHERE id=?",
                        (status, utcnow(), run_id))
 
-    def reset_stale_grading(self) -> dict[str, int]:
+    def reset_stale_grading(self, max_age_minutes: int = 60) -> dict[str, int]:
         """Undo a grading that was interrupted by a crash or a restart.
 
         A row is marked `grading` while the agent works on it and moved on
@@ -362,42 +363,68 @@ class Store:
         moves it again: the row says it is being graded for ever, and the
         cohort's progress is wrong.
 
-        No grading can be in flight before the sidecar has started, so at
-        startup every such row is stale. A row that already carries a valid
-        scorecard goes back to `graded`; one that does not is simply collected
-        again, ready to be marked.
+        Only rows that cannot be in flight are touched. The database is
+        shared between the versions of the app — the desktop app and the
+        container can have the same file open — and one of them starting up
+        must not clear the rows the other one is grading right now. A row is
+        in flight while its last attempt started less than `max_age_minutes`
+        ago; an older attempt was abandoned, because the process that made
+        it is long gone.
         """
+        cutoff = (datetime.now(timezone.utc)
+                  - timedelta(minutes=max_age_minutes)).isoformat(timespec="seconds")
         with self.connect() as db:
             cur = db.execute(
                 "UPDATE submissions SET status = CASE WHEN EXISTS ("
                 "  SELECT 1 FROM scorecards sc WHERE sc.submission_row_id = "
                 "  submissions.id AND sc.status='valid')"
                 "  THEN 'graded' ELSE 'collected' END "
-                "WHERE status='grading'")
+                "WHERE status='grading' "
+                "  AND id NOT IN (SELECT submission_row_id FROM attempts "
+                "                  WHERE started_at > ?)", (cutoff,))
             rows = cur.rowcount
+            # A run is only stale once none of its rows is being graded: the
+            # other version of the app may be working through the same cohort.
             cur = db.execute(
                 "UPDATE runs SET status = CASE WHEN EXISTS ("
                 "  SELECT 1 FROM submissions s WHERE s.run_id = runs.id "
                 "  AND s.status IN ('graded','reviewed','needs_review'))"
                 "  THEN 'partly_graded' ELSE 'collected' END "
-                "WHERE status='grading'")
+                "WHERE status='grading' "
+                "  AND NOT EXISTS (SELECT 1 FROM submissions s "
+                "                  WHERE s.run_id = runs.id AND s.status='grading')")
             runs = cur.rowcount
         return {"rows": rows, "runs": runs}
 
-    def finish_stale_grading(self, run_id: int) -> int:
+    def finish_stale_grading(self, run_id: int,
+                             attempt_ids: list[int] | None = None) -> int:
         """Rows of one run still marked `grading` after its job ended.
 
         The job was interrupted in the middle of them. Nothing is marking
         them any more, so they go back to the collected rows, ready to be
         graded again.
+
+        When the attempts of this job are known, only the rows whose last
+        attempt is one of them are settled. The database can be shared, and
+        the other version of the app may be marking a row of the same run
+        right now: that row is not ours to clear.
         """
+        sql = (
+            "UPDATE submissions SET status = CASE WHEN EXISTS ("
+            "  SELECT 1 FROM scorecards sc WHERE sc.submission_row_id = "
+            "  submissions.id AND sc.status='valid')"
+            "  THEN 'graded' ELSE 'collected' END "
+            "WHERE run_id=? AND status='grading'")
+        params: list[Any] = [run_id]
+        if attempt_ids:
+            marks = ",".join("?" for _ in attempt_ids)
+            sql += (" AND id IN (SELECT submission_row_id FROM attempts a "
+                    "WHERE a.id = (SELECT MAX(b.id) FROM attempts b "
+                    "             WHERE b.submission_row_id = a.submission_row_id)"
+                    f" AND a.id IN ({marks}))")
+            params.extend(int(a) for a in attempt_ids)
         with self.connect() as db:
-            cur = db.execute(
-                "UPDATE submissions SET status = CASE WHEN EXISTS ("
-                "  SELECT 1 FROM scorecards sc WHERE sc.submission_row_id = "
-                "  submissions.id AND sc.status='valid')"
-                "  THEN 'graded' ELSE 'collected' END "
-                "WHERE run_id=? AND status='grading'", (run_id,))
+            cur = db.execute(sql, params)
             return cur.rowcount
 
     def set_run_model(self, run_id: int, model: str) -> None:

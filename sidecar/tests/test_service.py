@@ -198,6 +198,52 @@ def test_a_row_that_was_graded_before_is_not_ungraded_by_the_reset(store, spec):
     assert store.submissions_for_run(run_id)[0]["status"] == "graded"
 
 
+def test_a_grading_in_flight_is_left_alone_by_the_reset(store, spec):
+    """The database can be shared, so a startup must not clear live work.
+
+    The container and the desktop app can have the same database open. One
+    of them starting up must not undo the rows the other one is grading
+    right now, or the cohort's progress goes wrong under the person who is
+    watching it.
+    """
+    run_id = store.upsert_run(spec)
+    store.replace_submissions(run_id, [unit(), unit(canvas_submission_id=2, student_name="B")])
+    store.set_submission_status(1, "grading")
+    store.set_submission_status(2, "grading")
+    store.set_run_status(run_id, "grading")
+    # One row is being graded right now; the other was abandoned an hour ago.
+    store.start_attempt(1, "some/model")
+    with store.connect() as db:
+        db.execute("INSERT INTO attempts (submission_row_id, n, model, started_at, status)"
+                   " VALUES (2, 1, 'some/model', ?, 'running')",
+                   ("2020-01-01T00:00:00+00:00",))
+
+    cleared = store.reset_stale_grading()
+    assert cleared == {"rows": 1, "runs": 0}, cleared
+    statuses = {int(r["id"]): r["status"] for r in store.submissions_for_run(run_id)}
+    assert statuses[1] == "grading", statuses
+    assert statuses[2] == "collected", statuses
+    # The run is still being graded, so it keeps its marker.
+    assert store.get_run(run_id)["status"] == "grading"
+
+
+def test_settling_a_job_leaves_another_jobs_rows_alone(store, spec):
+    """When a grading job ends it settles its own rows, not everybody's."""
+    run_id = store.upsert_run(spec)
+    store.replace_submissions(run_id, [unit(), unit(canvas_submission_id=2, student_name="B")])
+    store.set_submission_status(1, "grading")
+    store.set_submission_status(2, "grading")
+    mine = store.start_attempt(1, "some/model")
+    theirs = store.start_attempt(2, "some/model")
+
+    cleared = store.finish_stale_grading(run_id, [mine])
+    assert cleared == 1, cleared
+    statuses = {int(r["id"]): r["status"] for r in store.submissions_for_run(run_id)}
+    assert statuses[1] == "collected", statuses
+    assert statuses[2] == "grading", statuses
+    assert theirs != mine
+
+
 def test_only_the_valid_scorecard_is_returned(store, spec):
     run_id = store.upsert_run(spec)
     store.replace_submissions(run_id, [unit()])

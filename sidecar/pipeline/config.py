@@ -47,6 +47,19 @@ def workspace_dir() -> Path:
     return Path(override) if override else (Path.home() / "grading-pipeline-workspace")
 
 
+def runtime_home() -> Path:
+    """Where the managed opencode runtime is kept.
+
+    Its own directory rather than the data directory, because the runtime is
+    a platform binary: the one a desktop app downloaded is not the one a
+    container can run. Sharing the data directory would have the container
+    pick up a binary built for a different operating system and refuse to
+    start.
+    """
+    override = os.environ.get("GRADING_PIPELINE_RUNTIME_HOME", "").strip()
+    return Path(override) if override else data_dir()
+
+
 def secrets_file() -> Path:
     return data_dir() / "secrets.json"
 

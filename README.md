@@ -80,22 +80,62 @@ docker compose up --build
 
 - The port is bound to `127.0.0.1` only. The sidecar holds your Canvas token
   and model key and has no login of its own, so never publish it on `0.0.0.0`.
-- Credentials via environment (the Setup step in the browser also works and
-  takes second place to env vars):
-  ```sh
-  export GRADING_PIPELINE_CANVAS_BASE_URL=https://school.instructure.com
-  export GRADING_PIPELINE_CANVAS_API_TOKEN=...   # Canvas user token
-  export OPENROUTER_API_KEY=...                  # optional for free models
-  docker compose up --build
-  ```
-  Without them the app starts but Canvas calls fail with a missing-credentials
-  error naming the exact variables.
-- Data (database, secrets, collected workspaces) lives in the named volume
-  `grading-data` and survives rebuilds. Remove it with
-  `docker compose down -v` only if you want a clean slate.
 - Needs Docker Desktop (macOS/Windows) or Docker Engine (Linux). Works on
   Apple Silicon, Intel, and Windows/WSL2 alike — there is one image.
 - Without Docker, use the CLI or the desktop installer above.
+
+#### It shares the data with the installed app
+
+The container mounts the desktop app's data directory and its workspace, so
+the two versions are the same app with the same history: a session you
+started in the installed app is waiting for you in the container, and a
+session you started in the container is waiting for you in the installed
+app. The reports, the collected submissions and the model credentials are
+one set of files.
+
+- The data directory is the one the installed app uses. On Linux that is
+  `~/.config/Grading Pipeline`; on macOS it is
+  `~/Library/Application Support/Grading Pipeline`; on Windows it is the
+  `AppData\Roaming\Grading Pipeline` folder. The default in `compose.yaml` is
+  the Linux path, so on macOS and Windows put the right one in a `.env` file
+  next to `compose.yaml` (`.env.example` lists the settings):
+  ```sh
+  GRADING_PIPELINE_HOST_DATA=~/Library/Application\ Support/Grading\ Pipeline
+  ```
+- The workspace is mounted at the same absolute path it has on the host
+  (`~/grading-pipeline-workspace`), because the database records absolute
+  paths to the collected submissions and the rendered reports. Set
+  `GRADING_PIPELINE_HOST_WORKSPACE` in `.env` to move it.
+- The container takes the identity of the owner of that directory, so the
+  files it writes can still be written by the installed app afterwards.
+- A Canvas token saved by the installed app usually lives in the OS
+  keychain, which a container cannot reach. On a host without a keychain the
+  token is in the shared `secrets.json` and is picked up as it is; when the
+  host has one, put the token in `.env` next to `compose.yaml`:
+  ```sh
+  GRADING_PIPELINE_CANVAS_BASE_URL=https://school.instructure.com
+  GRADING_PIPELINE_CANVAS_API_TOKEN=...
+  OPENROUTER_API_KEY=...        # optional, the free models work without it
+  ```
+  Without them the app starts but Canvas calls fail with a missing-credentials
+  error naming the exact variables.
+- The opencode runtime stays inside the container: it is a platform binary,
+  and the one the installed app downloaded is not the one a container can run.
+- Two versions writing the same run at the same time will fight over it.
+  Run one of them at a time.
+
+#### Your own opencode account
+
+The container reads opencode's data from the shared directory, so it uses
+the model credentials the installed app has. To give it the credentials of
+your own opencode install — a Go subscription, GitHub Copilot — log in once
+against that same directory:
+
+```sh
+XDG_DATA_HOME="$HOME/.config/Grading Pipeline/opencode-home" opencode auth login
+```
+
+Both versions see the account afterwards.
 
 #### Installing on macOS
 

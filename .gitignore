@@ -6,6 +6,9 @@ apps/desktop/node_modules/
 apps/desktop/dist/
 *.log
 
+# Local deployment settings: they hold the Canvas token.
+.env
+
 # Build artefacts
 *.egg-info/
 build/

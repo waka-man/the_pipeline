@@ -301,6 +301,21 @@ def test_workspace_dir_honours_an_explicit_override(monkeypatch, tmp_path):
     assert config.workspace_dir() == tmp_path / "ws"
 
 
+def test_the_runtime_home_can_be_kept_apart_from_the_data(monkeypatch, tmp_path):
+    """The opencode runtime is a platform binary and cannot be shared.
+
+    The desktop app downloads a runtime for the machine it runs on. A
+    container that adopted it would run a binary built for another operating
+    system, and opencode would not start at all.
+    """
+    monkeypatch.setenv("GRADING_PIPELINE_HOME", str(tmp_path / "data"))
+    monkeypatch.delenv("GRADING_PIPELINE_RUNTIME_HOME", raising=False)
+    assert config.runtime_home() == tmp_path / "data"
+
+    monkeypatch.setenv("GRADING_PIPELINE_RUNTIME_HOME", str(tmp_path / "runtime"))
+    assert config.runtime_home() == tmp_path / "runtime"
+
+
 def test_model_selection_does_not_depend_on_the_platform():
     """Model ranking is a pure function of the catalogue."""
     catalogue = [
