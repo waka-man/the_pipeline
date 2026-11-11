@@ -64,6 +64,38 @@ def secrets_file() -> Path:
     return data_dir() / "secrets.json"
 
 
+def opencode_data_home() -> Path:
+    """The directory opencode keeps its data in.
+
+    opencode reads XDG_DATA_HOME, and falls back to the convention of the
+    platform: ~/Library/Application Support on macOS, %APPDATA% on Windows,
+    ~/.local/share everywhere else.
+    """
+    override = os.environ.get("XDG_DATA_HOME", "").strip()
+    if override:
+        return Path(override)
+    if platform.system() == "Windows":
+        return Path(os.environ.get("APPDATA",
+                                   Path.home() / "AppData" / "Roaming"))
+    if platform.system() == "Darwin":
+        return Path.home() / "Library" / "Application Support"
+    return Path.home() / ".local" / "share"
+
+
+def opencode_store() -> Path | None:
+    """The opencode store of the person using the app, when they have one.
+
+    The accounts someone signed into live in that store — a Go subscription,
+    GitHub Copilot — and with them the models they pay for. The app used to
+    keep a store of its own, which is exactly why those models were
+    invisible to it: it never looked where the account was.
+    """
+    store = opencode_data_home() / "opencode"
+    if (store / "opencode.db").exists() or (store / "auth.json").exists():
+        return store
+    return None
+
+
 SECRET_KEYS = ("canvas_base_url", "canvas_api_token", "openrouter_api_key")
 
 
@@ -208,6 +240,16 @@ class ModelFacts:
     def free(self) -> bool:
         return self.output_price == 0
 
+    @property
+    def alias(self) -> bool:
+        """Whether this entry points at another model rather than being one.
+
+        opencode names a rolling pointer to a model with a tilde
+        ("~openai/gpt-sol-latest"). It is the same model under another name,
+        so it has no place at the front of a list of models to choose from.
+        """
+        return self.model.startswith("~")
+
 
 def model_facts(entry: dict[str, Any]) -> ModelFacts | None:
     """Read one entry of opencode's model catalogue.
@@ -303,10 +345,16 @@ def rank_models(facts: list[ModelFacts], budget: int = DEFAULT_OUTPUT_BUDGET,
     """Order the models the grader can use.
 
     Cheap first, because a grading run spends money and the free models are
-    good enough for most of it. Within a price band the biggest context
-    wins, then the model that can read what the student actually submitted
-    (a PDF, a screenshot), then the newest. The order is a pure function of
-    the catalogue, so it does not shuffle between refreshes.
+    good enough for most of it. Within a price band the model that can
+    actually read what a student submitted comes first — a PDF, a
+    screenshot, not just text — then the newest generation, then the more
+    expensive variant of that generation (the pro rather than its cut-down
+    sibling), then the biggest context. A rolling pointer to another model
+    ("~openai/gpt-sol-latest") is the same model under another name, so it
+    waits at the back of its band rather than taking a place of its own.
+
+    The order is a pure function of the catalogue, so it does not shuffle
+    between refreshes.
     """
     usable = [f for f in facts if can_grade(f, budget)]
 
@@ -316,7 +364,8 @@ def rank_models(facts: list[ModelFacts], budget: int = DEFAULT_OUTPUT_BUDGET,
         if not prefer_free and tier == "free":
             order = len(TIER_ORDER)
         rich = sum(1 for kind in ("pdf", "image") if kind in f.inputs)
-        return (order, -f.context, -rich, -f.released, f.model)
+        return (order, 1 if f.alias else 0, -rich, -f.released,
+                -(f.output_price or 0.0), -f.context, f.model)
 
     usable.sort(key=key)
     return usable

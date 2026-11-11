@@ -27,6 +27,17 @@ services:
       - type: bind
         source: ${GRADING_PIPELINE_HOST_WORKSPACE:-${HOME}/grading-pipeline-workspace}
         target: ${GRADING_PIPELINE_HOST_WORKSPACE:-${HOME}/grading-pipeline-workspace}
+      # The person's own opencode store. The accounts they signed into live
+      # there — a Go subscription, GitHub Copilot — and with them the models
+      # they pay for.
+      - type: bind
+        source: ${GRADING_PIPELINE_HOST_OPENCODE:-~/.local/share/opencode}
+        target: /host-opencode/opencode
+      # And the opencode configuration, which is where a provider the person
+      # added themselves is defined.
+      - type: bind
+        source: ${GRADING_PIPELINE_HOST_OPENCODE_CONFIG:-~/.config/opencode}
+        target: /host-config/opencode
     restart: unless-stopped
     environment:
       # Where the collected submissions and reports are written. The same
@@ -36,9 +47,10 @@ services:
       # the one the desktop app downloaded is not the one this container can
       # run.
       GRADING_PIPELINE_RUNTIME_HOME: /runtime
-      # opencode's own data directory, shared with the desktop app, so both
-      # versions see the same model credentials and the same agent sessions.
-      XDG_DATA_HOME: /data/opencode-home
+      # opencode reads its accounts from here: the store of the person using
+      # the app, mounted above.
+      XDG_DATA_HOME: /host-opencode
+      XDG_CONFIG_HOME: /host-config
       # Credentials. In the browser UI they can also be saved on the Setup
       # step; env vars are the headless/Docker route and are used when
       # nothing is saved yet. Copy the values into a .env file next to this

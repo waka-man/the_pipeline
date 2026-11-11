@@ -486,6 +486,47 @@ def test_a_model_with_no_price_listed_is_not_called_free():
     assert choice.model == "z-ai/glm-5.2"
 
 
+def test_the_strongest_model_in_a_band_comes_first():
+    """Within a price band the list leads with the one worth picking.
+
+    The catalogue does not say which model is better, so the facts it does
+    give are used in order of how much they say: a model that can read what
+    a student submitted (a PDF, a screenshot), then the newest generation,
+    then the bigger context.
+    """
+    catalogue = [
+        _facts("openrouter", "older-text-only", released=1000),
+        _facts("openrouter", "newer-text-only", released=2000),
+        _facts("openrouter", "reads-pdfs", released=1000, inputs=("text", "pdf")),
+    ]
+    ranked = config.rank_models(catalogue)
+    assert [f.model for f in ranked] == [
+        "reads-pdfs", "newer-text-only", "older-text-only"]
+
+
+def test_the_newest_generation_leads_its_band():
+    catalogue = [
+        _facts("openrouter", "last-year", released=1000, output_price=5.0),
+        _facts("openrouter", "this-year", released=2000, output_price=5.0),
+    ]
+    ranked = config.rank_models(catalogue)
+    assert ranked[0].model == "this-year"
+
+
+def test_a_rolling_pointer_waits_at_the_back_of_its_band():
+    """A pointer to another model is the same model under another name.
+
+    opencode names it with a tilde ("~openai/gpt-sol-latest"). Listing it
+    among the models takes a place that a real model could have used.
+    """
+    catalogue = [
+        _facts("openrouter", "~openai/gpt-sol-latest", released=2000),
+        _facts("openrouter", "openai/gpt-sol", released=1000),
+    ]
+    ranked = config.rank_models(catalogue)
+    assert [f.model for f in ranked] == ["openai/gpt-sol", "~openai/gpt-sol-latest"]
+
+
 def test_pick_model_rejects_unavailable_explicit_model():
     with pytest.raises(RuntimeError, match="not available"):
         config.pick_model([_facts("openrouter", "a/b")], preferred="nope/nope")

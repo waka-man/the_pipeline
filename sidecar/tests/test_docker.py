@@ -80,10 +80,18 @@ def test_the_opencode_runtime_stays_inside_the_container():
     assert env["GRADING_PIPELINE_RUNTIME_HOME"] != "/data"
 
 
-def test_opencode_looks_in_the_shared_directory():
-    """Both versions read the same model credentials and agent sessions."""
+def test_opencode_reads_the_store_of_the_person_using_it():
+    """The accounts they signed into are the models they pay for.
+
+    opencode keeps them in a store of their own, and both versions read
+    that one: the container has it mounted, and the desktop app reads it
+    where it is.
+    """
     env = _service()["environment"]
-    assert env["XDG_DATA_HOME"] == "/data/opencode-home", env
+    assert env["XDG_DATA_HOME"] == "/host-opencode", env
+    mounted = [m for m in _mounts() if m["target"] == "/host-opencode/opencode"]
+    assert mounted, "the person's opencode store is not mounted"
+    assert "opencode" in mounted[0]["source"], mounted[0]["source"]
 
 
 def test_the_container_becomes_the_host_user(monkeypatch):

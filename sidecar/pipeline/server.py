@@ -487,13 +487,21 @@ class AppState:
             # opencode reads this directly, so it works regardless of how it
             # resolves its data directory on a given platform.
             extra["OPENROUTER_API_KEY"] = key
-            data_home = self.settings.data / "opencode-home"
-            try:
+        if config.opencode_store() is not None:
+            # The person has an opencode of their own, and the accounts in it
+            # are the models they pay for. Reading that store is what makes
+            # them available here; the key above rides alongside it.
+            return extra
+        # No opencode of their own: keep a store of the app's own, with the
+        # key in it, so the models are still there.
+        data_home = self.settings.data / "opencode-home"
+        try:
+            if key:
                 config.write_opencode_auth(key, data_home)
-                extra["XDG_DATA_HOME"] = str(data_home)
-            except OSError:
-                # The env var alone is enough; the auth file is belt and braces.
-                pass
+            extra["XDG_DATA_HOME"] = str(data_home)
+        except OSError:
+            # The env var alone is enough; the auth file is belt and braces.
+            pass
         return extra
 
     def stop_opencode(self) -> None:
@@ -716,11 +724,16 @@ def op_models(state: AppState) -> dict[str, Any]:
     by_provider: dict[str, int] = {}
     for f in catalogue:
         by_provider[f.provider] = by_provider.get(f.provider, 0) + 1
+    store = config.opencode_store()
     return {
         "providers": sorted(by_provider),
         "counts": by_provider,
         "total": len(catalogue),
         "usable": len(listed),
+        # Where the models come from: the accounts in the person's own
+        # opencode, or the key this app was given.
+        "account_source": "own" if store else "app",
+        "store": str(store) if store else None,
         "selected": str(state.choice) if state.choice else None,
         "tier": state.choice.tier if state.choice else None,
         "output_budget": state.choice.max_output_tokens if state.choice else None,

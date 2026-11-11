@@ -1519,7 +1519,9 @@ body {
 /* The model picker. The catalogue is whatever the user's credentials reach,
    so it is grouped by price band and searched rather than listed. */
 .model-picker { display: flex; flex-direction: column; gap: 14px; }
-.model-search { width: 100%; }
+.model-search-row { display: flex; align-items: center; gap: 8px; }
+.model-search-row .model-search { flex: 1 1 0; width: auto; min-width: 0; }
+.model-empty { padding: 10px 2px; }
 .model-group { display: flex; flex-direction: column; gap: 8px; }
 .model-group-head {
   display: flex;

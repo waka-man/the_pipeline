@@ -93,6 +93,14 @@ const stubState = {
   noRunYet: false,
   // Whether a key is stored. The setup card offers to remove it when one is.
   keySaved: false,
+  // The candidates the model picker is given. Two by default; a test that
+  // needs a whole band of them sets its own.
+  candidates: [
+    { id: 'm1', name: 'cheap', provider: 'openrouter', tier: 'free' },
+    { id: 'm2', name: 'strong', provider: 'openrouter', tier: 'paid' },
+  ],
+  // Where the models come from, as the sidecar reports it.
+  accountSource: 'own',
   progress: { total: 3, collected: 1, pending: 1, collecting: 1, no_submission: 0,
               collect_failed: 0, graded: 1, needs_review: 0 },
 };
@@ -159,16 +167,16 @@ function stubApi() {
     // cards can react to what was actually stored.
     saveSettings: rec('saveSettings', { ok: true, canvas_configured: true,
                                        model_key_configured: true }),
-    models: rec('models', {
+    models: rec('models', () => ({
       selected: 'm1',
       tier: 'free',
       output_budget: 4096,
+      // Where the models come from: the accounts in the person's own
+      // opencode, or the key this app was given.
+      account_source: stubState.accountSource,
       // Two candidates, so "pick a different model for this run" is testable.
-      candidates: [
-        { id: 'm1', name: 'cheap', provider: 'openrouter', tier: 'free' },
-        { id: 'm2', name: 'strong', provider: 'openrouter', tier: 'paid' },
-      ],
-    }),
+      candidates: stubState.candidates,
+    })),
     selectModel: rec('selectModel', { selected: 'm1' }),
     courses: rec('courses', { courses: COURSES }),
     assignments: rec('assignments', { assignments: ASSIGNMENTS }),
@@ -2230,6 +2238,74 @@ await test('no handler threw while every button was clicked', () => {
     assert.ok(sent, 'nothing was published');
     assert.match(sent, /Rewritten for the student/,
       `the edit did not travel with the publish: ${sent}`);
+  });
+
+  // The models of the account the person signed into are the ones they pay
+  // for, so the setup says where they came from.
+  await test('the setup says when the models come from the person own opencode',
+    async () => {
+      const { window } = await reboot();
+      await gotoOn(window, 'Setup');
+      const note = await window.eval(
+        "(document.querySelector('#main .model-note') || {}).textContent || ''");
+      assert.match(note, /your own opencode account/i, note);
+    });
+
+  // A search that matches nothing must not take the search box with it:
+  // that leaves no way to search for anything else.
+  await test('the search box stays when nothing matches', async () => {
+    const { window } = await reboot();
+    await gotoOn(window, 'Setup');
+
+    await window.eval(`(() => {
+      const el = document.querySelector('#main .model-search');
+      el.value = 'zzz-no-such-model';
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+    })()`);
+    await tick(60);
+
+    const state = await window.eval(`(() => ({
+      search: !!document.querySelector('#main .model-search'),
+      rows: document.querySelectorAll('#main .model-group .pick').length,
+      empty: (document.querySelector('#main .model-empty') || {}).textContent || '',
+    }))()`);
+    assert.ok(state.search, 'the search box disappeared with the results');
+    assert.strictEqual(state.rows, 0, 'a search that matches nothing listed models');
+    assert.match(state.empty, /no models match/i, state.empty);
+
+    // And the way back is a button, not a guess.
+    assert.strictEqual(await clickIn(window, '#main .model-search-row .btn', 'Clear'),
+      'clicked', 'there is no way to clear the search');
+    await tick(60);
+    const back = await window.eval(`(() => ({
+      search: !!document.querySelector('#main .model-search'),
+      rows: document.querySelectorAll('#main .model-group .pick').length,
+      query: (document.querySelector('#main .model-search') || {}).value || '',
+    }))()`);
+    assert.ok(back.search, 'the search box is gone after clearing');
+    assert.strictEqual(back.query, '', 'the search was not cleared');
+    assert.ok(back.rows > 0, 'clearing the search brought the models back');
+  });
+
+  // Three hundred models do not belong on one page.
+  await test('the picker shows five models per band', async () => {
+    const before = stubState.candidates;
+    stubState.candidates = Array.from({ length: 9 }, (_, i) => ({
+      id: `openrouter/vendor/model-${i}`, name: `Model ${i}`,
+      provider: 'openrouter', tier: 'free', price_out: 0, context: 100000,
+    }));
+    try {
+      const { window } = await reboot();
+      await gotoOn(window, 'Setup');
+      const shown = await window.eval(
+        "document.querySelectorAll('#main .model-group .pick').length");
+      assert.strictEqual(shown, 5, `the band showed ${shown} models, not five`);
+      const texts = await buttonTexts(window);
+      assert.ok(texts.some((x) => /show more \(4 more\)/i.test(x)),
+        `the rest of the band cannot be reached: ${texts.join(' | ')}`);
+    } finally {
+      stubState.candidates = before;
+    }
   });
 
   // The catalogue is whatever the credentials reach, so the picker groups it

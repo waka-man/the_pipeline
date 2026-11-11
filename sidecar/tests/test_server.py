@@ -112,6 +112,11 @@ def live(tmp_path, monkeypatch):
     # assignment ids the fixtures use — which is also why two tests that each
     # passed alone failed together.
     monkeypatch.setenv("GRADING_PIPELINE_WORKSPACE", str(tmp_path / "workspace"))
+    # The opencode store of the person using the app is read from the
+    # environment, and it is normally the real one under their home. Point it
+    # at an empty directory so the suite neither reads nor writes the
+    # developer's own accounts.
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "opencode-data"))
 
     store = Store(tmp_path / "pipeline.db")
     bus = srv.EventBus(store)
@@ -529,10 +534,53 @@ def test_the_key_reaches_opencode_as_an_env_var_and_an_auth_file(live):
     assert env["XDG_DATA_HOME"] == str(auth.parent.parent)
 
 
-def test_without_a_key_opencode_gets_nothing_extra(live):
+def test_without_a_key_opencode_gets_no_key(live):
+    """No key, and no opencode of the person's own: nothing to offer.
+
+    It still gets a store of the app's own, so that opencode has one place
+    to keep its sessions rather than the default location of the machine.
+    """
     _base, state, _fake, _spec = live
     state.settings.openrouter_api_key = ""
-    assert state.opencode_env() == {}
+    env = state.opencode_env()
+    assert "OPENROUTER_API_KEY" not in env
+    assert env["XDG_DATA_HOME"] == str(
+        Path(state.settings.data) / "opencode-home")
+
+
+def test_the_models_of_the_person_s_own_opencode_are_available(live, tmp_path,
+                                                                monkeypatch):
+    """The accounts they signed into are the models they pay for.
+
+    The app used to keep a store of its own, so the opencode of the person
+    using it was never read and the models their account reaches were
+    invisible. Now the store of their own is read, and the app keeps out of
+    the way of it.
+    """
+    _base, state, _fake, _spec = live
+    store = tmp_path / "opencode-data" / "opencode"
+    store.mkdir(parents=True)
+    (store / "opencode.db").write_bytes(b"")
+
+    env = state.opencode_env()
+    # Nothing points opencode at a store of the app's own: the one of the
+    # person is already the one opencode will read.
+    assert "XDG_DATA_HOME" not in env
+    assert not (Path(state.settings.data) / "opencode-home").exists()
+
+
+def test_the_key_still_rides_along_with_the_person_s_own_store(live, tmp_path):
+    """The key this app was given and the accounts of the person are both
+    in play: one by environment variable, the other in the store."""
+    _base, state, _fake, _spec = live
+    store = tmp_path / "opencode-data" / "opencode"
+    store.mkdir(parents=True)
+    (store / "opencode.db").write_bytes(b"")
+
+    state.settings.openrouter_api_key = "sk-or-abc123"
+    env = state.opencode_env()
+    assert env["OPENROUTER_API_KEY"] == "sk-or-abc123"
+    assert "XDG_DATA_HOME" not in env
 
 
 def test_changing_the_key_restarts_a_running_opencode(live):

@@ -74,7 +74,10 @@ def _take_identity() -> None:
     uid, gid = identity
     # Everything we write into has to belong to that user as well.
     for path in (os.environ.get("GRADING_PIPELINE_RUNTIME_HOME", ""),
-                 *(_shared_paths()), HOME):
+                 *(_shared_paths()), HOME,
+                 # The mounted opencode directories: Docker creates the ones
+                 # that were missing on the host, and it creates them as root.
+                 "/host-opencode", "/host-config"):
         if not path or not os.path.isdir(path):
             continue
         own = _owner(path)

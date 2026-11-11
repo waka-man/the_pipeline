@@ -687,7 +687,11 @@ function viewSetup() {
                 const r = await guard(() => api.selectModel({ model: c.id }), 'Could not select model');
                 if (r) { S.model = { ...S.model, ...r }; toast(`Grading model set to ${r.selected}.`); }
               },
-            }))
+            }),
+            S.model.account_source === 'own'
+              ? h('div', { class: 'hint model-note' },
+                  'Including the models from your own opencode account.')
+              : null)
         : null),
 
     runtimeCard(),
@@ -1881,10 +1885,13 @@ function render() {
   // told the page is back at the top.
   mainScrolled = els.main.scrollTop > 8;
   syncSticky();
-  restoreFocus(focusId, caret);
   // The slide-over lives outside #main so a stage re-render cannot wipe it
   // open, which means it has to be re-rendered explicitly on every paint.
   renderPanel();
+  // Focus is restored last, because the slide-over is painted last: a search
+  // box in the panel that loses the caret after every keystroke cannot be
+  // typed into.
+  restoreFocus(focusId, caret);
 }
 
 function openModal(node) { mount(els.modal, h('div', { class: 'scrim' }, node)); }
@@ -2083,7 +2090,7 @@ function sessionRow(r, resume, rerender) {
 
 /* The model picker: grouped by price band, free first, searchable, and
    paged so three hundred models do not arrive as one wall. */
-const MODEL_GROUP_SIZE = 6;
+const MODEL_GROUP_SIZE = 5;
 const TIER_LABELS = {
   free: 'Free',
   other: 'No price listed',
@@ -2115,12 +2122,29 @@ function modelPrice(c) {
   if (c.price_out === null || c.price_out === undefined) return '';
   if (!c.price_out) return 'free';
   const money = (n) => (n >= 1 ? `$${n}` : `$${n.toFixed(2)}`);
-  return c.price_in ? `${money(c.price_in)} / ${money(c.price_out)} per M` : '';
+  return `${money(c.price_out)} out/M`;
+}
+
+// What the model can read beyond text. A student hands in a PDF or a
+// screenshot, so a model that cannot open one is not worth picking.
+function modelReads(c) {
+  const kinds = (c.reads || []).filter((k) => k && k !== 'text');
+  return kinds.join(', ');
+}
+
+function modelContext(c) {
+  const n = c.context || 0;
+  if (!n) return '';
+  return n >= 1000000
+    ? `${Math.round(n / 1000000)}M ctx`
+    : `${Math.round(n / 1000)}k ctx`;
 }
 
 function modelRow(c, { current, onPick }) {
+  const reads = modelReads(c);
   return h('button', {
     class: 'pick', 'aria-selected': String(current),
+    title: c.name && c.name !== c.id ? c.name : c.id,
     onclick: () => onPick(c),
   },
     h('div', {},
@@ -2128,44 +2152,58 @@ function modelRow(c, { current, onPick }) {
       h('div', { class: 'pick-sub' },
         c.name && c.name !== c.id ? h('span', {}, c.name) : null,
         modelPrice(c) ? h('span', {}, modelPrice(c)) : null,
-        c.context ? h('span', {}, `${Math.round(c.context / 1000)}k ctx`) : null,
-        c.reads && c.reads.length
-          ? h('span', {}, `reads ${c.reads.join(', ')}`) : null)),
+        c.context ? h('span', {}, modelContext(c)) : null,
+        reads ? h('span', {}, reads) : null)),
     h('div', { class: 'pick-meta' },
       current ? chip('current', 'ok') : null));
 }
 
 function modelPicker({ current, onPick, emptyText, searchId }) {
   const groups = modelGroups();
-  if (!groups.length) {
-    return h('div', { class: 'hint', style: 'padding:10px 2px' }, emptyText);
-  }
+  const query = (S.modelQuery || '').trim();
+  // The search box is part of the picker, not part of the results. It used to
+  // disappear with the results, so a search that matched nothing left no way
+  // to search for anything else: the one thing the person typing needed.
   return h('div', { class: 'model-picker' },
-    h('input', {
-      class: 'input model-search', id: searchId || 'model-search', type: 'search',
-      placeholder: 'Search models by name or provider…',
-      value: S.modelQuery || '',
-      oninput: (e) => { S.modelQuery = e.target.value; render(); },
-    }),
-    groups.map((g) => {
-      const shown = S.modelShown?.[g.tier] || MODEL_GROUP_SIZE;
-      const visible = g.items.slice(0, shown);
-      const rest = g.items.length - visible.length;
-      return h('div', { class: 'model-group' },
-        h('div', { class: 'model-group-head' },
-          h('span', { class: 'model-group-name' }, TIER_LABELS[g.tier] || g.tier),
-          h('span', { class: 'dim' }, `${g.items.length}`)),
-        h('div', { class: 'picklist' }, visible.map((c) => modelRow(c, { current: current === c.id, onPick }))),
-        rest > 0
-          ? h('button', {
-              class: 'btn', 'data-size': 'sm', 'data-variant': 'ghost',
-              onclick: () => {
-                S.modelShown = { ...(S.modelShown || {}), [g.tier]: shown + MODEL_GROUP_SIZE };
-                render();
-              },
-            }, `Show more (${rest} more)`)
-          : null);
-    }));
+    h('div', { class: 'model-search-row' },
+      h('input', {
+        class: 'input model-search', id: searchId || 'model-search', type: 'search',
+        placeholder: 'Search models by name or provider…',
+        value: S.modelQuery || '',
+        oninput: (e) => { S.modelQuery = e.target.value; render(); },
+      }),
+      query
+        ? h('button', {
+            class: 'btn', 'data-size': 'sm', 'data-variant': 'ghost',
+            onclick: () => {
+              S.modelQuery = '';
+              render();
+              const el = document.getElementById(searchId || 'model-search');
+              if (el) el.focus();
+            },
+          }, 'Clear')
+        : null),
+    groups.length
+      ? groups.map((g) => {
+        const shown = S.modelShown?.[g.tier] || MODEL_GROUP_SIZE;
+        const visible = g.items.slice(0, shown);
+        const rest = g.items.length - visible.length;
+        return h('div', { class: 'model-group' },
+          h('div', { class: 'model-group-head' },
+            h('span', { class: 'model-group-name' }, TIER_LABELS[g.tier] || g.tier),
+            h('span', { class: 'dim' }, `${g.items.length}`)),
+          h('div', { class: 'picklist' }, visible.map((c) => modelRow(c, { current: current === c.id, onPick }))),
+          rest > 0
+            ? h('button', {
+                class: 'btn', 'data-size': 'sm', 'data-variant': 'ghost',
+                onclick: () => {
+                  S.modelShown = { ...(S.modelShown || {}), [g.tier]: shown + MODEL_GROUP_SIZE };
+                  render();
+                },
+              }, `Show more (${rest} more)`)
+            : null);
+      })
+      : h('div', { class: 'hint model-empty' }, emptyText));
 }
 
 /** The launcher: recent gradings, pick one. */

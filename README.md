@@ -126,16 +126,24 @@ one set of files.
 
 #### Your own opencode account
 
-The container reads opencode's data from the shared directory, so it uses
-the model credentials the installed app has. To give it the credentials of
-your own opencode install — a Go subscription, GitHub Copilot — log in once
-against that same directory:
+The app reads the opencode you already have: the store where your accounts
+live, with the models those accounts reach. Sign in the way you normally do
 
 ```sh
-XDG_DATA_HOME="$HOME/.config/Grading Pipeline/opencode-home" opencode auth login
+opencode auth login
 ```
 
-Both versions see the account afterwards.
+and those models are there in the app — a Go subscription, GitHub Copilot,
+anything else you have signed into. An OpenRouter key saved in the app still
+reaches the OpenRouter models: it is handed to opencode as an environment
+variable, which opencode honours alongside the accounts in the store.
+
+The container mounts the same store, so it sees the same models. On Linux
+that is `~/.local/share/opencode`, with the configuration in
+`~/.config/opencode`; on macOS both live in
+`~/Library/Application Support/opencode`. Set
+`GRADING_PIPELINE_HOST_OPENCODE` and `GRADING_PIPELINE_HOST_OPENCODE_CONFIG`
+in `.env` for those.
 
 #### Installing on macOS
 
