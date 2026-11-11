@@ -552,6 +552,42 @@ def test_mcp_handshake_and_tool_listing(spec, tmp_path):
     assert "tools" in init["capabilities"]
 
 
+def test_the_tool_asks_for_a_comment_for_the_student(spec):
+    """The comment is posted to the student, so the tool asks for one.
+
+    The server does not insist on it: a model that forgot must not lose an
+    attempt over a comment.
+    """
+    schema = scorecard_json_schema(spec)
+    assert "comment" in schema["properties"]
+    assert schema["properties"]["comment"]["type"] == "string"
+    assert schema["properties"]["comment"]["maxLength"] == 500
+    assert "comment" in schema.get("required", [])
+    # A scorecard without one is still a valid scorecard.
+    assert validate_scorecard(parse_scorecard(_payload(spec), spec), spec).ok
+
+
+def test_a_scorecard_carries_its_comment_for_the_student(spec):
+    payload = _payload(spec)
+    payload["comment"] = "A clear argument, and the evidence is in place."
+    card = parse_scorecard(payload, spec)
+    assert card.comment == "A clear argument, and the evidence is in place."
+
+    # A scorecard written before the field existed still reads.
+    assert parse_scorecard(_payload(spec), spec).comment == ""
+
+
+def test_a_comment_is_cut_on_a_word_boundary(spec):
+    """A comment cut mid-word reads as though the marking stopped there."""
+    long_text = "word " * 200
+    card = parse_scorecard({**_payload(spec), "comment": long_text}, spec)
+    assert len(card.comment) <= 500
+    assert card.comment.endswith("…")
+    assert "wor…" not in card.comment
+    # Nothing is lost from the front, and the last whole word survives.
+    assert card.comment.startswith("word word")
+
+
 def test_mcp_accepts_a_valid_scorecard(spec, tmp_path):
     replies, record = _mcp_exchange(spec, [(TOOL_NAME, _payload(spec))], tmp_path)
     result = replies[2]["result"]

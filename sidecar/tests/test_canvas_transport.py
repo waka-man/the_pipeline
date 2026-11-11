@@ -404,6 +404,13 @@ def test_grade_accepts_a_prebuilt_comment_object(client):
     assert c.session.requests[0]["json"]["comment"] == {"text_comment": "Prebuilt"}
 
 
+def test_grade_sends_no_comment_when_there_is_none(client):
+    """Nothing is said to the student that nobody wrote."""
+    c = client([FakeResponse(200, {})])
+    c.grade(3130, 46805, 7, posted_grade=18.0)
+    assert "comment" not in c.session.requests[0]["json"]
+
+
 def test_grade_can_excuse_without_a_score(client):
     c = client([FakeResponse(200, {"excused": True})])
     c.grade(3130, 46805, 7, excuse=True)

@@ -151,6 +151,17 @@ def render_report(spec: AssignmentSpec, scorecard: Scorecard, unit: SubmissionUn
     out.append(f"| **Total** | **{_fmt(earned_total)} / {_fmt(possible_total)}** |")
     out.append("")
 
+    out.append("## Assignment Comment")
+    out.append("")
+    if scorecard.comment.strip():
+        out.append("*Posted to the student as the assignment comment.*")
+        out.append("")
+        out.append(scorecard.comment.strip())
+        out.append("")
+    else:
+        out.append("_No comment will be posted to the student._")
+        out.append("")
+
     out.append("## Additional Notes")
     out.append("")
     if scorecard.summary.strip():

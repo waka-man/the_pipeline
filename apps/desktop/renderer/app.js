@@ -1569,19 +1569,45 @@ function viewPublish() {
       h('ul', {},
         h('li', {}, 'Per criterion: the awarded points, and the grader’s justification plus evidence as the criterion comment.'),
         h('li', {}, 'Overall: the sum of the criteria as the posted grade.'),
+        h('li', {}, 'One comment per submission, from the comment for the student, up to 500 characters.'),
         h('li', {}, 'Group assignments: one write per group, which Canvas propagates to every member.'))));
 }
 
 function showPublishPlan(plan) {
-  openModal(h('div', { class: 'dialog' },
+  // Comments edited here belong to the scorecard, so they travel with the
+  // publish and are written there. Until then they live in this closure: the
+  // modal is not rebuilt while it is open.
+  const edits = {};
+  const entries = (plan.entries || []).map((e) => {
+    const initial = e.comment || '';
+    const counter = h('span', { class: 'comment-count' }, `${initial.length}/500`);
+    return h('div', { class: 'plan-entry' },
+      h('div', { class: 'plan-row' },
+        h('span', {}, e.student),
+        h('span', { class: 'plan-change' },
+          e.existing == null ? 'new' : `${fmt(e.existing)} → `,
+          h('b', {}, fmt(e.new))),
+        (e.blocking || []).length ? chip(`${e.blocking.length} flag`, 'flag') : h('span')),
+      h('div', { class: 'comment-box' },
+        h('div', { class: 'comment-head' },
+          h('span', {}, 'Comment for the student'),
+          counter),
+        h('textarea', {
+          class: 'comment-input', rows: 3, maxlength: '500',
+          placeholder: 'No comment will be posted to the student.',
+          oninput: (ev) => {
+            edits[e.row_id] = ev.target.value;
+            counter.textContent = `${ev.target.value.length}/500`;
+          },
+        }, initial)));
+  });
+
+  openModal(h('div', { class: 'dialog dialog--plan' },
     h('h2', {}, plan.message || 'Ready to publish'),
-    h('p', {}, 'Check each change before it is written. Existing marks are shown for comparison.'),
-    ...(plan.entries || []).map((e) => h('div', { class: 'plan-row' },
-      h('span', {}, e.student),
-      h('span', { class: 'plan-change' },
-        e.existing == null ? 'new' : `${fmt(e.existing)} → `,
-        h('b', {}, fmt(e.new))),
-      (e.blocking || []).length ? chip(`${e.blocking.length} flag`, 'flag') : h('span'))),
+    h('p', {}, 'Check each change before it is written. Existing marks are shown '
+      + 'for comparison. The comment is posted to the student; the flags beside '
+      + 'it are for you and are not posted.'),
+    ...entries,
     h('div', { class: 'dialog-actions' },
       h('button', { class: 'btn', onclick: closeModal }, 'Cancel'),
       h('button', {
@@ -1589,7 +1615,9 @@ function showPublishPlan(plan) {
         onclick: async () => {
           closeModal();
           await guard(async () => {
-            await api.publish(S.run.run_id, { row_ids: [...S.selected], confirm: true });
+            await api.publish(S.run.run_id, {
+              row_ids: [...S.selected], confirm: true, comments: edits,
+            });
             toast('Publishing started.');
           }, 'Could not publish');
         },

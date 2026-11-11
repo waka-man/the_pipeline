@@ -43,6 +43,12 @@ in your own words, or "fix" it silently.
 7. When the submission genuinely lacks something a criterion asks for, score \
 it accordingly and say so plainly in the analysis.
 
+The `comment` you write is different from everything else you produce: it is \
+posted to the student as the assignment comment, and they read it on its own. \
+Write it to them — what worked, what to work on next — in a few sentences. \
+Leave out flags, internal review notes, and anything about how the marking \
+was produced; those stay with the instructor.
+
 You finish by calling the `{tool}` tool exactly once with your scores. \
 Nothing is recorded until you call it."""
 
@@ -215,7 +221,8 @@ def build_task_prompt(spec: AssignmentSpec, unit: SubmissionUnit,
 
     parts += ["## Finish", "",
               f"Work through the criteria one at a time, then call `{tool}` once with "
-              "all of your scores, your overall summary, and any flags."]
+              "all of your scores, your overall summary, a comment for the student, "
+              "and any flags."]
     return "\n".join(parts).rstrip() + "\n"
 
 

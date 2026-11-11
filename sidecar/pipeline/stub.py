@@ -82,6 +82,11 @@ def stub_scorecard(spec: AssignmentSpec, unit_name: str,
             "the collection, rendering, review and publishing paths can be "
             "exercised end to end. Do not treat these numbers as a grade."
         ),
+        "comment": (
+            "[stub] A placeholder comment for the student. It exists so the "
+            "publish path can be exercised end to end; it says nothing about "
+            "the work."
+        ),
         "flags": [{
             "code": "stub_run",
             "severity": "block",

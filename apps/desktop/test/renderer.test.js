@@ -183,7 +183,19 @@ function stubApi() {
     collect: rec('collect', { job: 'collect' }),
     grade: rec('grade', { job: 'grade' }),
     render: rec('render', { job: 'render' }),
-    publish: rec('publish', { job: 'publish', ok: 3 }),
+    // Publishing is two calls: a plan to review, then the write. The plan
+    // carries the comment that will be posted to the student.
+    publish: rec('publish', (body) => (body && body.confirm
+      ? { job: 'publish', ok: 3 }
+      : {
+        mode: 'plan',
+        message: '1 submission(s) would be written to Canvas.',
+        entries: SUBMISSIONS.filter((s) => s.score !== null).map((s) => ({
+          row_id: s.row_id, student: s.student, existing: null, new: s.score,
+          blocking: [], payload: {},
+          comment: 'A clear argument, and the evidence is there.',
+        })),
+      })),
     control: rec('control', { job: 'collect', action: 'pause', state: { status: 'paused' } }),
     agentLog: rec('agentLog', { row_id: 1, student: 'Ada Lovelace',
                                  lines: AGENT_LOG_ENTRIES }),
@@ -2187,6 +2199,37 @@ await test('no handler threw while every button was clicked', () => {
     assert.strictEqual(shape.text, '', 'the theme toggle still has a word in it');
     assert.match(shape.label, /light theme|dark theme/,
       `the theme toggle does not say what it does: ${shape.label}`);
+  });
+
+  // The comment is what the student reads, so it is shown in the plan and can
+  // be changed there: it is the last screen before it goes out.
+  await test('the publish plan shows the comment and sends an edit', async () => {
+    const { window, calls: c } = await reboot();
+    await gotoOn(window, 'Publish');
+    await tick(60);
+    assert.strictEqual(await clickIn(window, '#main button', 'Review what will be written'),
+      'clicked', 'the plan did not open');
+    await tick(80);
+    const plan = await window.eval(`(() => {
+      const areas = document.querySelectorAll('#modal-root textarea.comment-input');
+      return { count: areas.length, value: areas[0] ? areas[0].value : '' };
+    })()`);
+    assert.ok(plan.count > 0, 'the plan has no comment to review');
+    assert.match(plan.value, /clear argument/,
+      `the comment is not shown: ${plan.value}`);
+
+    await window.eval(`(() => {
+      const area = document.querySelector('#modal-root textarea.comment-input');
+      area.value = 'Rewritten for the student.';
+      area.dispatchEvent(new Event('input', { bubbles: true }));
+    })()`);
+    assert.strictEqual(await clickIn(window, '#modal-root button', 'Write to Canvas'),
+      'clicked', 'the publish did not go ahead');
+    await tick(150);
+    const sent = c.filter((x) => x.startsWith('publish(')).pop();
+    assert.ok(sent, 'nothing was published');
+    assert.match(sent, /Rewritten for the student/,
+      `the edit did not travel with the publish: ${sent}`);
   });
 
   // The save button used to stretch to the height of the view switch beside

@@ -290,6 +290,22 @@ def test_report_renders_flags(spec):
     assert "BLOCKING" in md
 
 
+def test_report_shows_the_comment_the_student_will_read(spec):
+    """The instructor sees exactly what goes to the student, in the report."""
+    payload = _valid_payload(spec)
+    payload["comment"] = "A clear argument, and the evidence is in place."
+    md = render_report(spec, parse_scorecard(payload, spec), _unit())
+    assert "## Assignment Comment" in md
+    assert "A clear argument, and the evidence is in place." in md
+
+
+def test_the_report_says_when_no_comment_will_be_posted(spec):
+    """Silence is a decision, and it is stated rather than left to be inferred."""
+    md = render_report(spec, parse_scorecard(_valid_payload(spec), spec), _unit())
+    assert "## Assignment Comment" in md
+    assert "No comment will be posted to the student." in md
+
+
 def test_report_shows_manual_criteria_as_reserved(spec):
     spec.policy = {"_manual_only_ids": ["_7796"]}
     payload = _valid_payload(spec)

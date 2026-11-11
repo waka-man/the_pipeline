@@ -381,6 +381,65 @@ def test_publish_without_any_graded_work_plans_nothing(live):
     assert fake.published == []
 
 
+def _graded(live):
+    """A run with one graded submission, and the fake Canvas that grades it."""
+    base, state, fake, spec = live
+    send(base, "/api/runs", {"course_id": 3130, "assignment_id": 46805})
+    assert wait_for(lambda: state.store.progress(1).get("total") == 2)
+    send(base, "/api/runs/1/grade", {"stub": True})
+    assert wait_for(lambda: state.store.progress(1).get("graded") == 1), state.job_errors
+    return base, state, fake, spec
+
+
+def test_the_publish_plan_carries_the_comment_for_the_student(live):
+    """What the student will read is shown before it goes out."""
+    base, state, fake, spec = _graded(live)
+    state.store.set_scorecard_comment(1, "A clear argument, and the evidence is there.")
+    plan = send(base, "/api/runs/1/publish", {"row_ids": [1]})
+    assert plan["entries"][0]["comment"] == "A clear argument, and the evidence is there."
+
+
+def test_publishing_posts_the_comment_and_nothing_that_is_only_for_the_instructor(live):
+    base, state, fake, spec = _graded(live)
+    state.store.set_scorecard_comment(1, "A clear argument, and the evidence is there.")
+    send(base, "/api/runs/1/publish", {"row_ids": [1], "confirm": True})
+    assert wait_for(lambda: state.store.already_published(1)), state.job_errors
+    written = fake.published[0]
+    # The client is given the text and shapes it for Canvas itself.
+    assert written["comment"] == "A clear argument, and the evidence is there."
+    # The summary and the flags are the instructor's, and they stay here.
+    card = state.store.best_scorecard(1)
+    assert card.summary not in written["comment"]
+    for flag in card.flags:
+        assert flag.code not in written["comment"]
+
+
+def test_a_submission_with_no_comment_posts_no_comment(live):
+    """Nothing is said to the student that nobody wrote."""
+    base, state, fake, spec = _graded(live)
+    state.store.set_scorecard_comment(1, "")
+    send(base, "/api/runs/1/publish", {"row_ids": [1], "confirm": True})
+    assert wait_for(lambda: state.store.already_published(1)), state.job_errors
+    assert not fake.published[0].get("comment")
+
+
+def test_an_edited_comment_is_kept_and_is_what_is_published(live):
+    """The instructor has the last word, and their words survive."""
+    base, state, fake, spec = _graded(live)
+    state.store.set_scorecard_comment(1, "The agent's words.")
+    send(base, "/api/runs/1/publish", {
+        "row_ids": [1], "confirm": True,
+        "comments": {1: "The instructor's words, for the student."},
+    })
+    assert wait_for(lambda: state.store.already_published(1)), state.job_errors
+    assert fake.published[0]["comment"] == \
+        "The instructor's words, for the student."
+    # It is kept on the scorecard, so the report and the next plan say the
+    # same thing.
+    assert state.store.best_scorecard(1).comment == \
+        "The instructor's words, for the student."
+
+
 def test_publishing_a_run_that_does_not_exist_is_an_error(live):
     base = live[0]
     with pytest.raises(urllib.error.HTTPError) as exc:

@@ -29,7 +29,7 @@ from .canvas.client import AuthError, CanvasClient, CanvasError
 from .canvas.collect import bootstrap_run, collect_sources
 from .canvas.spec import manual_only_criteria
 from .grading.runner import Grader, OpenCodeServer, classify_failure
-from .models import SubmissionUnit
+from .models import SubmissionUnit, trim_comment
 from .report.render import render_report, report_filename
 from .store import Store
 from .config import NEWLINE as _NL
@@ -1436,6 +1436,10 @@ def op_publish(state: AppState, run_id: int, body: dict[str, Any]) -> dict[str, 
     rows = store.submissions_with_status(run_id, ("graded",))
     selected = body.get("row_ids") or [int(r["id"]) for r in rows]
     selected = set(int(x) for x in selected)
+    # Comments the instructor edited in the plan. They belong to the
+    # scorecard, so they are written there and the report shows the same
+    # words next time.
+    edited = {int(k): str(v) for k, v in (body.get("comments") or {}).items()}
 
     plan = []
     for row in rows:
@@ -1451,6 +1455,7 @@ def op_publish(state: AppState, run_id: int, body: dict[str, Any]) -> dict[str, 
             "existing": row["existing_score"], "new": total,
             "blocking": [f.code for f in sc.flags if f.severity == "block"],
             "payload": payload,
+            "comment": sc.comment or "",
         })
 
     if not body.get("confirm"):
@@ -1464,10 +1469,17 @@ def op_publish(state: AppState, run_id: int, body: dict[str, Any]) -> dict[str, 
         for entry in plan:
             row = store.submission_row(entry["row_id"])
             unit = _unit_from_row(row)
+            comment = entry["comment"]
+            if entry["row_id"] in edited:
+                # The edit is kept whether or not the write to Canvas works:
+                # the next plan and the report show what was written.
+                store.set_scorecard_comment(entry["row_id"], edited[entry["row_id"]])
+                comment = trim_comment(edited[entry["row_id"]])
             try:
                 resp = client.grade(spec.course_id, spec.assignment_id, unit.user_id,
                                     posted_grade=entry["new"],
-                                    rubric_assessment=entry["payload"])
+                                    rubric_assessment=entry["payload"],
+                                    comment=comment or None)
                 store.record_publication(entry["row_id"], entry["payload"],
                                          json.dumps(resp)[:400] if resp else None)
                 ok += 1

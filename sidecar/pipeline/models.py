@@ -14,6 +14,24 @@ from pydantic import BaseModel, Field, field_validator
 
 RatingScale = Literal["points", "ratings"]
 
+# How long an assignment comment may be. Canvas takes a comment per
+# submission, and a comment that is cut mid-word reads as though the marking
+# stopped there.
+COMMENT_LIMIT = 500
+
+
+def trim_comment(text: str, limit: int = COMMENT_LIMIT) -> str:
+    """Cut a comment to fit, on a word boundary.
+
+    The report and the posted comment have to agree, so the cut happens once,
+    where the scorecard is read, rather than again at publish time.
+    """
+    clean = " ".join((text or "").split())
+    if len(clean) <= limit:
+        return clean
+    cut = clean[:limit].rsplit(" ", 1)[0].rstrip(" ,;:-—")
+    return (cut + "…") if cut else clean[:limit]
+
 
 def utcnow() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -186,6 +204,10 @@ class Scorecard(BaseModel):
 
     criterion_scores: list[CriterionScore]
     summary: str = ""
+    # The overall comment posted to the student as the assignment comment.
+    # It is its own field, not the summary: the summary is written for the
+    # instructor and the flags beside it never leave this building.
+    comment: str = ""
     flags: list[Flag] = Field(default_factory=list)
     test_results: dict[str, Any] = Field(default_factory=dict)
     model: str = ""
@@ -333,6 +355,16 @@ def scorecard_json_schema(spec: AssignmentSpec) -> dict[str, Any]:
                 "description": "Two to four sentences on overall performance, "
                                "including the most significant strength and weakness.",
             },
+            "comment": {
+                "type": "string",
+                "maxLength": COMMENT_LIMIT,
+                "description": "An overall comment for the student, up to "
+                               f"{COMMENT_LIMIT} characters. This is posted to the "
+                               "student as the assignment comment, so write it to "
+                               "them: what worked and what to work on. Leave out "
+                               "flags, internal review notes, and anything about "
+                               "how the marking was produced.",
+            },
             "flags": {
                 "type": "array",
                 "description": "Anything a human must check before trusting this grade.",
@@ -348,7 +380,7 @@ def scorecard_json_schema(spec: AssignmentSpec) -> dict[str, Any]:
                 },
             },
         },
-        "required": ["scores", "summary"],
+        "required": ["scores", "summary", "comment"],
         "additionalProperties": False,
     }
 
@@ -373,6 +405,7 @@ def parse_scorecard(payload: dict[str, Any], spec: AssignmentSpec) -> Scorecard:
     return Scorecard(
         criterion_scores=scores,
         summary=payload.get("summary", "") or "",
+        comment=trim_comment(payload.get("comment", "") or ""),
         flags=[Flag(**f) for f in (payload.get("flags") or []) if isinstance(f, dict)],
         test_results=payload.get("test_results") or {},
     )

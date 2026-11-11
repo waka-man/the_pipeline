@@ -13,7 +13,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
 
-from .models import AssignmentSpec, Criterion, Rating, Scorecard, SubmissionUnit, utcnow
+from .models import (AssignmentSpec, Criterion, Rating, Scorecard, SubmissionUnit,
+                    trim_comment, utcnow)
 
 SCHEMA = """
 PRAGMA journal_mode=WAL;
@@ -569,6 +570,30 @@ class Store:
                 (submission_row_id,),
             ).fetchone()
         return Scorecard.model_validate_json(row["payload_json"]) if row else None
+
+    def set_scorecard_comment(self, submission_row_id: int, text: str) -> bool:
+        """Set the student comment on a submission's scorecard.
+
+        The comment belongs to the scorecard, so an edit to it belongs there
+        too: the report and the next publish both read the scorecard, and two
+        copies would drift apart. Returns False when there is no scorecard to
+        change.
+        """
+        with self.connect() as db:
+            row = db.execute(
+                "SELECT id, payload_json FROM scorecards WHERE submission_row_id=? "
+                "AND status='valid' ORDER BY created_at DESC, id DESC LIMIT 1",
+                (submission_row_id,)).fetchone()
+            if row is None:
+                return False
+            try:
+                card = Scorecard.model_validate_json(row["payload_json"])
+            except Exception:
+                return False
+            card.comment = trim_comment(text)
+            db.execute("UPDATE scorecards SET payload_json=? WHERE id=?",
+                       (card.model_dump_json(), row["id"]))
+            return True
 
     def invalid_reason(self, submission_row_id: int) -> str | None:
         with self.connect() as db:
