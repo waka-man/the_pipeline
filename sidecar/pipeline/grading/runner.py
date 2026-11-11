@@ -317,7 +317,8 @@ class OpenCodeServer:
     def prompt(self, session_id: str, text: str, system: str | None = None,
                agent: str | None = None, model: str | None = None,
                directory: str | None = None, done_when: Any = None,
-               grace: float = 20.0, timeout: int = 1800) -> dict[str, Any]:
+               stop_when: Any = None, grace: float = 20.0,
+               timeout: int = 1800) -> dict[str, Any]:
         """Send a prompt and wait for the turn to finish.
 
         v2 accepts the message and returns the user message immediately;
@@ -332,6 +333,10 @@ class OpenCodeServer:
         `grading` for as long as it feels like, so once the work is done the
         wait ends after a short grace period for the agent to finish its
         sentence.
+
+        `stop_when` ends the wait at once: the work has been called off, so
+        nothing more is coming and the turn's timeout must not hold a worker
+        for the rest of it.
         """
         body: dict[str, Any] = {"text": text}
         if system:
@@ -345,6 +350,13 @@ class OpenCodeServer:
         deadline = time.time() + timeout
         finished_at: float | None = None
         while time.time() < deadline:
+            if stop_when is not None:
+                try:
+                    if stop_when():
+                        return {"info": {}, "parts": self.parts(session_id),
+                                "taken_over": True, "stopped": True}
+                except Exception:
+                    pass
             if done_when is not None:
                 try:
                     if done_when():
@@ -815,9 +827,10 @@ class Grader:
         response = srv.prompt(
             session_id, message, system=system, agent=self.agent_name,
             model=self.model or None, directory=str(workspace),
-            done_when=lambda: self._scorecard_accepted(out_path))
+            done_when=lambda: self._scorecard_accepted(out_path),
+            stop_when=lambda: self.should_stop(submission_row_id))
         if response.get("taken_over"):
-            # The scorecard is in and the grading is done. The agent's turn
+            # Either the work is done or it was called off. The agent's turn
             # can carry on for as long as it likes, and a second submission
             # would overwrite the scorecard that was just read.
             srv.abort(session_id)
@@ -932,6 +945,13 @@ class Grader:
                 continue
 
             record = self._read_outcome(out_path)
+            if self.should_stop(submission_row_id):
+                # The stop was asked for while the agent was working. The row
+                # was already taken out of `grading` when the request came in;
+                # this is the runner letting go of it.
+                self.store.set_submission_status(submission_row_id, "collected")
+                return GradeResult(submission_row_id, self._session_by_row.get(
+                    submission_row_id, ""), attempt_no, "stopped")
             if record is None:
                 # "The agent finished without calling submit_scorecard" says
                 # what did not happen and nothing about why, which is the only

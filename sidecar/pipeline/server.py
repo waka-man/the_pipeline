@@ -990,8 +990,8 @@ def op_grade(state: AppState, run_id: int, body: dict[str, Any]) -> dict[str, An
                 # graded again.
                 state.record_agent_output(
                     int(rid),
-                    f"stopped on attempt {data.get('attempt')}, nothing submitted; "
-                    "this submission is ungraded again")
+                    "stopped; nothing was submitted, so this submission is "
+                    "ungraded again")
             elif event == "agent.warn" and rid is not None:
                 # An attempt that ended without a scorecard is the failure a
                 # person actually needs to see, and it was going only to the
@@ -1311,6 +1311,11 @@ def op_stop_submission(state: AppState, row_id: int) -> dict[str, Any]:
         raise ApiError("no such submission", 404)
 
     state.stopped_rows.add(row_id)
+    # The row leaves `grading` now, not when the runner happens to notice.
+    # The runner is inside the agent's turn, and a turn that has been
+    # interrupted can take a while to unwind, so the row would sit in
+    # `grading` for minutes after the stop was asked for.
+    state.store.set_submission_status(row_id, "collected")
     # Abort the live session if one is open, so the provider stops being billed
     # for tokens nobody is going to read.
     sid = next((s for s, rid in state.session_rows.items() if rid == row_id), "")

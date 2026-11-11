@@ -19,6 +19,7 @@ import os
 import subprocess
 import sys
 import threading
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -651,6 +652,8 @@ class FakeServer:
         # Session parts the diagnosis reads back when a turn ends without a
         # scorecard. Set per test to describe what the model actually did.
         self.session_parts: list[dict] = []
+        # Whether a wait was ended by the stop rather than by the turn.
+        self.stopped_wait = False
 
     def start(self, *a, **k):
         self.started += 1
@@ -666,12 +669,25 @@ class FakeServer:
         return list(self.session_parts)
 
     def prompt(self, session_id, text, system=None, agent=None, model=None,
-               directory=None, done_when=None, timeout=1800):
+               directory=None, done_when=None, stop_when=None, timeout=1800):
         self.turns[-1].update(system=system, text=text, agent=agent, model=model,
-                               done_when=done_when)
+                               done_when=done_when, stop_when=stop_when)
         if self.mode == "raise":
             raise RuntimeError("opencode refused")
         if self.mode == "silent":
+            if stop_when is not None:
+                # A turn that never finishes on its own. The wait has to end
+                # when the work is called off, or a worker is held for the
+                # rest of the turn's timeout.
+                for _ in range(200):
+                    try:
+                        if stop_when():
+                            self.stopped_wait = True
+                            return {"info": {}, "taken_over": True,
+                                    "stopped": True}
+                    except Exception:
+                        pass
+                    time.sleep(0.01)
             return {"info": {}}
 
         work = Path(self.turns[-1]["directory"]) / ".grading"
@@ -851,6 +867,33 @@ def test_stop_stops_the_retry_not_just_the_next_row(tmp_path, store, spec):
 
     assert result.status == "stopped", result
     assert len(server.turns) == 1, f"it started another attempt anyway: {len(server.turns)}"
+
+
+def test_a_stop_ends_the_wait_for_the_turn(tmp_path, store, spec):
+    """A stop must not leave the runner waiting for the agent's timeout.
+
+    The runner was inside the turn when the stop was pressed, and nothing
+    woke it: the row sat in `grading` and a worker was held for the rest of
+    the turn's timeout.
+    """
+    store.replace_submissions(store.upsert_run(spec), [unit()])
+    grader, server = _grader(tmp_path, store, spec, mode="silent")
+    stopped = [False]
+
+    def emit(event, data):
+        # Stop pressed while the turn is running.
+        if event == "agent.start":
+            stopped[0] = True
+
+    grader.emit = emit
+    grader.should_stop = lambda row_id: stopped[0]
+
+    result = grader.grade(1, unit(), [])
+
+    assert result.status == "stopped", result
+    assert store.submission_row(1)["status"] == "collected", \
+        store.submission_row(1)["status"]
+    assert server.stopped_wait, "the wait did not end when the work was called off"
     assert store.submission_row(1)["status"] == "collected", \
         "a stopped submission must be gradeable again, not left needs_review"
     assert store.best_scorecard(1) is None
