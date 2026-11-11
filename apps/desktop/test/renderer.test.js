@@ -1517,13 +1517,33 @@ await test('the setup page reports the runtime version and offers the update', a
     assert.ok(texts.some((t) => t === 'Check for updates'),
       'no way to re-check for a new version');
 
-    // Installing asks the sidecar to stage it; it does not swap anything live.
+    // Installing asks the sidecar to fetch it; it does not swap anything live.
     await clickIn(window, '#main button', 'Install v');
     await tick(80);
-    const pending = await window.eval(
+    let pending = await window.eval(
+      "[...document.querySelectorAll('#main .chip')].map((c) => c.textContent).join('|')");
+    assert.match(pending, /downloading/,
+      `the download was not reported as running: ${pending}`);
+
+    // And when it lands, the staged version is reported and the restart that
+    // is needed is said once.
+    await window.eval(`(() => {
+      window.pipeline.api.runtime = () => Promise.resolve({
+        checked: true, active_version: '1.18.35', bundled_version: '1.18.35',
+        latest_version: '1.19.0', update_available: false,
+        pending_version: '1.19.0', downloading: false,
+        downloaded_bytes: 0, total_bytes: 0,
+      });
+    })()`);
+    await tick(1000);
+    pending = await window.eval(
       "[...document.querySelectorAll('#main .chip')].map((c) => c.textContent).join('|')");
     assert.match(pending, /1\.19\.0 will be used next launch/,
       `the staged update was not reported: ${pending}`);
+    const prose = await window.eval(
+      "[...document.querySelectorAll('#main .hint')].map((n) => n.textContent).join('|')");
+    assert.match(prose, /Restart the app/,
+      `the restart that is needed is not said: ${prose}`);
 });
 
 await test('a credential survives a background repaint', async () => {
@@ -2090,6 +2110,83 @@ await test('no handler threw while every button was clicked', () => {
       + ".map((r) => r.querySelector('.chip').textContent.trim())");
     assert.ok(live.includes('grading'),
       `a row being graded does not say so: ${live.join(' | ')}`);
+  });
+
+  // A download of tens of megabytes needs to say how far it has got.
+  await test('a runtime download says how much has arrived', async () => {
+    const { window } = await reboot();
+    await window.eval(`(() => {
+      window.pipeline.api.runtime = () => Promise.resolve({
+        checked: true, active_version: '2.2.6', bundled_version: '2.2.6',
+        latest_version: '2.2.7', update_available: true, pending_version: null,
+        downloading: true, downloaded_bytes: 12 * 1024 * 1024,
+        total_bytes: 40 * 1024 * 1024,
+      });
+    })()`);
+    await gotoOn(window, 'Setup');
+    await tick(120);
+    const state = await window.eval(`(() => {
+      const card = [...document.querySelectorAll('#main .card')]
+        .find((c) => /Agent runtime/.test(c.textContent));
+      return {
+        text: card.textContent,
+        bar: card.querySelector('.meter-fill')
+          ? card.querySelector('.meter-fill').getAttribute('style') : null,
+      };
+    })()`);
+    assert.match(state.text, /12\.0 MB of 40\.0 MB/,
+      `the download does not say how far it has got: ${state.text}`);
+    assert.ok(state.bar && state.bar.includes('30%'),
+      `the download has no progress bar: ${state.bar}`);
+  });
+
+  // The rail says four different things: where you are, what is behind you,
+  // what is happening, and what is still to come.
+  await test('the stage rail says which stage is which', async () => {
+    const { window } = await reboot();
+    await gotoOn(window, 'Grade');
+    const states = await window.eval(
+      "[...document.querySelectorAll('.stage')].map((s) => s.dataset.state)");
+    assert.strictEqual(
+      JSON.stringify(states),
+      JSON.stringify(['done', 'done', 'done', 'here', 'idle', 'idle']),
+      `the rail does not say where you are: ${states.join(' | ')}`);
+  });
+
+  await test('a stage with a job running says it is busy', async () => {
+    const { window } = await reboot();
+    await gotoOn(window, 'Grade');
+    stubState.jobs = { grade: { job: 'grade', status: 'running' } };
+    try {
+      await window.eval(
+        "window.__emit({ event: 'job.done', data: { job: 'grade', ok: true } })");
+      await tick(150);
+      const states = await window.eval(
+        "[...document.querySelectorAll('.stage')].map((s) => s.dataset.state)");
+      assert.ok(states.includes('busy'),
+        `no stage says it is busy: ${states.join(' | ')}`);
+    } finally {
+      stubState.jobs = {};
+    }
+  });
+
+  // The theme toggle names the theme it switches to, as a drawn mark rather
+  // than a word.
+  await test('the theme toggle is a drawn mark, not a word', async () => {
+    const { window } = await reboot();
+    await tick(120);
+    const shape = await window.eval(`(() => {
+      const btn = document.getElementById('theme-toggle');
+      return {
+        svg: !!btn.querySelector('svg'),
+        text: btn.textContent.trim(),
+        label: btn.getAttribute('aria-label') || '',
+      };
+    })()`);
+    assert.ok(shape.svg, 'the theme toggle is not an icon');
+    assert.strictEqual(shape.text, '', 'the theme toggle still has a word in it');
+    assert.match(shape.label, /light theme|dark theme/,
+      `the theme toggle does not say what it does: ${shape.label}`);
   });
 
   // The save button used to stretch to the height of the view switch beside

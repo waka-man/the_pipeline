@@ -338,9 +338,11 @@ function stageState(id) {
   const order = STAGES.map((s) => s.id);
   const here = order.indexOf(S.stage);
   const at = order.indexOf(id);
-  if (id === S.stage) return 'active';
+  // A job running somewhere outranks where you are: something happening over
+  // there is the thing worth noticing.
+  if (S.status?.jobs?.[id]?.status === 'running') return 'busy';
+  if (id === S.stage) return 'here';
   if (at < here) return 'done';
-  if (S.status?.jobs?.[id]?.status === 'running') return 'active';
   return 'idle';
 }
 
@@ -452,28 +454,68 @@ function versionLabel(version) {
     .trim();
 }
 
+/** A size in the units a person reads: megabytes, or kilobytes before that. */
+function mb(bytes) {
+  if (!bytes) return '';
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+/** Poll the runtime while a download is in flight.
+
+ *  The card said "Downloading…" for ever because nothing read the status
+ *  again after the download was asked for.
+ */
+let runtimeTimer = null;
+
+function pollRuntimeWhileBusy() {
+  if (runtimeTimer) return;
+  runtimeTimer = setInterval(async () => {
+    if (!S.runtime?.downloading) {
+      clearInterval(runtimeTimer);
+      runtimeTimer = null;
+      render();
+      return;
+    }
+    try {
+      S.runtime = await api.runtime();
+      render();
+    } catch (_) { /* the last known state stands */ }
+  }, 800);
+}
+
 function runtimeCard() {
   const rt = S.runtime;
-  const downloading = rt && rt.downloading;
+  const downloading = !!(rt && rt.downloading);
   const active = versionLabel(rt?.active_version);
   const latest = versionLabel(rt?.latest_version);
   const staged = versionLabel(rt?.pending_version);
   const updatable = !!(rt?.update_available && latest) && !downloading && !staged;
+  const done = rt?.downloaded_bytes || 0;
+  const total = rt?.total_bytes || 0;
+
+  const state = downloading
+    ? h('span', { class: 'runtime-state' },
+        h('span', { class: 'chip', dataset: { tone: 'flag' } }, 'downloading'),
+        h('span', { class: 'dim' },
+          total ? `${mb(done)} of ${mb(total)}` : 'fetching…'))
+    : staged
+      ? h('span', { class: 'runtime-state' },
+          h('span', { class: 'chip', dataset: { tone: 'flag' } }, `v${staged} will be used next launch`))
+      : rt?.update_available && latest
+        ? h('span', { class: 'runtime-state' },
+            h('span', { class: 'chip', dataset: { tone: 'flag' } }, `v${latest} available`))
+        : rt?.checked
+          ? h('span', { class: 'runtime-state' },
+              h('span', { class: 'chip', dataset: { tone: 'ok' } }, 'up to date'))
+          : null;
 
   return card('Agent runtime',
     S.runtimeChecking ? 'checking…'
       : rt?.checked ? (active ? `v${active}` : 'unknown')
         : rt ? 'not checked yet' : 'unknown',
     h('div', { class: 'runtime-bar' },
-      h('span', { class: 'runtime-state' },
-        staged
-          ? h('span', { class: 'chip', dataset: { tone: 'flag' } }, `v${staged} will be used next launch`)
-          : rt?.update_available && latest
-            ? h('span', { class: 'chip', dataset: { tone: 'flag' } }, `v${latest} available`)
-            : rt?.checked
-              ? h('span', { class: 'chip', dataset: { tone: 'ok' } }, 'up to date')
-              : null,
-        downloading ? h('span', { class: 'dim' }, 'Downloading…') : null),
+      state,
       h('div', { class: 'runtime-actions' },
         updatable ? h('button', {
           // Not the accent. The page's accent belongs to "Choose an
@@ -484,6 +526,7 @@ function runtimeCard() {
             const r = await api.updateRuntime();
             if (r) {
               S.runtime = { ...S.runtime, pending_version: r.staging, downloading: true };
+              pollRuntimeWhileBusy();
               toast('Downloading. Restart the app to start using it.');
             }
           }, 'Could not start the update'),
@@ -500,10 +543,15 @@ function runtimeCard() {
             }
           }, 'Could not check for updates'),
           { 'data-size': 'sm', 'data-variant': 'ghost', disabled: downloading }))),
-    rt?.active_source === 'managed'
-      ? h('div', { class: 'hint', style: 'margin-top:10px' },
-          `Running an updated runtime (v${active}) rather than the one this app `
-          + 'was built with. Restart the app after installing an update to pick it up.')
+    downloading && total
+      ? h('div', { class: 'meter', style: 'margin-top:12px' },
+          h('div', { class: 'meter-fill', style: `width:${Math.min(100, Math.round((done / total) * 100))}%` }))
+      : null,
+    // Only when there is something to restart for. A runtime that is already
+    // the latest needs no advice, and saying "restart the app" beside
+    // "up to date" was telling someone to do nothing useful.
+    staged && staged !== active
+      ? h('div', { class: 'hint', style: 'margin-top:10px' }, 'Restart the app to use it.')
       : null);
 }
 
@@ -694,6 +742,14 @@ const ICONS = {
     { d: 'M6.6 4.6v-1.2h2.8v1.2' },
     { d: 'M4.7 4.6l.5 8a1 1 0 00.95.9h3.7a1 1 0 00.95-.9l.5-8' },
   ],
+  // A sun and a moon, on the same 16px grid and the same 1.5 stroke as the
+  // rest of the set.
+  sun: [
+    { d: 'M8 5.4a2.6 2.6 0 100 0 5.2 2.6 2.6 0 000-5.2z' },
+    { d: 'M8 3.8V2.4M8 12.2v1.4M3.8 8H2.4M12.2 8h1.4' },
+    { d: 'M5.03 5.03L4.04 4.04M10.97 5.03l.99-.99M5.03 10.97l-.99.99M10.97 10.97l.99.99' },
+  ],
+  moon: [{ d: 'M8 2a4 4 0 006 6 6 6 0 01-6-6z' }],
 };
 
 function closePanel() {
@@ -1691,13 +1747,13 @@ function renderSpine() {
 
   // A run that has not been fetched yet has no title and no criteria, so
   // nothing here may assume they are there.
-  els.spineMeta.textContent = S.run
-    ? [
-        S.run.title,
-        S.run.criteria?.length ? `${S.run.criteria.length} criteria` : null,
-      ].filter(Boolean).join('\n')
-    : 'No assignment selected';
-  els.spineMeta.style.whiteSpace = 'pre-line';
+  mount(els.spineMeta, S.run
+    ? h('div', { class: 'run-title' }, S.run.title)
+    : h('div', {}, 'No assignment selected'));
+  if (S.run?.criteria?.length) {
+    els.spineMeta.append(
+      h('div', {}, `${S.run.criteria.length} criteria`));
+  }
 }
 
 function renderTopbar() {
@@ -2128,8 +2184,25 @@ async function loadCourses() {
 
 function applyTheme(theme) {
   document.documentElement.dataset.theme = theme;
-  document.getElementById('theme-toggle').textContent = theme === 'dark' ? 'light' : 'dark';
+  renderThemeToggle();
   try { localStorage.setItem('gp-theme', theme); } catch (_) {}
+}
+
+/** The theme toggle, as a drawn mark.
+ *
+ *  The mark shows the theme it switches to, which is what the button does:
+ *  a sun in the dark theme, a moon in the light one. The tooltip names it in
+ *  words, so the meaning is never only in the drawing.
+ */
+function renderThemeToggle() {
+  const btn = document.getElementById('theme-toggle');
+  if (!btn) return;
+  const dark = document.documentElement.dataset.theme !== 'light';
+  clear(btn);
+  btn.appendChild(icon(dark ? ICONS.sun : ICONS.moon));
+  const label = dark ? 'Switch to the light theme' : 'Switch to the dark theme';
+  btn.title = `${label} (Cmd/Ctrl+Shift+D)`;
+  btn.setAttribute('aria-label', label);
 }
 
 // Progress events arrive per submission. Re-fetching the whole submission list

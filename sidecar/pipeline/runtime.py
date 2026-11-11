@@ -286,6 +286,10 @@ class RuntimeStatus:
     update_available: bool = False
     pending_version: str | None = None
     downloading: bool = False
+    # How much of the download has arrived. A runtime is tens of megabytes,
+    # and "Downloading…" with nothing else is the state that looks stuck.
+    downloaded_bytes: int = 0
+    total_bytes: int = 0
     error: str = ""
     events: list[dict[str, Any]] = field(default_factory=list)
 
@@ -299,6 +303,8 @@ class RuntimeStatus:
             "update_available": self.update_available,
             "pending_version": self.pending_version,
             "downloading": self.downloading,
+            "downloaded_bytes": self.downloaded_bytes,
+            "total_bytes": self.total_bytes,
             "error": self.error,
         }
 
@@ -389,7 +395,7 @@ class RuntimeManager:
                 try:
                     archive = root / f"{name}.tgz"
                     archive.parent.mkdir(parents=True, exist_ok=True)
-                    _fetch_tarball(name, wanted_pkg, archive)
+                    _fetch_tarball(name, wanted_pkg, archive, on_progress)
                     binary = _extract_binary(archive, root / name)
                     if binary is None:
                         continue
@@ -408,8 +414,16 @@ class RuntimeManager:
         """Download, then mark it pending. Takes effect at the next launch."""
         with _lock:
             self.status.downloading = True
+            self.status.downloaded_bytes = 0
+            self.status.total_bytes = 0
+
+        def report(done: int, total: int) -> None:
+            with _lock:
+                self.status.downloaded_bytes = done
+                self.status.total_bytes = total
+
         try:
-            path = self.download(version, on_progress)
+            path = self.download(version, report if on_progress is None else on_progress)
             if parse_version(read_version(path)) != parse_version(version):
                 # A binary that reports a different version is not the one that
                 # was asked for, and promoting it would be worse than not
@@ -426,6 +440,8 @@ class RuntimeManager:
             with _lock:
                 self.status.pending_version = version
                 self.status.update_available = False
+                self.status.downloaded_bytes = 0
+                self.status.total_bytes = 0
             return version
         finally:
             with _lock:
@@ -458,15 +474,29 @@ def _package_version(name: str, wanted: tuple[int, int, int]) -> str | None:
     return None
 
 
-def _fetch_tarball(name: str, version: str, dest: Path) -> None:
+def _fetch_tarball(name: str, version: str, dest: Path, on_progress=None) -> None:
+    """Fetch a runtime tarball, reporting how much of it has arrived.
+
+    The progress is not decoration: a runtime is tens of megabytes, and a
+    card that says "Downloading…" and nothing else is indistinguishable from
+    one that has stopped.
+    """
     basename = name.split("/")[-1]
     url = f"{_registry_url(name)}/-/{basename}-{version}.tgz"
     with requests.get(url, stream=True, timeout=DOWNLOAD_TIMEOUT) as r:
         r.raise_for_status()
+        try:
+            total = int(r.headers.get("Content-Length") or 0)
+        except (TypeError, ValueError):
+            total = 0
+        done = 0
         with open(dest, "wb") as fh:
             for chunk in r.iter_content(chunk_size=1 << 20):
                 if chunk:
                     fh.write(chunk)
+                    done += len(chunk)
+                    if on_progress:
+                        on_progress(done, total)
 
 
 def _extract_binary(archive: Path, into: Path) -> Path | None:

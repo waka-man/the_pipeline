@@ -203,7 +203,7 @@ def test_staging_a_verified_runtime_marks_it_pending(layout, monkeypatch):
     # no network and no 30MB.
     member = _tar_member()
     monkeypatch.setattr(rt, "_fetch_tarball",
-                        lambda name, version, dest: _tarball(dest, member, b"binary"))
+                        lambda name, version, dest, on_progress=None: _tarball(dest, member, b"binary"))
     monkeypatch.setattr(rt, "_package_version", lambda name, wanted: "2.3.0")
     monkeypatch.setattr(rt, "read_version", lambda _b: "2.3.0")
 
@@ -216,12 +216,40 @@ def test_staging_a_verified_runtime_marks_it_pending(layout, monkeypatch):
             "a downloaded runtime that cannot be executed will not launch"
 
 
+def test_the_download_reports_how_much_has_arrived(layout, monkeypatch):
+    """A runtime is tens of megabytes.
+
+    "Downloading…" and nothing else is indistinguishable from a download that
+    has stopped, so the bytes are counted as they arrive.
+    """
+    member = _tar_member()
+    seen = []
+
+    def fake_fetch(name, version, dest, on_progress=None):
+        _tarball(dest, member, b"binary")
+        if on_progress:
+            on_progress(512, 1024)
+        seen.append((mgr.status.downloaded_bytes, mgr.status.total_bytes))
+        return dest
+
+    monkeypatch.setattr(rt, "_fetch_tarball", fake_fetch)
+    monkeypatch.setattr(rt, "_package_version", lambda name, wanted: "2.3.0")
+    monkeypatch.setattr(rt, "read_version", lambda _b: "2.3.0")
+
+    mgr = rt.RuntimeManager(layout.data, "/bundled/opencode")
+    assert mgr.stage("2.3.0") == "2.3.0"
+    assert seen == [(512, 1024)], seen
+    # The counters are in the status, so the interface can show them.
+    status = mgr.status.as_dict()
+    assert "downloaded_bytes" in status and "total_bytes" in status
+
+
 def test_a_binary_that_reports_the_wrong_version_is_not_staged(layout, monkeypatch):
     # Promoting something that is not what was asked for is worse than staying
     # on the bundled build.
     member = _tar_member()
     monkeypatch.setattr(rt, "_fetch_tarball",
-                        lambda name, version, dest: _tarball(dest, member, b"binary"))
+                        lambda name, version, dest, on_progress=None: _tarball(dest, member, b"binary"))
     monkeypatch.setattr(rt, "_package_version", lambda name, wanted: "2.3.0")
     monkeypatch.setattr(rt, "read_version", lambda _b: "2.2.6")
 
@@ -235,7 +263,7 @@ def test_a_binary_that_reports_the_wrong_version_is_not_staged(layout, monkeypat
 def test_a_tarball_without_the_expected_binary_is_refused(layout, monkeypatch):
     # This file is about to be executed. A tarball that does not contain
     # exactly the expected path is not one to pull an executable out of.
-    monkeypatch.setattr(rt, "_fetch_tarball", lambda name, version, dest: _tarball(dest, "package/bin/something-else", b"x"))
+    monkeypatch.setattr(rt, "_fetch_tarball", lambda name, version, dest, on_progress=None: _tarball(dest, "package/bin/something-else", b"x"))
     monkeypatch.setattr(rt, "_package_version", lambda name, wanted: "2.3.0")
 
     mgr = rt.RuntimeManager(layout.data, "/bundled/opencode")
