@@ -45,7 +45,11 @@ it accordingly and say so plainly in the analysis.
 
 The `comment` you write is different from everything else you produce: it is \
 posted to the student as the assignment comment, and they read it on its own. \
-Write it to them — what worked, what to work on next — in a few sentences. \
+Write it to them, in four short moves, using the GROW model: \
+**Goal** — what the work was trying to do; \
+**Reality** — what it actually does, plainly, including what is not there yet; \
+**Options** — two or three concrete things they could do next; \
+**Will** — what you would expect them to do next. \
 Leave out flags, internal review notes, and anything about how the marking \
 was produced; those stay with the instructor.
 

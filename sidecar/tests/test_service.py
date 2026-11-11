@@ -666,8 +666,9 @@ class FakeServer:
         return list(self.session_parts)
 
     def prompt(self, session_id, text, system=None, agent=None, model=None,
-               directory=None, timeout=1800):
-        self.turns[-1].update(system=system, text=text, agent=agent, model=model)
+               directory=None, done_when=None, timeout=1800):
+        self.turns[-1].update(system=system, text=text, agent=agent, model=model,
+                               done_when=done_when)
         if self.mode == "raise":
             raise RuntimeError("opencode refused")
         if self.mode == "silent":
@@ -717,6 +718,23 @@ def test_runner_records_a_graded_scorecard_on_success(tmp_path, store, spec):
     assert store.submission_row(1)["status"] == "graded"
     assert store.best_scorecard(1) is not None
     assert store.best_scorecard(1).model == "test/model"
+
+
+def test_the_runner_stops_waiting_when_the_scorecard_lands(tmp_path, store, spec):
+    """The grading is finished when the scorecard is in.
+
+    A model that submits and then keeps talking would otherwise hold the
+    row in `grading` for as long as it felt like.
+    """
+    store.replace_submissions(store.upsert_run(spec), [unit()])
+    grader, server = _grader(tmp_path, store, spec)
+
+    result = grader.grade(1, unit(), [{"kind": "github", "status": "ok", "path": "/w/r"}])
+
+    assert result.status == "graded"
+    done_when = server.turns[-1].get("done_when")
+    assert callable(done_when), "the runner cannot tell when the work is done"
+    assert done_when() is True, "the scorecard is in but the runner does not know"
 
 
 def test_runner_writes_a_workspace_and_agent_config(tmp_path, store, spec):

@@ -611,6 +611,73 @@ def test_prompt_waits_for_the_completed_assistant_turn(monkeypatch):
     assert posts[0][2] == {"text": "hi"}
 
 
+def test_prompt_watches_the_newest_message_of_the_turn(monkeypatch):
+    """v2 lists the messages newest first.
+
+    Reading the oldest of the new ones meant the runner kept looking at the
+    first message of the turn, which asked for tool calls, and so never saw
+    the turn end: a grading that had submitted its scorecard sat in
+    `grading` until the timeout.
+    """
+    from pipeline.grading import runner
+
+    srv, _Response = _v2_server(monkeypatch, iter([]))
+    polls = {"n": 0}
+
+    def fake_request(method, path, body=None, timeout=30):
+        if path.endswith("/prompt"):
+            return _Response(True, {"data": {"id": "msg_u1", "type": "user"}})
+        if path == "/session/ses_1":
+            return _Response(True, {"data": {"id": "ses_1",
+                                             "time": {"idle": 9}}})
+        polls["n"] += 1
+        if polls["n"] == 1:
+            return _Response(True, {"data": []})
+        # Newest first, as the server returns them.
+        return _Response(True, {"data": [
+            {"id": "msg_a2", "type": "assistant",
+             "time": {"created": 5, "completed": 6},
+             "content": [{"type": "text", "text": "Done."}],
+             "finish": "stop"},
+            {"id": "msg_a1", "type": "assistant",
+             "time": {"created": 2, "completed": 3},
+             "content": [{"type": "tool", "id": "call-1", "name": "shell",
+                          "state": {"status": "completed", "input": {}}}],
+             "finish": "tool-calls"},
+        ]})
+
+    srv._request = fake_request
+    # A short timeout, so the old behaviour fails in seconds rather than
+    # hanging: reading the oldest message never sees the turn end.
+    result = srv.prompt("ses_1", "hi", timeout=5)
+    assert srv.provider_error(result) is None
+    texts = [p["text"] for p in result["parts"] if p["type"] == "text"]
+    assert "Done." in texts, texts
+
+
+def test_prompt_stops_as_soon_as_the_work_is_done(monkeypatch):
+    """The grading is finished when the scorecard lands.
+
+    A model that submits and then keeps talking would otherwise hold the
+    row in `grading` for as long as it felt like.
+    """
+    from pipeline.grading import runner
+
+    srv, _Response = _v2_server(monkeypatch, iter([]))
+    polls = {"n": 0}
+
+    def fake_request(method, path, body=None, timeout=30):
+        if path.endswith("/prompt"):
+            return _Response(True, {"data": {"id": "msg_u1", "type": "user"}})
+        polls["n"] += 1
+        # The agent is still talking: no completed assistant message.
+        return _Response(True, {"data": []})
+
+    srv._request = fake_request
+    result = srv.prompt("ses_1", "hi", done_when=lambda: True, grace=0, timeout=5)
+    assert result.get("taken_over") is True
+
+
 def test_prompt_surfaces_the_provider_error(monkeypatch):
     """Recorded v2 error shape: finish error with a provider message."""
     srv, _Response = _v2_server(monkeypatch, iter([]))

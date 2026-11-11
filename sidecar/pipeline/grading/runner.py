@@ -316,7 +316,8 @@ class OpenCodeServer:
 
     def prompt(self, session_id: str, text: str, system: str | None = None,
                agent: str | None = None, model: str | None = None,
-               directory: str | None = None, timeout: int = 1800) -> dict[str, Any]:
+               directory: str | None = None, done_when: Any = None,
+               grace: float = 20.0, timeout: int = 1800) -> dict[str, Any]:
         """Send a prompt and wait for the turn to finish.
 
         v2 accepts the message and returns the user message immediately;
@@ -324,6 +325,13 @@ class OpenCodeServer:
         from the message list until a new assistant message completes.
         The model is chosen at session creation in v2, so `model` here is
         accepted for compatibility and ignored.
+
+        `done_when` says when the work is finished, which for a grading turn
+        is the scorecard landing rather than the agent falling silent. A model
+        that submits and then keeps writing must not hold the row in
+        `grading` for as long as it feels like, so once the work is done the
+        wait ends after a short grace period for the agent to finish its
+        sentence.
         """
         body: dict[str, Any] = {"text": text}
         if system:
@@ -335,12 +343,29 @@ class OpenCodeServer:
         if not r.ok:
             raise RunnerError(f"prompt failed: {r.status_code} {r.text[:300]}")
         deadline = time.time() + timeout
+        finished_at: float | None = None
         while time.time() < deadline:
+            if done_when is not None:
+                try:
+                    if done_when():
+                        if finished_at is None:
+                            finished_at = time.time()
+                        if time.time() - finished_at >= grace:
+                            return {"info": {}, "parts": self.parts(session_id),
+                                    "taken_over": True}
+                except Exception:
+                    pass
             messages = self._messages(session_id)
-            fresh = [m for m in messages
-                     if m.get("id") not in before_ids
-                     and m.get("type") == "assistant"
-                     and (m.get("time") or {}).get("completed")]
+            # v2 lists the messages newest first, so the one to look at is the
+            # newest of the new ones. Taking the oldest meant the runner kept
+            # reading the first message of the turn, which asked for tool
+            # calls, and so never saw the turn end.
+            fresh = sorted(
+                (m for m in messages
+                 if m.get("id") not in before_ids
+                 and m.get("type") == "assistant"
+                 and (m.get("time") or {}).get("completed")),
+                key=lambda m: (m.get("time") or {}).get("created") or 0)
             if fresh:
                 assistant = fresh[-1]
                 # A completed assistant message that requested tool calls is
@@ -789,7 +814,13 @@ class Grader:
         })
         response = srv.prompt(
             session_id, message, system=system, agent=self.agent_name,
-            model=self.model or None, directory=str(workspace))
+            model=self.model or None, directory=str(workspace),
+            done_when=lambda: self._scorecard_accepted(out_path))
+        if response.get("taken_over"):
+            # The scorecard is in and the grading is done. The agent's turn
+            # can carry on for as long as it likes, and a second submission
+            # would overwrite the scorecard that was just read.
+            srv.abort(session_id)
 
         refusal = srv.provider_error(response)
         if not refusal:
@@ -821,7 +852,8 @@ class Grader:
         self.store.finish_attempt(attempt_id, "running", session.get("id", ""))
         return srv.prompt(
             session.get("id", ""), message, system=system, agent=self.agent_name,
-            model=self.model or None, directory=str(workspace))
+            model=self.model or None, directory=str(workspace),
+            done_when=lambda: self._scorecard_accepted(out_path))
 
     def grade(self, submission_row_id: int, unit: SubmissionUnit,
               sources: list[dict[str, Any]],
@@ -866,6 +898,10 @@ class Grader:
                 return GradeResult(submission_row_id, self._session_by_row.get(
                     submission_row_id, ""), attempt_no, "stopped")
             attempt_id = self.store.start_attempt(submission_row_id, self.model or None)
+            # Each attempt starts with no scorecard on disk, so a leftover
+            # from an earlier attempt cannot be mistaken for this one.
+            for stale in (out_path, meta_path):
+                stale.unlink(missing_ok=True)
             message = task if attempt_no == 1 else retry_prompt(last_issues)
             try:
                 # _turn owns session creation so a budget-triggered retry gets
@@ -1020,6 +1056,18 @@ class Grader:
             return json.loads(out_path.read_text())
         except json.JSONDecodeError:
             return None
+
+    @staticmethod
+    def _scorecard_accepted(out_path: Path) -> bool:
+        """Whether the agent has submitted a scorecard that was accepted.
+
+        The tool writes its record whether the scorecard was accepted or
+        rejected, so the file appearing is not the signal: a rejected
+        scorecard means the agent is still fixing it, and the runner must
+        let it.
+        """
+        record = Grader._read_outcome(out_path)
+        return bool(record and record.get("ok"))
 
 
 def launch_student_session(server: OpenCodeServer, unit: SubmissionUnit,
