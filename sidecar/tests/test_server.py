@@ -768,9 +768,9 @@ def test_a_partly_graded_run_is_not_reported_as_graded(live):
     assert state.store.progress(1).get("graded") == 1, state.job_errors
 
     run = state.store.get_run(1)
-    assert run["status"] == "grading", f'still claiming {run["status"]} at 1 of 2'
+    assert run["status"] == "partly_graded", f'still claiming {run["status"]} at 1 of 2'
     card = next(r for r in state.store.list_runs() if r["id"] == 1)
-    assert card["status"] == "grading", card
+    assert card["status"] == "partly_graded", card
     assert card["graded"] == 1 and card["total"] == 2
 
     # Finish the cohort and it settles the other way.

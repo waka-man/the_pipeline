@@ -1542,6 +1542,17 @@ function showPublishPlan(plan) {
 
 /* -------------------------------------------------------------- fragments */
 
+/** The status a row is really in.
+
+ *  A row says it is being graded while the agent works on it. If no grading
+ *  is running, that marker is left over from a session that died, and the
+ *  row is simply collected and waiting to be marked.
+ */
+function rowStatus(s) {
+  if (s.status === 'grading' && !s.grading) return 'collected';
+  return s.status;
+}
+
 function submissionTable(compact) {
   // Every row is pickable, graded or not: selecting a graded row is how
   // re-grading (Grade Selected) and resetting (Reset Selected) reach it.
@@ -1582,7 +1593,7 @@ function submissionTable(compact) {
       : h('span', { style: 'color:var(--ink-3)' }, ''),
     h('span', { class: 'row-name', title: s.primary_url || '' }, s.student),
     h('span', { class: 'row-score' }, s.score === null ? '—' : fmt(s.score)),
-    h('span', {}, statusChip(s.status)),
+    h('span', {}, statusChip(rowStatus(s))),
     h('span', { class: 'row-act', style: 'display:flex;gap:6px;justify-content:flex-end' },
       // The agent output is how you see what happened - especially when a
       // run finished without a scorecard and was flagged for review.
@@ -2131,7 +2142,10 @@ function scheduleSubmissionsRefresh() {
   submissionsPending = true;
   setTimeout(() => {
     submissionsPending = false;
-    if (S.run) refreshSubmissions();
+    // Repaint after the refresh, not before it: the rows that came back are
+    // the ones on screen, and without this the list kept showing the state
+    // from before the refresh.
+    if (S.run) refreshSubmissions().then(() => render());
   }, 500);
 }
 

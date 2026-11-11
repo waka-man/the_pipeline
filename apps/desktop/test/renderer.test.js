@@ -2061,6 +2061,37 @@ await test('no handler threw while every button was clicked', () => {
       `the repaint threw: ${window.__errs.join(' | ')}`);
   });
 
+  // A row keeps the `grading` marker when the sidecar dies mid-turn, so the
+  // marker alone is not evidence that a grader is working on it.
+  await test('a row only says it is being graded while a grader is running', async () => {
+    const { window } = await reboot();
+    await gotoOn(window, 'Grade');
+    await tick(60);
+    const chips = await window.eval(
+      "[...document.querySelectorAll('.rows .row:not(.row-head)')]"
+      + ".map((r) => r.querySelector('.chip').textContent.trim())");
+    assert.ok(!chips.includes('grading'),
+      `a row says it is being graded with no grader running: ${chips.join(' | ')}`);
+
+    // With a grading job running, it says so.
+    await window.eval(`(() => {
+      const api = window.pipeline.api;
+      const original = api.submissions;
+      api.submissions = (id) => original(id).then((data) => ({
+        submissions: data.submissions.map((s) => (s.status === 'grading'
+          ? { ...s, grading: true } : s)),
+      }));
+    })()`);
+    await window.eval(
+      "window.__emit({ event: 'grade.progress', data: { progress: {} } })");
+    await tick(700);
+    const live = await window.eval(
+      "[...document.querySelectorAll('.rows .row:not(.row-head)')]"
+      + ".map((r) => r.querySelector('.chip').textContent.trim())");
+    assert.ok(live.includes('grading'),
+      `a row being graded does not say so: ${live.join(' | ')}`);
+  });
+
   // The save button used to stretch to the height of the view switch beside
   // it and tower over it.
   await test('the save button is sized with the view switch, not beside it', async () => {

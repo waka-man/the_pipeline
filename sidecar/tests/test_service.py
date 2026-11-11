@@ -121,11 +121,15 @@ def test_a_run_marked_graded_partway_through_still_reads_as_grading():
 
     The grading job returns when the quota runs out or a key dies, not only when
     the cohort is done, and it used to record `graded` either way.
+
+    And a run that stopped with work left is not "grading" either: that means
+    a grading job is running right now. It says `partly_graded`, which is
+    what it is.
     """
-    assert effective_run_status("graded", 30, 151) == "grading"
-    assert effective_run_status("graded", 36, 37) == "grading"
+    assert effective_run_status("graded", 30, 151) == "partly_graded"
+    assert effective_run_status("graded", 36, 37) == "partly_graded"
     assert effective_run_status("graded", 151, 151) == "graded"
-    assert effective_run_status("graded", 0, 0) == "grading"
+    assert effective_run_status("graded", 0, 0) == "partly_graded"
 
     # Stages that have nothing to do with marking are untouched, so a run being
     # collected is never relabelled.
@@ -143,7 +147,7 @@ def test_list_runs_reports_a_partial_run_as_grading(store, spec):
 
     card = next(r for r in store.list_runs() if r["id"] == run_id)
     assert card["graded"] == 1 and card["total"] == 2
-    assert card["status"] == "grading", card
+    assert card["status"] == "partly_graded", card
 
     store.set_submission_status(2, "graded")
     card = next(r for r in store.list_runs() if r["id"] == run_id)
@@ -156,9 +160,41 @@ def test_get_run_reports_a_partial_run_as_grading(store, spec):
     store.set_submission_status(1, "graded")
     store.set_run_status(run_id, "graded")
 
-    assert store.get_run(run_id)["status"] == "grading"
+    assert store.get_run(run_id)["status"] == "partly_graded"
     store.set_submission_status(2, "graded")
     assert store.get_run(run_id)["status"] == "graded"
+
+
+def test_stale_grading_is_cleared_when_the_sidecar_starts(store, spec):
+    """A run interrupted mid-turn left rows marked `grading` for ever.
+
+    Nothing was marking them: the sidecar had died. At startup no grading
+    can be in flight, so every such row is stale and goes back to the
+    collected rows, ready to be marked again.
+    """
+    run_id = store.upsert_run(spec)
+    store.replace_submissions(run_id, [unit(), unit(canvas_submission_id=2, student_name="B")])
+    store.set_submission_status(1, "grading")
+    store.set_submission_status(2, "grading")
+    store.set_run_status(run_id, "grading")
+
+    cleared = store.reset_stale_grading()
+    assert cleared == {"rows": 2, "runs": 1}, cleared
+    statuses = [r["status"] for r in store.submissions_for_run(run_id)]
+    assert statuses == ["collected", "collected"], statuses
+    assert store.get_run(run_id)["status"] == "collected"
+
+
+def test_a_row_that_was_graded_before_is_not_ungraded_by_the_reset(store, spec):
+    """A row with a valid scorecard keeps its grade when the marker is stale."""
+    run_id = store.upsert_run(spec)
+    store.replace_submissions(run_id, [unit()])
+    good = stub_scorecard(spec, "Ada Lovelace", [])
+    store.save_scorecard(1, None, good, "valid", 20.0, 25.0, [])
+    store.set_submission_status(1, "grading")
+
+    store.reset_stale_grading()
+    assert store.submissions_for_run(run_id)[0]["status"] == "graded"
 
 
 def test_only_the_valid_scorecard_is_returned(store, spec):

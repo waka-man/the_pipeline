@@ -144,13 +144,16 @@ def effective_run_status(status: str, graded: int, total: int) -> str:
     apart was to read both.
 
     So `graded` is only reported once every submission is finished with.
-    Otherwise the run is still in progress, because work remains.
+    Otherwise the marking stopped with work remaining, which is neither
+    "graded" nor "grading": `grading` means a grading job is running right
+    now, and saying it when nothing is running is the state that made a run
+    look stuck.
 
     `published` is left alone: publishing can cover part of a cohort, and a run
     that has been posted to the course has in fact been published.
     """
     if status in ("graded", "reviewing", "reviewed"):
-        return status if total > 0 and graded >= total else "grading"
+        return status if total > 0 and graded >= total else "partly_graded"
     return status
 
 
@@ -349,6 +352,52 @@ class Store:
         with self.connect() as db:
             db.execute("UPDATE runs SET status=?, updated_at=? WHERE id=?",
                        (status, utcnow(), run_id))
+
+    def reset_stale_grading(self) -> dict[str, int]:
+        """Undo a grading that was interrupted by a crash or a restart.
+
+        A row is marked `grading` while the agent works on it and moved on
+        when the attempt finishes. If the sidecar dies in between, nothing
+        moves it again: the row says it is being graded for ever, and the
+        cohort's progress is wrong.
+
+        No grading can be in flight before the sidecar has started, so at
+        startup every such row is stale. A row that already carries a valid
+        scorecard goes back to `graded`; one that does not is simply collected
+        again, ready to be marked.
+        """
+        with self.connect() as db:
+            cur = db.execute(
+                "UPDATE submissions SET status = CASE WHEN EXISTS ("
+                "  SELECT 1 FROM scorecards sc WHERE sc.submission_row_id = "
+                "  submissions.id AND sc.status='valid')"
+                "  THEN 'graded' ELSE 'collected' END "
+                "WHERE status='grading'")
+            rows = cur.rowcount
+            cur = db.execute(
+                "UPDATE runs SET status = CASE WHEN EXISTS ("
+                "  SELECT 1 FROM submissions s WHERE s.run_id = runs.id "
+                "  AND s.status IN ('graded','reviewed','needs_review'))"
+                "  THEN 'partly_graded' ELSE 'collected' END "
+                "WHERE status='grading'")
+            runs = cur.rowcount
+        return {"rows": rows, "runs": runs}
+
+    def finish_stale_grading(self, run_id: int) -> int:
+        """Rows of one run still marked `grading` after its job ended.
+
+        The job was interrupted in the middle of them. Nothing is marking
+        them any more, so they go back to the collected rows, ready to be
+        graded again.
+        """
+        with self.connect() as db:
+            cur = db.execute(
+                "UPDATE submissions SET status = CASE WHEN EXISTS ("
+                "  SELECT 1 FROM scorecards sc WHERE sc.submission_row_id = "
+                "  submissions.id AND sc.status='valid')"
+                "  THEN 'graded' ELSE 'collected' END "
+                "WHERE run_id=? AND status='grading'", (run_id,))
+            return cur.rowcount
 
     def set_run_model(self, run_id: int, model: str) -> None:
         with self.connect() as db:

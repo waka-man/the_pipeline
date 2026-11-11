@@ -134,6 +134,9 @@ class AppState:
     jobs: dict[str, threading.Thread] = field(default_factory=dict)
     job_errors: dict[str, str] = field(default_factory=dict)
     controls: dict[str, "JobControl"] = field(default_factory=dict)
+    # Which run each running job is working on, so "is this run being graded
+    # right now" can be answered rather than guessed from the row statuses.
+    job_runs: dict[str, int] = field(default_factory=dict)
     # Ring buffer of recent agent output per submission, for the live log panel.
     agent_logs: dict[int, list[str]] = field(default_factory=dict)
     # opencode session id -> submission row, so its output can be routed.
@@ -159,6 +162,22 @@ class AppState:
     def client(self) -> CanvasClient:
         self.settings.check_canvas()
         return CanvasClient(self.settings.canvas_base_url, self.settings.canvas_api_token)
+
+    def finish_job(self, name: str) -> None:
+        """Clean up after a job, however it ended.
+
+        A job that stops must not leave its run or its rows saying they are
+        being graded: the marker means "this is happening now", and after the
+        job it is not happening any more.
+        """
+        run_id = self.job_runs.pop(name, None)
+        if name != "grade" or run_id is None:
+            return
+        try:
+            self.store.set_run_status(run_id, _settled_status(self.store, run_id))
+            self.store.finish_stale_grading(run_id)
+        except Exception as exc:  # pragma: no cover - a stale marker is not fatal
+            print(f"could not settle run {run_id}: {exc}", flush=True)
 
     # ---------------------------------------------------------------- log
 
@@ -546,6 +565,10 @@ def run_job(state: AppState, name: str, fn: Callable[[Any], Any]) -> None:
             traceback.print_exc()
         finally:
             state.controls.pop(name, None)
+            # Only if this thread is still the one registered for the job: a
+            # job that was replaced leaves its entry to its successor.
+            if state.jobs.get(name) is threading.current_thread():
+                state.finish_job(name)
 
     control = JobControl()
     state.controls[name] = control
@@ -564,6 +587,19 @@ def job_state(state: AppState, name: str) -> dict[str, Any]:
                 "paused": False}
     status = "paused" if control and control.paused else "running"
     return {"job": name, "status": status, "paused": status == "paused"}
+
+
+def grading_active(state: AppState, run_id: int) -> bool:
+    """Whether a grading job is marking this run right now.
+
+    The row statuses are not enough: a row keeps the `grading` marker when
+    the sidecar dies mid-turn, so "is it being graded" has to be answered
+    from the job, not from the rows.
+    """
+    thread = state.jobs.get("grade")
+    if thread is None or not thread.is_alive():
+        return False
+    return state.job_runs.get("grade") == run_id
 
 
 # ------------------------------------------------------------- operations
@@ -816,6 +852,10 @@ def op_run(state: AppState, run_id: int) -> dict[str, Any]:
 
 def op_submissions(state: AppState, run_id: int) -> dict[str, Any]:
     rows = state.store.submissions_for_run(run_id)
+    # Whether anything is being marked right now. A row keeps the `grading`
+    # marker when the sidecar died mid-turn, so the marker on its own is not
+    # evidence that a grader is working on it.
+    grading = grading_active(state, run_id)
     out = []
     for r in rows:
         sc = state.store.best_scorecard(int(r["id"]))
@@ -825,6 +865,7 @@ def op_submissions(state: AppState, run_id: int) -> dict[str, Any]:
             "student": r["student_name"],
             "group": r["group_name"],
             "status": r["status"],
+            "grading": grading,
             "workflow_state": r["workflow_state"],
             "missing": bool(r["missing"]),
             "existing_score": r["existing_score"],
@@ -903,6 +944,11 @@ def op_grade(state: AppState, run_id: int, body: dict[str, Any]) -> dict[str, An
 
     def work(control: JobControl) -> None:
         bus.emit("job.start", {"job": "grade", "stub": stub, "workers": workers})
+        # This job is marking this run, so the run is being graded right now.
+        # Set here rather than before the job starts, so a job that is
+        # replaced does not leave its successor's run marked.
+        state.job_runs["grade"] = run_id
+        store.set_run_status(run_id, "grading")
         run = store.get_run(run_id)
         spec = run["spec"]
 
@@ -1087,10 +1133,14 @@ def _settled_status(store: Any, run_id: int) -> str:
     dies, or the caller graded a selection rather than the cohort. Recording
     `graded` regardless is what let a run claim it was finished with 30 of 151
     marked.
+
+    And the job is over, so the run is not "grading" either: that means a
+    grading job is running right now. A run that stopped with work left says
+    `partly_graded`, which is what it is.
     """
     counts = store.progress(run_id)
     return "graded" if counts["total"] and counts["finished"] >= counts["total"] \
-        else "grading"
+        else "partly_graded"
 
 
 def op_render(state: AppState, run_id: int) -> dict[str, Any]:
@@ -1795,6 +1845,18 @@ def serve(port: int = 0, host: str = "127.0.0.1") -> tuple[ThreadingHTTPServer, 
     settings = config.Settings.load()
     store = Store(settings.db_path)
     state = AppState(store=store, bus=EventBus(store))
+
+    # A grading that was interrupted by a crash or a restart left rows marked
+    # `grading` for ever: nothing was marking them, and nothing ever would.
+    # No grading can be in flight before the sidecar has started, so all of
+    # them are stale.
+    try:
+        stale = store.reset_stale_grading()
+        if stale["rows"] or stale["runs"]:
+            print(f"cleared {stale['rows']} stale grading row(s) and "
+                  f"{stale['runs']} stale run(s)", flush=True)
+    except Exception as exc:  # pragma: no cover - a stale marker is not fatal
+        print(f"could not clear stale grading state: {exc}", flush=True)
 
     # Promote a staged runtime before anything can launch opencode. This is the
     # only moment the version is allowed to change: nothing is mid-submission,

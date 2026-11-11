@@ -49,6 +49,7 @@ export function statusChip(status) {
   const map = {
     graded: ['graded', 'ok'], collected: ['collected', 'accent'],
     pending: ['not started', null], grading: ['grading', 'flag'],
+    partly_graded: ['partly graded', null],
     collecting: ['collecting', 'flag'], needs_review: ['needs review', 'flag'],
     failed: ['failed', 'bad'], collect_failed: ['collect failed', 'bad'],
     no_submission: ['no submission', null], published: ['published', 'ok'],
