@@ -105,9 +105,19 @@ export function marksStrip(criteria, scores, { flagKeys = [] } = {}) {
 const esc = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;')
   .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 
+// A flag's severity is written into the report as a word. It is the one
+// place in a report where a single word carries a weight, so it is coloured
+// rather than left as another piece of grey code.
+const SEVERITY_WORDS = { BLOCKING: 'block', Review: 'warn', Note: 'info' };
+
 function inline(s) {
   return esc(s)
-    .replace(/`([^`]+)`/g, '<code>$1</code>')
+    .replace(/`([^`]+)`/g, (m, code) => {
+      const severity = SEVERITY_WORDS[code];
+      return severity
+        ? `<code data-severity="${severity}">${code}</code>`
+        : `<code>${code}</code>`;
+    })
     .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
     .replace(/(^|[\s(])\*([^*\n]+)\*/g, '$1<em>$2</em>')
     .replace(/\[([^\]]+)\]\((https?:[^)\s]+)\)/g, '<a href="$2">$1</a>');

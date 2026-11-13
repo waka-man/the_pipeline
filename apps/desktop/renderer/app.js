@@ -386,6 +386,17 @@ function flagSeverity(s) {
   return 'info';
 }
 
+/** The tone a chip carries for a flag's severity.
+ *
+ * A blocking flag is the loud one. A warning is amber without the alarm.
+ * A note is quiet, but it is still a flag and still says so.
+ */
+function flagTone(severity) {
+  if (severity === 'block') return 'flag';
+  if (severity === 'warn') return 'warn';
+  return 'note';
+}
+
 function flagDot(s) {
   const severity = flagSeverity(s);
   if (!severity) return null;
@@ -1526,7 +1537,7 @@ function reportPane() {
           scorecard
             ? chip(`${fmt(earnedOf(scorecard))} / ${fmt(run.points_possible)}`, 'accent')
             : null,
-          (scorecard?.flags || []).map((f) => chip(f.code, f.severity === 'block' ? 'flag' : null)),
+          (scorecard?.flags || []).map((f) => chip(f.code, flagTone(f.severity))),
           h('button', { class: 'rowlink',
             onclick: () => bridge.revealPath(S.current.path) }, 'show file'))),
       h('div', { class: 'reader-actions' },
@@ -1595,7 +1606,9 @@ function viewPublish() {
           }),
           h('span', { class: 'row-name' }, s.student),
           h('span', { class: 'row-score' }, fmt(s.score)),
-          h('span', {}, (s.flags || []).length ? chip(`${s.flags.length}`, 'flag') : h('span', { style: 'color:var(--ink-3)' }, '—')),
+          h('span', {}, (s.flags || []).length
+            ? chip(`${s.flags.length}`, flagTone(flagSeverity(s)))
+            : h('span', { style: 'color:var(--ink-3)' }, '—')),
           h('span', {})))
         : h('div', { style: 'padding:14px;color:var(--ink-3)' }, 'Nothing graded yet.')),
 

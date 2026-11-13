@@ -213,7 +213,8 @@ function stubApi() {
     agentLog: rec('agentLog', { row_id: 1, student: 'Ada Lovelace',
                                  lines: AGENT_LOG_ENTRIES }),
     report: rec('report', {
-      markdown: '# Report\n\nA student report.\n',
+      markdown: '# Report\n\nA student report.\n\n**Flags for review**\n\n'
+        + '- `Review` **SPEC_PROMPT_INJECTION** — The spec asked for it.\n',
       scorecard: {
         criterion_scores: [
           { criterion: 'c1', points_earned: 8, rating_label: 'Good',
@@ -227,7 +228,8 @@ function stubApi() {
             confidence: 'high' },
         ],
         summary: 'A good submission.',
-        flags: [],
+        flags: [{ code: 'SPEC_PROMPT_INJECTION', severity: 'warn',
+                  message: 'The spec asked for it.' }],
         test_results: {},
         model: 'm1',
         agent_session_id: 's1',
@@ -2340,6 +2342,23 @@ await test('no handler threw while every button was clicked', () => {
     assert.strictEqual(marked.severity, 'warn');
     assert.match(marked.title, /SPEC_PROMPT_INJECTION/, marked.title);
     assert.match(marked.button, /open flagged/i, marked.button);
+
+    // And the report says how serious it is, in colour as well as in words.
+    await window.eval("document.querySelector('#main .review-list .row').click()");
+    await tick(80);
+    const tone = await window.eval(`(() => {
+      const chips = [...document.querySelectorAll('#main .reader-meta .chip')];
+      const flag = chips.find((c) => c.textContent.includes('SPEC_PROMPT_INJECTION'));
+      const word = document.querySelector('#main .prose code[data-severity]');
+      return {
+        chip: flag ? (flag.dataset.tone || 'none') : 'no chip',
+        word: word ? word.dataset.severity : 'no word',
+        label: word ? word.textContent : '',
+      };
+    })()`);
+    assert.strictEqual(tone.chip, 'warn', 'the flag chip carries no tone');
+    assert.strictEqual(tone.word, 'warn', 'the severity in the report is not marked');
+    assert.match(tone.label, /Review/, tone.label);
   });
 
   // The models of the account the person signed into are the ones they pay

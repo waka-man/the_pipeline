@@ -836,6 +836,10 @@ body {
   white-space: nowrap;
 }
 .chip[data-tone='flag'] { border-color: var(--flag-line); background: var(--flag-wash); color: var(--flag); }
+/* A warning is amber without the alarm: the word is coloured, the chip is
+   not filled. A note is quiet, but it is still a flag and still says so. */
+.chip[data-tone='warn'] { border-color: var(--flag-line); color: var(--flag); }
+.chip[data-tone='note'] { color: var(--ink-3); }
 .chip[data-tone='ok'] { border-color: transparent; background: var(--ok-wash); color: var(--ok); }
 .chip[data-tone='bad'] { border-color: transparent; background: var(--bad-wash); color: var(--bad); }
 .chip[data-tone='accent'] { border-color: var(--accent-line); background: var(--accent-wash); color: var(--accent-ink); }
@@ -1049,6 +1053,14 @@ body {
   background: var(--surface-2); border: 1px solid var(--rule-soft);
   border-radius: var(--r-sm); padding: 1px 4px;
 }
+/* The severity of a flag, as the report writes it. */
+.prose code[data-severity='block'] {
+  color: var(--flag);
+  background: var(--flag-wash);
+  border-color: var(--flag-line);
+}
+.prose code[data-severity='warn'] { color: var(--flag); }
+.prose code[data-severity='info'] { color: var(--ink-3); }
 .prose pre {
   background: var(--surface-2); border: 1px solid var(--rule);
   border-radius: var(--r); padding: 12px 14px; overflow-x: auto;
