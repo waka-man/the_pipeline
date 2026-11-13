@@ -316,6 +316,67 @@ def test_editing_a_report_persists(live):
     assert "Instructor note." in get(base, "/api/reports/1")["markdown"]
 
 
+def test_a_score_changed_in_the_report_is_the_score_that_is_published(live):
+    """What the person wrote is the grade they mean to give.
+
+    The agent's number is what the scorecard holds, and publishing reads the
+    scorecard. So a figure changed in the rubric breakdown has to reach the
+    scorecard, or the publish sends the agent's mark over the top of the
+    decision.
+    """
+    base, state, fake, spec = live
+    send(base, "/api/runs", {"course_id": 3130, "assignment_id": 46805})
+    assert wait_for(lambda: state.store.progress(1).get("total") == 2)
+    send(base, "/api/runs/1/grade", {"stub": True})
+    assert wait_for(lambda: state.store.progress(1).get("graded") == 1), state.job_errors
+    send(base, "/api/runs/1/render", {})
+    assert wait_for(lambda: state.store.report_for(1))
+
+    report = get(base, "/api/reports/1")
+    before = report["scorecard"]["criterion_scores"]
+    first = before[0]
+    wanted = first["points_earned"] + 1
+    edited = report["markdown"].replace(
+        f"({first['points_earned']:g} / ", f"({wanted:g} / ", 1)
+    assert edited != report["markdown"], "the figure was not found in the report"
+
+    saved = send(base, "/api/reports/1", {"markdown": edited}, method="PUT")
+    assert saved["score_changes"], "the edit was not read as a score"
+    assert saved["score_changes"][0]["now"] == pytest.approx(wanted)
+
+    # The scorecard now carries the figure the person wrote.
+    after = get(base, "/api/reports/1")["scorecard"]["criterion_scores"]
+    assert after[0]["points_earned"] == pytest.approx(wanted)
+
+    # And that is what the publish plan offers to write.
+    plan = send(base, "/api/runs/1/publish", {})
+    entry = next(e for e in plan["entries"] if e["row_id"] == 1)
+    assert entry["new"] == pytest.approx(wanted + sum(
+        s["points_earned"] for s in after[1:]))
+
+
+def test_a_score_outside_the_rubric_is_refused(live):
+    """A figure above the maximum is a typo, not a decision."""
+    base, state, fake, spec = live
+    send(base, "/api/runs", {"course_id": 3130, "assignment_id": 46805})
+    assert wait_for(lambda: state.store.progress(1).get("total") == 2)
+    send(base, "/api/runs/1/grade", {"stub": True})
+    assert wait_for(lambda: state.store.progress(1).get("graded") == 1), state.job_errors
+    send(base, "/api/runs/1/render", {})
+    assert wait_for(lambda: state.store.report_for(1))
+
+    report = get(base, "/api/reports/1")
+    first = report["scorecard"]["criterion_scores"][0]
+    edited = report["markdown"].replace(
+        f"({first['points_earned']:g} / ", "(999 / ", 1)
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        send(base, "/api/reports/1", {"markdown": edited}, method="PUT")
+    assert exc.value.code == 400
+    # The scorecard is untouched, so the publish still sends what the agent said.
+    after = get(base, "/api/reports/1")["scorecard"]["criterion_scores"]
+    assert after[0]["points_earned"] == pytest.approx(first["points_earned"])
+
+
 def test_saving_a_report_that_does_not_exist_is_a_404(live):
     base = live[0]
     with pytest.raises(urllib.error.HTTPError) as exc:

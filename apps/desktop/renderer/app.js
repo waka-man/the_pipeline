@@ -372,6 +372,30 @@ async function refreshSubmissions() {
  * do not survive model_dump, so the field never arrives and the total renders
  * as a dash above every report. The criterion scores are in the dump.
  */
+/** How much a submission's flags call for attention.
+ *
+ * A flag is anything a human must check before trusting the grade, so a
+ * report with one is marked however the grader ranked it. The severity
+ * decides how loudly it is marked, not whether it is marked at all.
+ */
+function flagSeverity(s) {
+  const flags = s?.flags || [];
+  if (!flags.length) return '';
+  if (flags.some((f) => f.severity === 'block')) return 'block';
+  if (flags.some((f) => f.severity === 'warn')) return 'warn';
+  return 'info';
+}
+
+function flagDot(s) {
+  const severity = flagSeverity(s);
+  if (!severity) return null;
+  const codes = (s.flags || []).map((f) => f.code).join(', ');
+  return h('span', {
+    class: 'dot', dataset: { severity }, title: codes,
+    style: 'margin-left:6px',
+  });
+}
+
 function earnedOf(scorecard) {
   if (!scorecard || !Array.isArray(scorecard.criterion_scores)) return null;
   return scorecard.criterion_scores.reduce((sum, c) => sum + (c.points_earned || 0), 0);
@@ -1265,7 +1289,7 @@ function viewGrade() {
   const run = S.run;
   if (!run) return empty('No run', 'Choose an assignment first.');
   const graded = S.submissions.filter((s) => s.score !== null).length;
-  const flagged = S.submissions.filter((s) => (s.flags || []).some((f) => f.severity === 'block')).length;
+  const flagged = S.submissions.filter((s) => flagSeverity(s)).length;
   const gradeable = S.submissions.filter((s) => s.score === null);
   const jobRunning = (name) => ['running', 'paused']
     .includes(S.status?.jobs?.[name]?.status);
@@ -1362,12 +1386,12 @@ function viewReview() {
   const run = S.run;
   if (!run) return empty('No run', 'Choose an assignment first.');
   const graded = S.submissions.filter((s) => s.score !== null);
-  const blocked = graded.filter((s) => (s.flags || []).some((f) => f.severity === 'block')).length;
+  const blocked = graded.filter((s) => flagSeverity(s)).length;
 
   // A report flagged for a human is the one that needs a decision, and on a
   // cohort of 73 buried at an arbitrary alphabetical position it is easy to
   // reach the end without having opened any of them.
-  const isFlagged = (s) => (s.flags || []).some((f) => f.severity === 'block');
+  const isFlagged = (s) => !!flagSeverity(s);
   const shown = S.reviewFilter === 'flagged' ? graded.filter(isFlagged) : graded;
 
   const list = h('div', { class: 'rows' },
@@ -1381,9 +1405,7 @@ function viewReview() {
       h('span', { class: 'row-name', title: s.student }, s.student),
       h('span', { class: 'row-score' },
         fmt(s.score),
-        isFlagged(s)
-          ? h('span', { class: 'dot', style: 'color:var(--flag);margin-left:6px' })
-          : null))));
+        flagDot(s)))));
 
   return h('div', {},
     h('div', { class: 'head' },
@@ -1392,7 +1414,7 @@ function viewReview() {
                + 'before you decide whether it goes back to Canvas.'),
       blocked
         ? h('div', { style: 'margin-top:10px' },
-            notice(`${blocked} report${blocked === 1 ? '' : 's'} flagged for a human decision.`,
+            notice(`${blocked} report${blocked === 1 ? '' : 's'} flagged for review.`,
                    'flag'))
         : null),
 
@@ -1410,6 +1432,9 @@ function viewReview() {
             'data-variant': S.reviewFilter === 'flagged' ? 'primary' : null,
             onclick: () => {
               S.reviewFilter = S.reviewFilter === 'flagged' ? 'all' : 'flagged';
+              // A different list: where the old one was scrolled to says
+              // nothing about this one.
+              reviewScrollTop = 0;
               // The open report may not be in the list any more.
               if (S.reviewFilter === 'flagged' && S.current
                   && !isFlagged(S.submissions.find((x) => x.row_id === S.current.rowId) || {})) {
@@ -1459,7 +1484,37 @@ function reportPane() {
     class: 'btn', 'data-size': 'sm', 'data-variant': 'primary',
     onclick: async () => {
       const res = await guard(() => api.saveReport(rowId, S.current.markdown), 'Could not save');
-      if (res) toast('Report saved.');
+      if (!res) return;
+      const changes = res.score_changes || [];
+      if (!changes.length) {
+        if (res.total_mismatch) {
+          // The person wrote a total, and the criteria do not add up to it.
+          // Canvas adds up the criteria, so that is what would be published,
+          // and saying so is better than publishing something else.
+          toast(`The report says ${fmt(res.total_mismatch.report)}, but the `
+              + `criteria add up to ${fmt(res.total_mismatch.published)}. `
+              + 'Canvas adds up the criteria, so that is what is published.',
+              'flag');
+        } else {
+          toast('Report saved.');
+        }
+        return;
+      }
+      // The scorecard is what publishing reads, and it now carries the
+      // figures the person wrote. The list beside it has to show the same.
+      const card = S.current.scorecard;
+      if (card && Array.isArray(card.criterion_scores)) {
+        for (const c of changes) {
+          const s = card.criterion_scores.find((x) => x.criterion === c.criterion);
+          if (s) s.points_earned = c.now;
+        }
+      }
+      const total = earnedOf(card);
+      const row = S.submissions.find((x) => x.row_id === rowId);
+      if (row && total !== null) row.score = total;
+      toast(`Score updated to ${fmt(total)}. That is what will be published.`,
+            'ok');
+      render();
     },
   }, 'Save report') : null;
 
@@ -1816,7 +1871,7 @@ function renderAside() {
     // The same three figures the Run grading card shows, counted the same
     // way. Two panels that disagree are worse than one panel.
     const graded = S.submissions.filter((s) => s.score !== null).length;
-    const flagged = S.submissions.filter((s) => (s.flags || []).length).length;
+    const flagged = S.submissions.filter((s) => flagSeverity(s)).length;
     extra.push(h('div', { class: 'stats stats--rail' },
       h('div', { class: 'stat' }, h('div', { class: 'stat-k' }, 'graded'), h('div', { class: 'stat-v' }, graded)),
       h('div', { class: 'stat' }, h('div', { class: 'stat-k' }, 'collected'), h('div', { class: 'stat-v' }, S.submissions.length)),
@@ -1844,6 +1899,29 @@ function renderAside() {
   mount(els.extra, ...extra);
 }
 
+// Where the cohort list was scrolled to, so a repaint does not undo it.
+let reviewScrollTop = 0;
+
+// The stage that was on screen, so a repaint of the same page can keep its
+// scroll and a different page can start at the top.
+let lastStage = null;
+
+/** Put the cohort list back where it was, and the open student in view. */
+function restoreReviewScroll() {
+  const list = document.querySelector('.review-list .rows');
+  if (!list) return;
+  list.scrollTop = reviewScrollTop;
+  // The student whose report is open stays in view: walking the flagged
+  // ones one at a time is meant to move down the list, not to send you
+  // back to the top of it.
+  const row = list.querySelector('.row[data-selected="true"]');
+  if (!row) return;
+  const box = list.getBoundingClientRect();
+  const at = row.getBoundingClientRect();
+  if (at.top < box.top) list.scrollTop -= (box.top - at.top) + 6;
+  else if (at.bottom > box.bottom) list.scrollTop += (at.bottom - box.bottom) + 6;
+}
+
 function render() {
   // Re-rendering rebuilds every input from scratch, so anything typed but not
   // yet saved lived only in a node that is about to be thrown away. A status
@@ -1857,6 +1935,13 @@ function render() {
   const focusId = active && active.id ? active.id : null;
   const caret = active && typeof active.selectionStart === 'number'
     ? active.selectionStart : null;
+  // The page is rebuilt on every repaint, which empties every scroll
+  // container in it. A progress event would then send anyone reading down a
+  // cohort, or halfway through a long report, back to the top of it.
+  const wasList = document.querySelector('.review-list .rows');
+  if (wasList) reviewScrollTop = wasList.scrollTop;
+  const sameStage = lastStage === S.stage;
+  const pageScroll = els.main.scrollTop;
   renderSpine();
   renderTopbar();
   // The aside describes the run you are in. Before you have picked one there is
@@ -1881,6 +1966,11 @@ function render() {
     ? h('div', { style: 'margin-bottom:14px' }, notice(S.toast.message, S.toast.tone))
     : null;
   mount(els.main, banner, node);
+  // The same page, scrolled to where it was. A different page starts at the
+  // top: the one before it was somewhere else entirely.
+  els.main.scrollTop = sameStage ? pageScroll : 0;
+  lastStage = S.stage;
+  restoreReviewScroll();
   // Re-mounting empties the scroll container, so the sticky bar has to be
   // told the page is back at the top.
   mainScrolled = els.main.scrollTop > 8;

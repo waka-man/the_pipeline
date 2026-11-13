@@ -849,6 +849,13 @@ body {
   flex: none;
 }
 
+/* A flag marks a report whatever the grader made of it. The severity says
+   how loudly it is marked, not whether it is marked at all: a note that
+   nobody can see in a list of 150 is a note nobody reads. */
+.dot[data-severity='block'] { color: var(--flag); }
+.dot[data-severity='warn'] { color: var(--flag); opacity: 0.72; }
+.dot[data-severity='info'] { color: var(--ink-3); }
+
 /* ---------------------------------------------------------------- aside */
 
 .aside {

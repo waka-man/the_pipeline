@@ -79,7 +79,10 @@ const RUN = {
 // for Grade All or Grade Selected to do, so those controls would sit disabled
 // and untested.
 const SUBMISSIONS = [
-  { row_id: 1, student: 'Ada Lovelace', score: 8, status: 'graded', collected: true },
+  { row_id: 1, student: 'Ada Lovelace', score: 8, status: 'graded', collected: true,
+    // A flag is anything a human must check before trusting a grade, and the
+    // grader decides how loudly it is marked, not whether it is marked.
+    flags: [{ code: 'SPEC_PROMPT_INJECTION', severity: 'warn', message: 'The spec asked for it.' }] },
   { row_id: 2, student: 'Grace Hopper', score: null, status: 'collected', collected: true },
   { row_id: 3, student: 'Alan Turing', score: null, status: 'grading', collected: true },
 ];
@@ -101,6 +104,8 @@ const stubState = {
   ],
   // Where the models come from, as the sidecar reports it.
   accountSource: 'own',
+  // The score changes a saved report asked for.
+  scoreChanges: [],
   progress: { total: 3, collected: 1, pending: 1, collecting: 1, no_submission: 0,
               collect_failed: 0, graded: 1, needs_review: 0 },
 };
@@ -230,7 +235,11 @@ function stubApi() {
         created_at: '2026-01-01T00:00:00Z',
       },
     }),
-    saveReport: rec('saveReport', { ok: true }),
+    saveReport: rec('saveReport', () => ({
+      ok: true,
+      // The score changes the sidecar read out of the edited report.
+      score_changes: stubState.scoreChanges,
+    })),
     // The bundled agent runtime. The sidecar probes it at startup; the stub
     // answers as if a newer version were waiting, so the card's states get
     // exercised rather than skipped.
@@ -2238,6 +2247,99 @@ await test('no handler threw while every button was clicked', () => {
     assert.ok(sent, 'nothing was published');
     assert.match(sent, /Rewritten for the student/,
       `the edit did not travel with the publish: ${sent}`);
+  });
+
+  // A score changed in the report is the score that gets published, and the
+  // list beside it has to show the same number.
+  await test('a score changed in the report is what the cohort list shows',
+    async () => {
+      stubState.scoreChanges = [{ criterion: 'c1', title: 'One', was: 8, now: 10 }];
+      try {
+        const { window } = await reboot();
+        await gotoOn(window, 'Review');
+        await window.eval("document.querySelector('#main .review-list .row').click()");
+        await tick(80);
+        // Open the editor and save.
+        await clickIn(window, '#main .tab', 'Edit source');
+        await tick(60);
+        await clickIn(window, '#main .reader-actions .btn', 'Save report');
+        await tick(80);
+
+        // The criterion went from 8 to 10; the total is what the rubric adds
+        // up to, 10 + 6 + 7.
+        const toast = await window.eval(
+          "((document.querySelector('#main .notice') || {}).textContent || '')");
+        assert.match(toast, /score updated to 23/i, toast);
+        const shown = await window.eval(
+          "[...document.querySelectorAll('#main .review-list .row-score')]"
+          + ".map((n) => n.textContent.trim())");
+        assert.ok(shown.includes('23'), `the list still shows ${shown.join(' | ')}`);
+      } finally {
+        stubState.scoreChanges = [];
+      }
+    });
+
+  // The cohort list is a scroll container of its own, and the page is
+  // rebuilt on every repaint. Without keeping its place, opening a report
+  // sends you back to the top of a cohort of 150.
+  await test('the cohort list keeps its place when the page repaints', async () => {
+    const { window } = await reboot();
+    await gotoOn(window, 'Review');
+    const set = await window.eval(`(() => {
+      const list = document.querySelector('.review-list .rows');
+      if (!list) return 'no list';
+      list.scrollTop = 120;
+      return list.scrollTop;
+    })()`);
+    assert.notStrictEqual(set, 'no list', 'the cohort list is not on the review stage');
+    assert.strictEqual(set, 120);
+
+    // Opening a report is the repaint that happens most.
+    await window.eval("document.querySelector('#main .review-list .row').click()");
+    await tick(80);
+    const after = await window.eval(
+      "(document.querySelector('.review-list .rows') || {}).scrollTop");
+    assert.strictEqual(after, 120, 'the list jumped back to the top');
+  });
+
+  // The same thing for the page itself: a repaint halfway down a long report
+  // used to send the reader back to the top of it.
+  await test('the page keeps its place when the page repaints', async () => {
+    const { window } = await reboot();
+    await gotoOn(window, 'Review');
+    const set = await window.eval(`(() => {
+      const main = document.getElementById('main');
+      main.scrollTop = 200;
+      return main.scrollTop;
+    })()`);
+    assert.strictEqual(set, 200);
+
+    await window.eval("document.querySelector('#main .review-list .row').click()");
+    await tick(80);
+    const after = await window.eval("document.getElementById('main').scrollTop");
+    assert.strictEqual(after, 200, 'the page jumped back to the top');
+  });
+
+  // A report with a flag is marked in the cohort list, and there is a way to
+  // walk the flagged ones.
+  await test('a flagged report is marked in the cohort list', async () => {
+    const { window } = await reboot();
+    await gotoOn(window, 'Review');
+    const marked = await window.eval(`(() => {
+      const dot = document.querySelector('#main .review-list .dot');
+      return {
+        dots: document.querySelectorAll('#main .review-list .dot').length,
+        severity: dot ? dot.dataset.severity : '',
+        title: dot ? dot.getAttribute('title') : '',
+        button: [...document.querySelectorAll('#main button')]
+          .map((b) => b.textContent.trim())
+          .find((x) => /open flagged/i.test(x)) || '',
+      };
+    })()`);
+    assert.ok(marked.dots > 0, 'the flagged student is not marked');
+    assert.strictEqual(marked.severity, 'warn');
+    assert.match(marked.title, /SPEC_PROMPT_INJECTION/, marked.title);
+    assert.match(marked.button, /open flagged/i, marked.button);
   });
 
   // The models of the account the person signed into are the ones they pay

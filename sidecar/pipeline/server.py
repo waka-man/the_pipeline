@@ -29,7 +29,8 @@ from .canvas.client import AuthError, CanvasClient, CanvasError
 from .canvas.collect import bootstrap_run, collect_sources
 from .canvas.spec import manual_only_criteria
 from .grading.runner import Grader, OpenCodeServer, classify_failure
-from .models import SubmissionUnit, trim_comment
+from .models import SubmissionUnit, trim_comment, validate_scorecard
+from .report.edits import apply_report_edits, parse_total
 from .report.render import render_report, report_filename
 from .store import Store
 from .config import NEWLINE as _NL
@@ -1199,6 +1200,11 @@ def op_render(state: AppState, run_id: int) -> dict[str, Any]:
         written = 0
         rows = store.submissions_with_status(run_id, ("graded", "needs_review"))
         for row in rows:
+            # A report a person edited is theirs. Re-rendering it would
+            # throw their words away, and with them the score they set.
+            rep = store.report_for(int(row["id"]))
+            if rep and int(rep.get("edited") or 0):
+                continue
             md, _path = render_one(state, int(row["id"]))
             if md:
                 written += 1
@@ -1463,6 +1469,13 @@ def op_report(state: AppState, row_id: int) -> dict[str, Any]:
 
 
 def op_save_report(state: AppState, row_id: int, body: dict[str, Any]) -> dict[str, Any]:
+    """Save an edited report, and the scores it asks for.
+
+    The text is the faculty's; the scorecard is what publishing reads. So
+    when the edit changes a figure in the rubric breakdown, that figure
+    becomes the score: it is written into the scorecard as a card of its
+    own, which leaves the agent's verdict in the record to compare with.
+    """
     text = body.get("markdown")
     if text is None:
         raise ApiError("markdown is required")
@@ -1472,7 +1485,41 @@ def op_save_report(state: AppState, row_id: int, body: dict[str, Any]) -> dict[s
     Path(rep["path"]).write_text(text, encoding="utf-8", newline=_NL)
     with state.store.connect() as db:
         db.execute("UPDATE reports SET edited=1 WHERE submission_row_id=?", (row_id,))
-    return {"row_id": row_id, "saved": True, "path": rep["path"]}
+
+    changes: list[dict[str, Any]] = []
+    published: float | None = None
+    scorecard = state.store.best_scorecard(row_id)
+    if scorecard is not None:
+        row = state.store.submission_row(row_id)
+        spec = state.store.get_run(int(row["run_id"]))["spec"]
+        edited, edits = apply_report_edits(scorecard, spec, text)
+        if edits:
+            check = validate_scorecard(edited, spec, manual_only_criteria(spec))
+            if not check.ok:
+                # The text is saved either way — it is what the person wrote
+                # — but a score outside the rubric is not one to publish.
+                raise ApiError(
+                    "The report was saved, but the scores were not: "
+                    + "; ".join(check.issues[:2]))
+            state.store.save_scorecard(row_id, None, edited, "valid",
+                                       edited.total_earned, spec.total_points(), [])
+            changes = [{"criterion": c.criterion, "title": c.title,
+                        "was": c.was, "now": c.now} for c in edits]
+        published = edited.total_earned
+    else:
+        published = None
+
+    # A total in the report that the criteria do not add up to. Canvas adds
+    # up the criteria, so that is what goes out, and the difference is worth
+    # saying rather than quietly resolving.
+    mismatch = None
+    claimed = parse_total(text)
+    if claimed is not None and published is not None \
+            and abs(claimed.earned - published) > 1e-9:
+        mismatch = {"report": claimed.earned, "published": published}
+    return {"row_id": row_id, "saved": True, "path": rep["path"],
+            "score_changes": changes, "total": published,
+            "total_mismatch": mismatch}
 
 
 def op_publish(state: AppState, run_id: int, body: dict[str, Any]) -> dict[str, Any]:

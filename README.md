@@ -27,6 +27,10 @@ Canvas ──collect──▶ normalised Markdown ──grade──▶ scorecard
 - **It does not use a Selenium browser.** Collection is Canvas REST only.
 - **It is not a grader of final authority.** `submit_scorecard` exposes
   `needs_review`, and the reports are written to be read by a human.
+- **Your decision is the one that is published.** Change a figure in the
+  rubric breakdown of a report and save it, and that figure becomes the
+  score: it is written into the scorecard, which is what publishing reads.
+  The agent's own verdict is kept beside it, so the two can be compared.
 
 ## Install
 
