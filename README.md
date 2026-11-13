@@ -130,17 +130,23 @@ one set of files.
 
 #### Your own opencode account
 
-The app reads the opencode you already have: the store where your accounts
-live, with the models those accounts reach. Sign in the way you normally do
+The app uses the models you already have access to. Sign in the way you
+normally do
 
 ```sh
 opencode auth login
 ```
 
 and those models are there in the app — a Go subscription, GitHub Copilot,
-anything else you have signed into. An OpenRouter key saved in the app still
-reaches the OpenRouter models: it is handed to opencode as an environment
-variable, which opencode honours alongside the accounts in the store.
+anything else you have signed into. The accounts are **copied** into the
+app's own opencode store rather than shared, because two opencode processes
+on one database is what a Windows machine with the opencode desktop app
+installed runs into: the second one cannot configure the database and
+opencode never starts, leaving the app with no models at all.
+
+An OpenRouter key saved in the app still reaches the OpenRouter models: it
+is handed to opencode as an environment variable, which opencode honours
+alongside the accounts in the store.
 
 The container mounts the same store, so it sees the same models. On Linux
 that is `~/.local/share/opencode`, with the configuration in

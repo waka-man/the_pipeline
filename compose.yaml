@@ -47,10 +47,14 @@ services:
       # the one the desktop app downloaded is not the one this container can
       # run.
       GRADING_PIPELINE_RUNTIME_HOME: /runtime
-      # opencode reads its accounts from here: the store of the person using
-      # the app, mounted above.
+      # The store of the person using the app, mounted above. The accounts
+      # they signed into are copied out of it into the store below.
       XDG_DATA_HOME: /host-opencode
       XDG_CONFIG_HOME: /host-config
+      # opencode's own store, inside the container. It is never the one the
+      # desktop app is using: two opencode processes on one database is what
+      # breaks on Windows.
+      GRADING_PIPELINE_OPENCODE_HOME: /runtime/opencode-home
       # Credentials. In the browser UI they can also be saved on the Setup
       # step; env vars are the headless/Docker route and are used when
       # nothing is saved yet. Copy the values into a .env file next to this

@@ -83,15 +83,27 @@ def test_the_opencode_runtime_stays_inside_the_container():
 def test_opencode_reads_the_store_of_the_person_using_it():
     """The accounts they signed into are the models they pay for.
 
-    opencode keeps them in a store of their own, and both versions read
-    that one: the container has it mounted, and the desktop app reads it
-    where it is.
+    opencode keeps them in a store of their own, and the container mounts
+    it: the accounts are copied out of it into the container's own store.
     """
     env = _service()["environment"]
     assert env["XDG_DATA_HOME"] == "/host-opencode", env
     mounted = [m for m in _mounts() if m["target"] == "/host-opencode/opencode"]
     assert mounted, "the person's opencode store is not mounted"
     assert "opencode" in mounted[0]["source"], mounted[0]["source"]
+
+
+def test_the_container_keeps_an_opencode_store_of_its_own():
+    """Never the one the desktop app is using.
+
+    Two opencode processes on one database is what a Windows machine with
+    the opencode desktop app installed runs into: the second one cannot
+    configure the database and opencode never starts.
+    """
+    env = _service()["environment"]
+    assert env["GRADING_PIPELINE_OPENCODE_HOME"], env
+    assert env["GRADING_PIPELINE_OPENCODE_HOME"] != "/data/opencode-home", env
+    assert env["GRADING_PIPELINE_OPENCODE_HOME"] != env["XDG_DATA_HOME"], env
 
 
 def test_the_container_becomes_the_host_user(monkeypatch):

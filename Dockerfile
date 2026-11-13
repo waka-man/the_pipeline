@@ -21,6 +21,7 @@ ENV PYTHONUNBUFFERED=1 \
     GRADING_PIPELINE_HOME=/data \
     GRADING_PIPELINE_WORKSPACE=/data/workspace \
     GRADING_PIPELINE_RUNTIME_HOME=/runtime \
+    GRADING_PIPELINE_OPENCODE_HOME=/runtime/opencode-home \
     GRADING_PIPELINE_RENDERER=/app/apps/desktop/renderer \
     GRADING_PIPELINE_OPENCODE=/usr/local/bin/opencode \
     GRADING_PIPELINE_HOST=0.0.0.0 \

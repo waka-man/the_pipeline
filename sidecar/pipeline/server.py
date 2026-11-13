@@ -481,25 +481,28 @@ class AppState:
         })
 
     def opencode_env(self) -> dict[str, str]:
-        """Environment for the opencode process, including any configured key."""
+        """Environment for the opencode process, including any configured key.
+
+        opencode gets a store of the app's own, always. Pointing it at the
+        store the person's own opencode uses means two opencode processes on
+        one database, and on Windows the second one cannot configure it and
+        never starts. The accounts they signed into are copied into the app's
+        store instead, which is what the models they pay for need.
+        """
         extra: dict[str, str] = {}
         key = self.settings.openrouter_api_key
         if key:
             # opencode reads this directly, so it works regardless of how it
             # resolves its data directory on a given platform.
             extra["OPENROUTER_API_KEY"] = key
-        if config.opencode_store() is not None:
-            # The person has an opencode of their own, and the accounts in it
-            # are the models they pay for. Reading that store is what makes
-            # them available here; the key above rides alongside it.
-            return extra
-        # No opencode of their own: keep a store of the app's own, with the
-        # key in it, so the models are still there.
-        data_home = self.settings.data / "opencode-home"
+        home = config.opencode_home()
         try:
+            source = config.opencode_store()
+            if source is not None and source != home / "opencode":
+                config.copy_opencode_credentials(source, home)
             if key:
-                config.write_opencode_auth(key, data_home)
-            extra["XDG_DATA_HOME"] = str(data_home)
+                config.write_opencode_auth(key, home)
+            extra["XDG_DATA_HOME"] = str(home)
         except OSError:
             # The env var alone is enough; the auth file is belt and braces.
             pass

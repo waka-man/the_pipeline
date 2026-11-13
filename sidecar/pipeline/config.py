@@ -19,6 +19,7 @@ import os
 import platform
 import re
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -64,36 +65,272 @@ def secrets_file() -> Path:
     return data_dir() / "secrets.json"
 
 
-def opencode_data_home() -> Path:
-    """The directory opencode keeps its data in.
+def _opencode_data_homes() -> list[Path]:
+    """Where opencode keeps its data: the environment, then the platform.
 
     opencode reads XDG_DATA_HOME, and falls back to the convention of the
     platform: ~/Library/Application Support on macOS, %APPDATA% on Windows,
     ~/.local/share everywhere else.
     """
+    out: list[Path] = []
     override = os.environ.get("XDG_DATA_HOME", "").strip()
     if override:
-        return Path(override)
+        out.append(Path(override))
     if platform.system() == "Windows":
-        return Path(os.environ.get("APPDATA",
-                                   Path.home() / "AppData" / "Roaming"))
-    if platform.system() == "Darwin":
-        return Path.home() / "Library" / "Application Support"
-    return Path.home() / ".local" / "share"
+        out.append(Path(os.environ.get("APPDATA",
+                                       Path.home() / "AppData" / "Roaming")))
+    elif platform.system() == "Darwin":
+        out.append(Path.home() / "Library" / "Application Support")
+    else:
+        out.append(Path.home() / ".local" / "share")
+    return out
+
+
+def opencode_data_home() -> Path:
+    """The directory opencode keeps its data in."""
+    return _opencode_data_homes()[0]
+
+
+def opencode_home() -> Path:
+    """Where the app's own opencode keeps its data.
+
+    Its own store, always. Two opencode processes on one database is what a
+    Windows machine with the opencode desktop app installed runs into: the
+    second one cannot configure the database and opencode never starts, so
+    there are no models to grade with at all. The accounts the person signed
+    into are copied in rather than shared, which is all that is needed for
+    the models those accounts reach.
+    """
+    override = os.environ.get("GRADING_PIPELINE_OPENCODE_HOME", "").strip()
+    return Path(override) if override else (data_dir() / "opencode-home")
+
+
+def opencode_stores() -> list[Path]:
+    """The opencode stores on this machine, in the order they are looked at.
+
+    opencode keeps its accounts in a store under its data directory: the one
+    the environment points at, and the one the platform's own convention
+    gives. Both are worth looking at, because a person who has pointed
+    XDG_DATA_HOME somewhere for one tool and uses opencode for another ends
+    up with the accounts in the place opencode itself would not look.
+    """
+    out: list[Path] = []
+    for base in _opencode_data_homes():
+        store = base / "opencode"
+        if store not in out:
+            out.append(store)
+    return out
 
 
 def opencode_store() -> Path | None:
     """The opencode store of the person using the app, when they have one.
 
     The accounts someone signed into live in that store — a Go subscription,
-    GitHub Copilot — and with them the models they pay for. The app used to
-    keep a store of its own, which is exactly why those models were
-    invisible to it: it never looked where the account was.
+    GitHub Copilot — and with them the models they pay for.
     """
-    store = opencode_data_home() / "opencode"
-    if (store / "opencode.db").exists() or (store / "auth.json").exists():
-        return store
+    for store in opencode_stores():
+        if (store / "opencode.db").exists() or (store / "auth.json").exists():
+            return store
     return None
+
+
+@dataclass
+class Account:
+    """One account in an opencode store.
+
+    opencode keeps its accounts in a database, and reads them from there; an
+    auth file beside it is what it falls back to when there is no database
+    yet. Both are copied, because the app's own store may be either.
+    """
+
+    provider: str
+    payload: dict[str, Any]
+    label: str = ""
+    row_id: str = ""
+    connector_id: str | None = None
+    method_id: str | None = None
+    active: bool | None = None
+    time_created: int = 0
+    time_updated: int = 0
+
+
+def _read_store_accounts(store: Path) -> list[Account]:
+    """The accounts in an opencode store: its database and its auth file.
+
+    The database is read first and wins: it is where opencode refreshes a
+    token, so it holds the newer of the two. A store that cannot be read —
+    because another opencode has it open, or because a newer version wrote
+    it — contributes what it can rather than nothing.
+    """
+    accounts: dict[str, Account] = {}
+    for row in _read_credential_rows(store / "opencode.db"):
+        accounts[row.provider] = row
+    auth = store / "auth.json"
+    if auth.exists():
+        try:
+            data = json.loads(auth.read_text())
+            if isinstance(data, dict):
+                for name, payload in data.items():
+                    if not isinstance(payload, dict):
+                        continue
+                    accounts.setdefault(str(name), Account(provider=str(name),
+                                                           payload=payload))
+        except Exception:
+            pass
+    return list(accounts.values())
+
+
+def _read_credential_rows(db: Path) -> list[Account]:
+    """The credential rows of an opencode database.
+
+    Read-only where possible. A store another opencode is using is still
+    worth reading: the rows are what the app needs, and a database that
+    cannot be opened at all simply yields nothing.
+    """
+    import sqlite3
+
+    if not db.exists():
+        return []
+    for readonly in (True, False):
+        con = None
+        try:
+            if readonly:
+                con = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=3)
+            else:
+                con = sqlite3.connect(str(db), timeout=3)
+            rows = con.execute(
+                "SELECT id, integration_id, label, value, connector_id, method_id,"
+                " active, time_created, time_updated FROM credential").fetchall()
+            out: list[Account] = []
+            for (row_id, provider, label, value, connector_id, method_id,
+                 active, created, updated) in rows:
+                try:
+                    payload = json.loads(value)
+                except Exception:
+                    continue
+                if not isinstance(payload, dict):
+                    continue
+                out.append(Account(provider=str(provider), payload=payload,
+                                    label=str(label or ""), row_id=str(row_id or ""),
+                                    connector_id=connector_id, method_id=method_id,
+                                    active=active, time_created=int(created or 0),
+                                    time_updated=int(updated or 0)))
+            return out
+        except Exception:
+            continue
+        finally:
+            if con is not None:
+                try:
+                    con.close()
+                except Exception:
+                    pass
+    return []
+
+
+def _write_accounts_to_db(db: Path, accounts: list[Account]) -> list[str]:
+    """Put the accounts into an opencode database.
+
+    The database is what opencode reads, so this is the copy that counts.
+    The auth file is not enough once the store has a database of its own.
+    """
+    import secrets
+    import sqlite3
+
+    if not db.exists():
+        return []
+    con = None
+    try:
+        con = sqlite3.connect(str(db), timeout=5)
+        written: list[str] = []
+        for account in accounts:
+            row = con.execute(
+                "SELECT id FROM credential WHERE integration_id=?",
+                (account.provider,)).fetchone()
+            row_id = row[0] if row else (
+                account.row_id or "cred_" + secrets.token_hex(12))
+            con.execute(
+                "INSERT INTO credential (id, integration_id, label, value,"
+                " connector_id, method_id, active, time_created, time_updated)"
+                " VALUES (?,?,?,?,?,?,?,?,?)"
+                " ON CONFLICT(id) DO UPDATE SET"
+                " integration_id=excluded.integration_id, label=excluded.label,"
+                " value=excluded.value, connector_id=excluded.connector_id,"
+                " method_id=excluded.method_id, active=excluded.active,"
+                " time_updated=excluded.time_updated",
+                (row_id, account.provider, account.label,
+                 json.dumps(account.payload), account.connector_id,
+                 account.method_id, account.active, account.time_created,
+                 account.time_updated or _now_ms()))
+            written.append(account.provider)
+        con.commit()
+        return written
+    except Exception:
+        return []
+    finally:
+        if con is not None:
+            try:
+                con.close()
+            except Exception:
+                pass
+
+
+def _now_ms() -> int:
+    return int(datetime.now(timezone.utc).timestamp() * 1000)
+
+
+def copy_opencode_credentials(source: Path, home: Path) -> list[str]:
+    """Copy the accounts from one opencode store into another.
+
+    The app keeps a store of its own so that it never opens the database
+    the person's own opencode is using: on Windows the second one cannot
+    configure it and opencode never starts, so there are no models to grade
+    with at all. The accounts are what matter: the models they reach. Their
+    sessions are not copied, and are not wanted.
+
+    The person's store is the source of truth, so what is copied replaces
+    what was there: a token that was refreshed elsewhere is picked up here
+    rather than used from a stale copy. The expiry comes with it, so the
+    app does not race the person's own opencode to refresh it.
+    """
+    accounts = _read_store_accounts(source)
+    if not accounts:
+        return []
+    store = home / "opencode"
+    store.mkdir(parents=True, exist_ok=True)
+    written = _write_accounts_to_db(store / "opencode.db", accounts)
+    written = _write_accounts_to_auth(store / "auth.json", accounts)
+    return written
+
+
+def _write_accounts_to_auth(target: Path, accounts: list[Account]) -> list[str]:
+    """Put the accounts into an opencode auth file.
+
+    opencode reads the file when the store has no database yet, which is
+    the first time the app runs. The database is the copy that counts after
+    that; this one is what makes the first run work.
+    """
+    existing: dict[str, Any] = {}
+    if target.exists():
+        try:
+            data = json.loads(target.read_text())
+            if isinstance(data, dict):
+                existing = {k: v for k, v in data.items() if isinstance(v, dict)}
+        except Exception:
+            existing = {}
+    written: list[str] = []
+    for account in accounts:
+        if existing.get(account.provider) == account.payload:
+            continue
+        existing[account.provider] = account.payload
+        written.append(account.provider)
+    if written:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(json.dumps(existing, indent=2) + "\n")
+        try:
+            target.chmod(0o600)
+        except OSError:
+            pass
+    return written
 
 
 SECRET_KEYS = ("canvas_base_url", "canvas_api_token", "openrouter_api_key")

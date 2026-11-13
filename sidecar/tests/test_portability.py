@@ -311,14 +311,31 @@ def test_the_opencode_store_of_the_person_is_found(monkeypatch, tmp_path):
     home = tmp_path / ".local" / "share" / "opencode"
     home.mkdir(parents=True)
     (home / "opencode.db").write_bytes(b"")
-    monkeypatch.setattr(config, "opencode_data_home", lambda: tmp_path / ".local" / "share")
+    # The machine's own directories are not part of this test.
+    monkeypatch.setattr(config, "_opencode_data_homes",
+                        lambda: [tmp_path / ".local" / "share"])
     assert config.opencode_store() == home
 
 
 def test_there_is_no_store_when_opencode_was_never_used(monkeypatch, tmp_path):
     monkeypatch.delenv("XDG_DATA_HOME", raising=False)
-    monkeypatch.setattr(config, "opencode_data_home", lambda: tmp_path)
+    monkeypatch.setattr(config, "_opencode_data_homes", lambda: [tmp_path])
     assert config.opencode_store() is None
+
+
+def test_the_app_keeps_a_store_of_its_own(monkeypatch, tmp_path):
+    """Never the one the person's own opencode uses.
+
+    Two opencode processes on one database is what a Windows machine with
+    the opencode desktop app installed runs into: the second one cannot
+    configure the database and opencode never starts.
+    """
+    monkeypatch.delenv("GRADING_PIPELINE_OPENCODE_HOME", raising=False)
+    monkeypatch.setattr(config, "data_dir", lambda: tmp_path)
+    assert config.opencode_home() == tmp_path / "opencode-home"
+
+    monkeypatch.setenv("GRADING_PIPELINE_OPENCODE_HOME", str(tmp_path / "own"))
+    assert config.opencode_home() == tmp_path / "own"
 
 
 def test_the_opencode_store_follows_the_platform(monkeypatch, tmp_path):
@@ -332,6 +349,74 @@ def test_the_opencode_store_follows_the_platform(monkeypatch, tmp_path):
     monkeypatch.setattr(config.platform, "system", lambda: "Windows")
     monkeypatch.setenv("APPDATA", str(tmp_path / "Roaming"))
     assert config.opencode_data_home() == tmp_path / "Roaming"
+
+
+def _opencode_store(root: Path, credentials: dict[str, dict]) -> Path:
+    """A store shaped like opencode's: a database and an auth file."""
+    import sqlite3
+
+    store = root / "opencode"
+    store.mkdir(parents=True, exist_ok=True)
+    db = sqlite3.connect(str(store / "opencode.db"))
+    db.execute("CREATE TABLE IF NOT EXISTS credential ("
+               " id TEXT PRIMARY KEY, integration_id TEXT NOT NULL, label TEXT,"
+               " value TEXT NOT NULL, connector_id TEXT, method_id TEXT,"
+               " active INTEGER, time_created INTEGER NOT NULL,"
+               " time_updated INTEGER NOT NULL)")
+    for provider, payload in credentials.items():
+        db.execute("INSERT OR REPLACE INTO credential (id, integration_id, label,"
+                   " value, active, time_created, time_updated)"
+                   " VALUES (?,?,?,?,1,0,0)",
+                   (f"cred_{provider}", provider, provider, json.dumps(payload)))
+    db.commit()
+    db.close()
+    (store / "auth.json").write_text(json.dumps(
+        {k: v for k, v in credentials.items() if k.startswith("file-")}))
+    return store
+
+
+def test_the_accounts_are_copied_into_the_database_the_app_uses(tmp_path):
+    """opencode reads the database, not the auth file, once it has one.
+
+    Copying only the auth file leaves the app with the free models and
+    none of the ones the person's account reaches.
+    """
+    import sqlite3
+
+    source = _opencode_store(tmp_path / "person", {
+        "opencode": {"type": "oauth", "methodID": "oauth", "access": "a",
+                     "refresh": "r", "expires": 0},
+    })
+    home = tmp_path / "app" / "opencode-home"
+    _opencode_store(home, {"openrouter": {"type": "api", "key": "sk-or"}})
+
+    copied = config.copy_opencode_credentials(source, home)
+
+    assert "opencode" in copied
+    db = sqlite3.connect(str(home / "opencode" / "opencode.db"))
+    rows = {provider: value for provider, value in
+            db.execute("SELECT integration_id, value FROM credential")}
+    db.close()
+    # The person's account arrived, and the app's own key was left alone.
+    assert "opencode" in rows, rows
+    assert "openrouter" in rows, rows
+    assert json.loads(rows["opencode"])["refresh"] == "r"
+
+
+def test_the_accounts_are_copied_before_there_is_a_database(tmp_path):
+    """The first run has no database yet, so the auth file carries them."""
+    source = tmp_path / "person" / "opencode"
+    source.mkdir(parents=True)
+    (source / "auth.json").write_text(json.dumps({
+        "opencode": {"type": "oauth", "access": "a", "refresh": "r"},
+    }))
+    home = tmp_path / "app" / "opencode-home"
+
+    copied = config.copy_opencode_credentials(source, home)
+
+    assert "opencode" in copied
+    written = json.loads((home / "opencode" / "auth.json").read_text())
+    assert written["opencode"]["refresh"] == "r"
 
 
 def test_the_runtime_home_can_be_kept_apart_from_the_data(monkeypatch, tmp_path):

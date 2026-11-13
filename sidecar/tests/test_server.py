@@ -609,14 +609,35 @@ def test_without_a_key_opencode_gets_no_key(live):
         Path(state.settings.data) / "opencode-home")
 
 
-def test_the_models_of_the_person_s_own_opencode_are_available(live, tmp_path,
-                                                                monkeypatch):
-    """The accounts they signed into are the models they pay for.
+def test_the_accounts_of_the_person_are_copied_in(live, tmp_path):
+    """The models they pay for are the models their account reaches.
 
-    The app used to keep a store of its own, so the opencode of the person
-    using it was never read and the models their account reaches were
-    invisible. Now the store of their own is read, and the app keeps out of
-    the way of it.
+    The app used to keep a store of its own and never look where the
+    account was. It looks now, and copies the accounts across: what the
+    models need, without a second opencode on the same database.
+    """
+    _base, state, _fake, _spec = live
+    store = tmp_path / "opencode-data" / "opencode"
+    store.mkdir(parents=True)
+    (store / "auth.json").write_text(json.dumps({
+        "opencode": {"type": "oauth", "methodID": "oauth",
+                     "access": "a", "refresh": "r", "expires": 0},
+    }))
+
+    env = state.opencode_env()
+
+    home = Path(env["XDG_DATA_HOME"])
+    copied = json.loads((home / "opencode" / "auth.json").read_text())
+    assert "opencode" in copied, copied
+    assert copied["opencode"]["refresh"] == "r"
+
+
+def test_opencode_never_shares_the_database_of_the_person(live, tmp_path):
+    """Two opencode processes on one database is what breaks on Windows.
+
+    The other one cannot configure the database and opencode never starts,
+    so there are no models to grade with at all. The app's own store is
+    always its own.
     """
     _base, state, _fake, _spec = live
     store = tmp_path / "opencode-data" / "opencode"
@@ -624,13 +645,23 @@ def test_the_models_of_the_person_s_own_opencode_are_available(live, tmp_path,
     (store / "opencode.db").write_bytes(b"")
 
     env = state.opencode_env()
-    # Nothing points opencode at a store of the app's own: the one of the
-    # person is already the one opencode will read.
-    assert "XDG_DATA_HOME" not in env
-    assert not (Path(state.settings.data) / "opencode-home").exists()
+    home = Path(env["XDG_DATA_HOME"])
+    assert home != store.parent
+    assert home == Path(state.settings.data) / "opencode-home"
 
 
-def test_the_key_still_rides_along_with_the_person_s_own_store(live, tmp_path):
+def test_a_store_that_cannot_be_read_does_not_stop_the_app(live, tmp_path):
+    """Another opencode may have the database open. That is not fatal."""
+    _base, state, _fake, _spec = live
+    store = tmp_path / "opencode-data" / "opencode"
+    store.mkdir(parents=True)
+    (store / "opencode.db").write_bytes(b"not a database at all")
+
+    env = state.opencode_env()
+    assert env["XDG_DATA_HOME"]
+
+
+def test_the_key_still_rides_along_with_the_person_s_own_accounts(live, tmp_path):
     """The key this app was given and the accounts of the person are both
     in play: one by environment variable, the other in the store."""
     _base, state, _fake, _spec = live
@@ -641,7 +672,7 @@ def test_the_key_still_rides_along_with_the_person_s_own_store(live, tmp_path):
     state.settings.openrouter_api_key = "sk-or-abc123"
     env = state.opencode_env()
     assert env["OPENROUTER_API_KEY"] == "sk-or-abc123"
-    assert "XDG_DATA_HOME" not in env
+    assert env["XDG_DATA_HOME"]
 
 
 def test_changing_the_key_restarts_a_running_opencode(live):
